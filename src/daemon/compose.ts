@@ -61,7 +61,13 @@ export async function createServices(opts: ComposeOptions = {}): Promise<Compose
     publicUrl: opts.config?.publicUrl ?? process.env.CONDUCTOR_PUBLIC_URL ?? (stored('daemon.public_url') as string | undefined) ?? null,
   };
   const baseUrl = () => `http://127.0.0.1:${config.port}`;
-  const publicUrl = () => (config.publicUrl ?? baseUrl()).replace(/\/+$/, '');
+  // An explicit URL (option / env) is fixed; otherwise the `daemon.public_url` setting is read live, so
+  // `conductor doctor --fix` or the Remote access page take effect without a restart.
+  const pinnedPublicUrl = opts.config?.publicUrl ?? process.env.CONDUCTOR_PUBLIC_URL ?? null;
+  const publicUrl = () => {
+    config.publicUrl = pinnedPublicUrl ?? (stored('daemon.public_url') as string | undefined) ?? null;
+    return (config.publicUrl ?? baseUrl()).replace(/\/+$/, '');
+  };
 
   const governance = createGovernance(kernel);
   const org = createOrgService(kernel, { approvals: governance.approvals });
