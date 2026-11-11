@@ -1,0 +1,10 @@
+node_modules/
+dist/
+ui/dist/
+*.log
+.env
+.env.*
+.DS_Store
+coverage/
+.claude-flow/
+.swarm/

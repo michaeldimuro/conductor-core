@@ -1,0 +1,31 @@
+import type * as s from '../db/schema/index.js';
+
+/** Row types inferred from the schema — the canonical entity shapes. */
+export type Organization = typeof s.organizations.$inferSelect;
+export type Department = typeof s.departments.$inferSelect;
+export type Agent = typeof s.agents.$inferSelect;
+export type Playbook = typeof s.playbooks.$inferSelect;
+export type Goal = typeof s.goals.$inferSelect;
+export type Project = typeof s.projects.$inferSelect;
+export type Issue = typeof s.issues.$inferSelect;
+export type Comment = typeof s.comments.$inferSelect;
+export type Run = typeof s.runs.$inferSelect;
+export type RunEventRow = typeof s.runEvents.$inferSelect;
+export type Job = typeof s.jobs.$inferSelect;
+export type LedgerRow = typeof s.costLedger.$inferSelect;
+export type Scorecard = typeof s.scorecards.$inferSelect;
+export type Skill = typeof s.skills.$inferSelect;
+export type SkillVersion = typeof s.skillVersions.$inferSelect;
+export type EvalCase = typeof s.evalCases.$inferSelect;
+export type Connector = typeof s.connectors.$inferSelect;
+export type ConnectorGrant = typeof s.connectorGrants.$inferSelect;
+export type ToolPin = typeof s.toolPins.$inferSelect;
+export type ToolCall = typeof s.toolCalls.$inferSelect;
+export type Memory = typeof s.memories.$inferSelect;
+export type Approval = typeof s.approvals.$inferSelect;
+export type BrowserProfile = typeof s.browserProfiles.$inferSelect;
+export type BrowserSession = typeof s.browserSessions.$inferSelect;
+export type Gateway = typeof s.gateways.$inferSelect;
+export type Webhook = typeof s.webhooks.$inferSelect;
+export type ApiToken = typeof s.apiTokens.$inferSelect;
+export type ConfigRevision = typeof s.configRevisions.$inferSelect;
