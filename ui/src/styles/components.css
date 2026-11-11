@@ -167,3 +167,21 @@ details[open] > summary { margin-bottom: 8px; }
 .md .md-h2 { font-size: 16.5px; }
 .md .md-h3 { font-size: 15px; }
 .mention { color: var(--accent); font-weight: 600; }
+
+/* Model / effort pickers and provider accounts */
+.model-pick { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.model-pick > select { flex: 1 1 auto; min-width: 0; }
+.adapter-test > .field { flex: 1 1 220px; max-width: 340px; }
+.cred-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.cred-list > li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.cred-list code { overflow-wrap: anywhere; }
+.accounts { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.account { display: grid; gap: 10px; align-content: start; padding: 12px; border: 1px solid var(--line-soft); border-radius: var(--r-2); background: var(--raised); min-width: 0; }
+.account > * { min-width: 0; }
+.login-flow { display: grid; gap: 10px; padding: 12px; border-radius: var(--r-2); background: var(--bg); border: 1px solid var(--line-soft); min-width: 0; }
+.login-flow > * { min-width: 0; }
+@media (max-width: 420px) { .accounts { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: no-preference) {
+  .spin { animation: spin 0.9s linear infinite; transform-origin: center; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+}

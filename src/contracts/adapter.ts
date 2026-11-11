@@ -149,6 +149,8 @@ export interface AgentAdapter {
   testConnection(cfg: { config: Record<string, unknown>; secrets: Record<string, string>; model?: string | null }): Promise<Health>;
   run(ctx: RunContext, onEvent: (e: RunEvent) => void): Promise<RunResult>;
   cancel(runId: string): Promise<void>;
+  /** Optional: the models this adapter can run, for the model dropdown (plugins may implement it). */
+  listModels?(cfg: { config: Record<string, unknown>; secrets: Record<string, string> }): Promise<import('./providers.js').ModelOption[]>;
 }
 
 /** Manifest for plugin adapters discovered from ~/.conductor/adapters/<pkg>/conductor-adapter.json. */

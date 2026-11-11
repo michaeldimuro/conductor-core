@@ -3,6 +3,7 @@ import type { Agent, Organization } from '../contracts/rows.js';
 import type { AdapterRegistry } from '../contracts/adapter.js';
 import type { ProviderBinding } from '../contracts/types.js';
 import type { WorkerJob } from '../contracts/services.js';
+import { defaultCredentialRefs } from '../contracts/providers.js';
 
 export const DEFAULT_BINDING: ProviderBinding = { adapter: 'claude_local' };
 
@@ -14,6 +15,21 @@ const DEFAULT_KEY_REFS: Record<string, (orgSlug: string) => string[]> = {
 
 /** Adapters that cannot run without an API key. */
 const KEY_REQUIRED = new Set(['claude_api', 'openai_api']);
+
+/** Local CLI adapters whose binding may pick `auth: login | token | api_key`. */
+const LOCAL_CLI_ADAPTERS = new Set(['claude_local', 'codex_local']);
+
+/** Which secret a binding needs, under which name the adapter reads it, and whether it is mandatory. */
+function credentialPlan(e: Omit<ProviderBinding, 'fallback'>, orgSlug: string): { refs: string[]; secretName: 'apiKey' | 'oauthToken'; required: boolean; error?: string } {
+  if (LOCAL_CLI_ADAPTERS.has(e.adapter) && e.auth && e.auth !== 'login') {
+    if (e.auth === 'token' && e.adapter !== 'claude_local') return { refs: [], secretName: 'oauthToken', required: true, error: `auth "token" is only supported by claude_local` };
+    const refs = e.authRef ? [e.authRef] : defaultCredentialRefs(e.adapter, e.auth, orgSlug);
+    return { refs, secretName: e.auth === 'token' ? 'oauthToken' : 'apiKey', required: true };
+  }
+  // `login` (or no auth): an explicit authRef still means "meter this local CLI on that key" (older bindings).
+  const refs = e.authRef ? [e.authRef] : (DEFAULT_KEY_REFS[e.adapter]?.(orgSlug) ?? []);
+  return { refs, secretName: 'apiKey', required: KEY_REQUIRED.has(e.adapter) };
+}
 
 /** Adapters whose CLI discovers skills natively from the workspace. */
 export const NATIVE_SKILL_ADAPTERS = new Set(['claude_local', 'codex_local']);
@@ -45,17 +61,22 @@ export async function resolveChain(
       skipped.push(`${e.adapter}: adapter not installed`);
       continue;
     }
+    const plan = credentialPlan(e, orgSlug);
+    if (plan.error) {
+      skipped.push(`${e.adapter}: ${plan.error}`);
+      continue;
+    }
     const secrets: Record<string, string> = {};
-    const refs = e.authRef ? [e.authRef] : (DEFAULT_KEY_REFS[e.adapter]?.(orgSlug) ?? []);
-    for (const ref of refs) {
+    for (const ref of plan.refs) {
       const v = await k.secrets.get(ref).catch(() => null);
       if (v) {
-        secrets.apiKey = v;
+        secrets[plan.secretName] = v;
         break;
       }
     }
-    if (KEY_REQUIRED.has(e.adapter) && !secrets.apiKey) {
-      skipped.push(`${e.adapter}: no API key in secret store (${refs.join(' or ') || 'no authRef'})`);
+    if (plan.required && !secrets[plan.secretName]) {
+      const what = plan.secretName === 'oauthToken' ? 'long-lived Claude token' : 'API key';
+      skipped.push(`${e.adapter}: no ${what} in secret store (${plan.refs.join(' or ') || 'no authRef'})`);
       continue;
     }
     chain.push({ adapterId: e.adapter, model: e.model ?? null, config: e.config ?? {}, secrets });

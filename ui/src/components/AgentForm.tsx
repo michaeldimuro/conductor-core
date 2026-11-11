@@ -6,6 +6,7 @@ import { AUTONOMY_LEVELS, useDirectory, useOrg } from '../lib/org.js';
 import { useAction } from '../lib/query.js';
 import { toast } from '../lib/toast.js';
 import { BindingEditor, cleanBinding } from './binding.js';
+import { ModelSelect } from './models.js';
 import { Check, Field, FormShell, Modal } from './ui.js';
 
 const CRON_PRESETS: ReadonlyArray<{ label: string; value: string }> = [
@@ -87,6 +88,8 @@ function AgentFormBody({ onClose, agent, deptId }: { onClose: () => void; agent?
   const [maxSteps, setMaxSteps] = useState(String(agent?.maxSteps ?? 60));
   const [maxWallMin, setMaxWallMin] = useState(String(Math.round((agent?.maxWallMs ?? 30 * 60_000) / 60_000)));
   const [maxRuns, setMaxRuns] = useState(String(agent?.maxRunsPerHour ?? 12));
+  // The binding the override applies to: the agent's own, else the organization default.
+  const effective = binding?.adapter ? binding : org.defaultProvider;
   const effectiveDept = dept || dir.departments[0]?.id || '';
   const cronOk = describeCron(cron).valid;
 
@@ -135,7 +138,13 @@ function AgentFormBody({ onClose, agent, deptId }: { onClose: () => void; agent?
       </div>
       <BindingEditor value={binding} onChange={setBinding} inheritLabel="Use the organization's default provider" />
       <div className="form-grid">
-        <Field label="Model override" hint="Overrides the model of whichever binding applies."><input value={model} onChange={(e) => setModel(e.target.value)} autoCapitalize="none" spellCheck={false} /></Field>
+        {effective?.adapter ? (
+          <ModelSelect
+            label="Model override" adapterId={effective.adapter} orgId={org.id} value={model} onChange={setModel}
+            emptyLabel={`No override${effective.model ? ` (${effective.model})` : ''}`}
+            hint={`Overrides the model of whichever binding applies (now ${effective.adapter}${binding ? '' : ', the organization default'}).`}
+          />
+        ) : <Field label="Model override" hint="Overrides the model of whichever binding applies."><input value={model} onChange={(e) => setModel(e.target.value)} autoCapitalize="none" spellCheck={false} /></Field>}
         <Field label="Monthly budget (USD)" hint="Empty means no agent-level cap."><input type="number" min="0" step="0.01" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} /></Field>
         <CronField value={cron} onChange={setCron} />
       </div>

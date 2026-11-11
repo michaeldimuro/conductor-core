@@ -1,8 +1,8 @@
 import type { Command } from 'commander';
-import type { Agent, AgentActionResponse, HireAgentInput, OrgChartNode, UpdateAgentRequest } from '../../api/types.js';
+import type { Agent, AgentActionResponse, HireAgentInput, OrgChartNode, ProviderBinding, UpdateAgentRequest } from '../../api/types.js';
 import type { CliDeps } from '../deps.js';
 import type { Ctx } from '../context.js';
-import { action, arg, choice, compact, flag, isEmpty, num, parseProvider, str, type Opts } from '../command.js';
+import { action, arg, choice, compact, flag, isEmpty, num, oneOf, parseProvider, str, type Opts } from '../command.js';
 import { UsageError } from '../errors.js';
 import { percent, usd } from '../output.js';
 import { resolveAgent, resolveDept, resolveIssue } from '../resolve.js';
@@ -20,7 +20,9 @@ function configOptions(cmd: Command): Command {
     .option('--backstory <text>', 'persona and working style')
     .option('--reports-to <agent>', 'manager (slug, name or id); "none" for the top of the chart')
     .option('--provider <adapter[:model]>', 'provider binding, e.g. claude_local or claude_api:claude-sonnet-4-5')
-    .option('--model <model>', 'model override')
+    .option('--model <model>', 'model override (see: conductor adapter models <adapter>)')
+    .option('--auth <mode>', 'with --provider claude_local|codex_local: login (this Mac\'s CLI login) | token (stored long-lived Claude token) | api_key (stored key, metered)')
+    .option('--effort <level>', 'with --provider: effort / reasoning level (see: conductor adapter models <adapter>)')
     .option('--cron <expr>', 'heartbeat schedule, e.g. "*/30 * * * *"; "none" disables it')
     .option('--budget <usd>', 'monthly budget cap in USD')
     .option('--autonomy <0-3>', '0 assist · 1 supervised · 2 autonomous · 3 lead')
@@ -36,13 +38,33 @@ async function configPatch(ctx: Ctx, org: string, opts: Opts): Promise<Partial<H
     goal: str(opts, 'goal'),
     backstory: str(opts, 'backstory'),
     reportsTo: reportsTo === undefined ? undefined : none(reportsTo) ? null : (await resolveAgent(ctx, org, reportsTo)).id,
-    providerBinding: str(opts, 'provider') ? parseProvider(str(opts, 'provider')!) : undefined,
+    providerBinding: bindingFrom(opts),
     model: str(opts, 'model'),
     heartbeatCron: cron === undefined ? undefined : none(cron) ? null : cron,
     budgetUsd: num(opts, 'budget', { min: 0 }),
     autonomyLevel: num(opts, 'autonomy', { int: true, min: 0, max: 3 }),
     isLead: flag(opts, 'lead') ? true : undefined,
   });
+}
+
+/** `--provider adapter[:model]` plus `--auth` / `--effort`, which only make sense on an explicit binding. */
+function bindingFrom(opts: Opts): ProviderBinding | undefined {
+  const provider = str(opts, 'provider');
+  const auth = str(opts, 'auth');
+  const effort = str(opts, 'effort');
+  if (!provider) {
+    if (auth || effort) throw new UsageError('--auth and --effort set part of a provider binding; pass --provider too');
+    return undefined;
+  }
+  const b = parseProvider(provider);
+  if (auth) {
+    const mode = oneOf(auth, '--auth', ['login', 'token', 'api_key'] as const);
+    if (!['claude_local', 'codex_local'].includes(b.adapter)) throw new UsageError('--auth applies to the local CLI adapters (claude_local, codex_local)');
+    if (mode === 'token' && b.adapter !== 'claude_local') throw new UsageError('--auth token is only for claude_local (Codex has no long-lived token)');
+    if (mode !== 'login') b.auth = mode;
+  }
+  if (effort) b.config = { ...(b.config ?? {}), [/^(codex_local|openai_api)$/.test(b.adapter) ? 'reasoningEffort' : 'effort']: effort };
+  return b;
 }
 
 /** Hire/terminate either happen directly (owner) or come back as a pending approval. */

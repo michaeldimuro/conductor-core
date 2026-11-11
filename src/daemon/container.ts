@@ -3,6 +3,7 @@ import type { AdapterRegistry, AdapterRescanResult } from '../contracts/adapter.
 import type { OrgService, WorkService } from '../contracts/org-work.js';
 import type { BrowserService, ConnectorGateway, Governance, MemoryService, SkillService } from '../contracts/services.js';
 import type { Embedder, UtilityModel } from '../contracts/kernel.js';
+import type { ModelCatalogService, ProviderAuthService } from '../contracts/providers.js';
 import type { Runtime } from '../runtime/index.js';
 
 /**
@@ -28,6 +29,10 @@ export interface Services {
   rescanAdapters?(): Promise<AdapterRescanResult>;
   utility: UtilityModel;
   embedder: Embedder;
+  /** Claude Code / Codex CLI logins and stored long-lived credentials. */
+  providerAuth?: ProviderAuthService;
+  /** Models each adapter can run (model dropdowns). */
+  models?: ModelCatalogService;
   /** Base URL of the local API, e.g. http://127.0.0.1:7420 */
   baseUrl(): string;
   /** Public base URL for links sent to humans (tunnel hostname when configured). */

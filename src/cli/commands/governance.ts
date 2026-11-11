@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { Approval, Organization } from '../../api/types.js';
 import type { CliDeps } from '../deps.js';
 import type { Ctx } from '../context.js';
-import { action, arg, compact, oneOf, optArg, str } from '../command.js';
+import { action, arg, compact, flag, oneOf, optArg, str } from '../command.js';
 import { CliError, EXIT, SilentExit, UsageError } from '../errors.js';
 import { ago, clip, usd } from '../output.js';
 import { agentNames, resolveAgent, resolveApproval } from '../resolve.js';
@@ -198,6 +198,28 @@ export function governanceCommands(program: Command, deps: CliDeps): void {
         ['id', 'name', 'origin', 'tools', 'mcp', 'resume', 'vision', 'browser'],
         adapters.map((a) => [a.id, a.name, a.builtin ? 'builtin' : 'plugin', a.capabilities.tools, a.capabilities.mcp, a.capabilities.resume, a.capabilities.vision, a.capabilities.browser]),
       ));
+    }));
+  adapter
+    .command('models <id>')
+    .description('models an adapter can run (from the CLI, the provider API with a stored key, or the built-in list)')
+    .option('--all', 'include models the provider hides by default')
+    .option('--refresh', 'ask the CLI / provider again instead of the cached list')
+    .action(action(deps, async (ctx, args, opts) => {
+      const id = arg(args, 0, 'id');
+      const org = ctx.chosenOrg();
+      const cat = await ctx.client().listModels(id, { ...(org ? { orgId: org } : {}), refresh: flag(opts, 'refresh') });
+      const shown = flag(opts, 'all') ? cat.models : cat.models.filter((m) => !m.hidden);
+      ctx.emit(cat, () => {
+        ctx.table(['model', 'name', 'kind', 'effort'], shown.map((m) => [
+          m.id, m.label, m.kind === 'alias' ? 'alias (latest)' : m.hidden ? 'hidden' : '',
+          (m.efforts ?? cat.efforts).map((e) => (e === m.defaultEffort ? `${e}*` : e)).join(' '),
+        ]), `${id} publishes no model list; any model id it understands works`);
+        const tail: string[] = [`source: ${cat.sources.join(', ') || 'none'}`];
+        if (cat.defaultModel) tail.push(`default when unset: ${cat.defaultModel}`);
+        if (cat.effortKey) tail.push(`effort goes in config.${cat.effortKey} (agent --effort)`);
+        ctx.note(ctx.style.dim(tail.join(' · ')));
+        for (const n of cat.notes) ctx.note(ctx.style.dim(n));
+      });
     }));
   adapter
     .command('rescan')

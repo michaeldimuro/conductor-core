@@ -80,6 +80,16 @@ export function claudeMcpEnv(ctx: Pick<RunContext, 'maxWallMs'>): Record<string,
   return { MCP_TIMEOUT: String(CLI_MCP_STARTUP_TIMEOUT_MS), MCP_TOOL_TIMEOUT: String(cliToolTimeoutMs(ctx.maxWallMs)) };
 }
 
+/**
+ * Credentials for the child: a bound API key (metered) wins over a long-lived subscription token
+ * (`claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN`); with neither, the CLI uses its own login.
+ */
+export function claudeAuthEnv(secrets: Record<string, string>): Record<string, string> {
+  if (secrets.apiKey) return { ANTHROPIC_API_KEY: secrets.apiKey };
+  if (secrets.oauthToken) return { CLAUDE_CODE_OAUTH_TOKEN: secrets.oauthToken };
+  return {};
+}
+
 export function buildClaudeArgs(ctx: RunContext, cfg: Config, mcpConfigPath: string, metered: boolean): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--mcp-config', mcpConfigPath];
   if (cfg.strictMcpConfig) args.push('--strict-mcp-config');
@@ -236,7 +246,11 @@ export class ClaudeLocalAdapter implements AgentAdapter {
       return {
         ok: true,
         version,
-        detail: cfg.secrets.apiKey ? 'CLI present; runs are metered on the bound API key' : 'CLI present; runs use the local Claude login (subscription)',
+        detail: cfg.secrets.apiKey
+          ? 'CLI present; runs are metered on the bound API key'
+          : cfg.secrets.oauthToken
+            ? 'CLI present; runs use the stored long-lived Claude token (subscription)'
+            : 'CLI present; runs use the local Claude login (subscription)',
       };
     } catch (e) {
       return { ok: false, detail: e instanceof Error ? e.message : String(e) };
@@ -255,7 +269,7 @@ export class ClaudeLocalAdapter implements AgentAdapter {
       const st: StreamState = { model: ctx.model, finalText: '', lastText: '', turns: 0, toolNames: new Map(), perMessage: new Map() };
       try {
         writeFileSync(mcpConfigPath, JSON.stringify(buildClaudeMcpConfig(ctx)), { mode: 0o600 });
-        const childEnv = minimalEnv({ ...claudeMcpEnv(ctx), ...cfg.env, ...(metered ? { ANTHROPIC_API_KEY: ctx.secrets.apiKey } : {}) }, ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
+        const childEnv = minimalEnv({ ...claudeMcpEnv(ctx), ...cfg.env, ...claudeAuthEnv(ctx.secrets) }, ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
         const exit = await runJsonLines({
           command: cfg.command,
           args: buildClaudeArgs(ctx, cfg, mcpConfigPath, metered),

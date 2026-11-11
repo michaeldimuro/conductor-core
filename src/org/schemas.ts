@@ -20,6 +20,7 @@ const bindingBase = z.strictObject({
   model: z.string().trim().min(1).max(200).optional(),
   config: z.record(z.string(), z.unknown()).optional(),
   authRef: z.string().trim().min(1).max(300).optional(),
+  auth: z.enum(['login', 'token', 'api_key']).optional(),
 });
 
 /** Provider binding. Credentials are referenced (`authRef`), never embedded. */

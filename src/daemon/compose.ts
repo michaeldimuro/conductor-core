@@ -11,6 +11,10 @@ import { createMemoryService, createUtilityModel, createEmbedder } from '../memo
 import { createConnectorGateway, createFilesToolProvider } from '../connectors/index.js';
 import { createBrowserService } from '../browser/index.js';
 import { createAdapterRegistry } from '../adapters/index.js';
+import { createProviderAuth } from '../adapters/auth/index.js';
+import { createModelCatalog } from '../adapters/catalog/index.js';
+import type { CliExec } from '../adapters/shared/cli-exec.js';
+import { CLI_PROVIDER_ADAPTER } from '../contracts/providers.js';
 import { createRuntime, type RuntimeOptions } from '../runtime/index.js';
 import type { Supervisor } from '../runtime/supervisor.js';
 import { DEFAULT_PORT, VERSION, type DaemonConfig, type Services } from './container.js';
@@ -26,6 +30,10 @@ export interface ComposeOptions extends KernelOptions {
   browserHeadless?: boolean;
   /** Watch the plugin directory and load new adapters without a restart (default true with the real registry). */
   watchPlugins?: boolean;
+  /** Tests: how provider status/login/catalog commands are run (default: the real CLIs). */
+  cliExec?: CliExec;
+  /** Tests: point provider logins at fake CLI binaries. */
+  cliCommands?: { claude?: string; codex?: string };
 }
 
 export interface CloseOptions {
@@ -110,14 +118,24 @@ export async function createServices(opts: ComposeOptions = {}): Promise<Compose
   connectors.registerBuiltin(browser.toolProvider());
   connectors.registerBuiltin(createFilesToolProvider(kernel));
 
+  // Provider accounts (Claude Code / Codex logins) and model catalogs for the dropdowns.
+  const models = createModelCatalog({ registry, secrets: kernel.secrets, log: kernel.log, ...(opts.cliExec ? { exec: opts.cliExec } : {}) });
+  const providerAuth = createProviderAuth(kernel, {
+    ...(opts.cliExec ? { exec: opts.cliExec } : {}), ...(opts.cliCommands ? { commands: opts.cliCommands } : {}),
+    // Codex's model list depends on the account: refresh it after a login or logout.
+    onAccountChange: (provider) => models.invalidate(CLI_PROVIDER_ADAPTER[provider]),
+  });
+
   return {
     kernel, org, work, governance, skills, memory, connectors, browser, runtime, registry, utility, embedder,
+    providerAuth, models,
     baseUrl, publicUrl, version: VERSION, config, rescanAdapters,
     async close(closeOpts: CloseOptions = {}) {
       const graceMs = closeOpts.graceMs ?? Number.POSITIVE_INFINITY;
       const deadline = Date.now() + graceMs;
       const left = (): number => (Number.isFinite(graceMs) ? Math.max(0, deadline - Date.now()) : graceMs);
       pluginWatch?.close();
+      providerAuth.dispose();
       // Runs get most of the budget to end cleanly (cancel → release their issues); the rest is for teardown.
       await bounded('runtime', () => runtime.stop(), Number.isFinite(graceMs) ? graceMs * 0.75 : graceMs, kernel.log);
       await Promise.all([

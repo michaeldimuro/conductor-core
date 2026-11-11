@@ -17,6 +17,7 @@ import { quickstartCommand } from './commands/quickstart.js';
 import { browserCommands } from './commands/browser.js';
 import { playbookCommands } from './commands/playbook.js';
 import { revisionCommands } from './commands/revisions.js';
+import { authCommands } from './commands/auth.js';
 
 export const CLI_VERSION = '0.1.0';
 
@@ -58,6 +59,7 @@ export function buildProgram(deps: CliDeps): Command {
   browserCommands(program, deps);
   playbookCommands(program, deps);
   revisionCommands(program, deps);
+  authCommands(program, deps);
   return program;
 }
 

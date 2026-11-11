@@ -20,7 +20,26 @@ import type { AdapterRegistry, Health as AdapterHealth, RunEvent } from '../cont
 import type { AuditLog, AuditRecord, UtilityModelStatus } from '../contracts/kernel.js';
 import type { EvalExpectations, ProviderBinding, SkillEvalCase, SkillEvalResult } from '../contracts/types.js';
 import type { ToolDef, ToolResult } from '../contracts/tools.js';
+import type {
+  BindingAuth, CliProvider, LoginMethod, LoginMethodInfo, LoginSession, ModelCatalog, ModelOption, ProviderAuthStatus,
+} from '../contracts/providers.js';
 import type { DomainEvents, EventName } from '../shared/events.js';
+
+export type { BindingAuth, CliProvider, LoginMethod, LoginMethodInfo, LoginSession, ModelCatalog, ModelOption, ProviderAuthStatus };
+
+/** `POST /providers/:provider/login`. */
+export interface StartLoginBody {
+  method: LoginMethod;
+  /** Pasted credential (token / API key). Sent once; never stored in logs or echoed back. */
+  secret?: string;
+  /** Use an already-stored credential instead of pasting one. */
+  secretRef?: string;
+  /** Where to keep a pasted credential (default: conventional `conductor/…` ref, or `org/<slug>/…` with orgId). */
+  saveAs?: string;
+  orgId?: string;
+  /** Let the CLI open a browser window on the Mac itself. */
+  openBrowser?: boolean;
+}
 
 export type {
   Organization, Department, Agent, Goal, Project, Issue, Comment, Playbook, Run, Approval, Skill, SkillVersion, Memory,

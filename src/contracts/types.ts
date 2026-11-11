@@ -10,8 +10,13 @@ export interface ProviderBinding {
   model?: string;
   /** Adapter-specific, non-secret config (validated against the adapter's config schema). */
   config?: Record<string, unknown>;
-  /** Secret-store reference for the API key, when the adapter needs one. */
+  /** Secret-store reference for the API key (or, with `auth: 'token'`, the long-lived CLI token). */
   authRef?: string;
+  /**
+   * Local CLI adapters only: `login` (default) uses the CLI's own login on this Mac; `token` a stored
+   * long-lived Claude token; `api_key` a stored API key (metered). See contracts/providers.ts.
+   */
+  auth?: 'login' | 'token' | 'api_key';
   /** Tried in order on rate limit, auth failure or outage. */
   fallback?: Array<Omit<ProviderBinding, 'fallback'>>;
 }

@@ -95,6 +95,20 @@ export class ConductorClient {
   putSecret = (ref: string, value: string) => this.put<t.SecretStatus>(this.secretPath(ref), { value });
   deleteSecret = (ref: string) => this.del<t.SecretStatus>(this.secretPath(ref));
   listAdapters = () => this.get<t.AdapterInfo[]>('/adapters');
+  /** Models an adapter can run (CLI catalog, provider API, or built-in list) for model dropdowns. */
+  listModels = (adapterId: string, query?: { orgId?: string; authRef?: string; refresh?: boolean }) =>
+    this.get<t.ModelCatalog>(`/adapters/${e(adapterId)}/models`, query);
+
+  /* ── Provider accounts (Claude Code / Codex CLI logins) ── */
+  listProviders = (query?: { orgId?: string; refresh?: boolean }) => this.get<t.ProviderAuthStatus[]>('/providers', query);
+  getProvider = (provider: t.CliProvider, query?: { orgId?: string; refresh?: boolean }) => this.get<t.ProviderAuthStatus>(`/providers/${e(provider)}`, query);
+  startLogin = (provider: t.CliProvider, input: t.StartLoginBody) => this.post<t.LoginSession>(`/providers/${e(provider)}/login`, input);
+  logoutProvider = (provider: t.CliProvider) => this.post<t.ProviderAuthStatus>(`/providers/${e(provider)}/logout`, {});
+  forgetProviderCredential = (provider: t.CliProvider, input: { auth: 'token' | 'api_key'; ref?: string; orgId?: string }) =>
+    this.post<t.ProviderAuthStatus>(`/providers/${e(provider)}/forget`, input);
+  getLoginSession = (sessionId: string) => this.get<t.LoginSession>(`/login-sessions/${e(sessionId)}`);
+  submitLoginCode = (sessionId: string, code: string) => this.post<t.LoginSession>(`/login-sessions/${e(sessionId)}/code`, { code });
+  cancelLogin = (sessionId: string) => this.post<t.LoginSession>(`/login-sessions/${e(sessionId)}/cancel`, {});
   rescanAdapters = () => this.post<{ loaded: string[]; added: string[]; removed: string[]; skipped: Array<{ folder: string; error: string }> }>('/adapters/rescan', {});
   testAdapter = (adapterId: string, input: t.TestAdapterRequest = {}) => this.post<t.AdapterHealth>(`/adapters/${e(adapterId)}/test`, input);
 

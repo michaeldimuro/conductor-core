@@ -30,6 +30,7 @@ export const ID_PREFIX = {
   webhook: 'wh',
   playbook: 'pb',
   scorecard: 'sc',
+  loginSession: 'lgn',
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIX;

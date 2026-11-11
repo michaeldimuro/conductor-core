@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAdapters } from '../../components/binding.js';
+import { ModelSelect } from '../../components/models.js';
 import { Button, Chip, ConfirmButton, Empty, ErrorNote, Field, Load, Panel, Status } from '../../components/ui.js';
 import { api } from '../../lib/api.js';
 import type { AdapterHealth, AdapterInfo, LoginCodeResponse } from '../../lib/api.js';
@@ -7,12 +8,13 @@ import { dateTime } from '../../lib/format.js';
 import { k, useAgents, useOrg } from '../../lib/org.js';
 import { useAction, useQuery } from '../../lib/query.js';
 import { toast } from '../../lib/toast.js';
+import { ProviderAccounts } from './Accounts.js';
 
 function Health({ health }: { health: AdapterHealth }) {
   return <span className="row row-tight"><Status value={health.ok ? 'ok' : 'failed'} label={health.ok ? 'Connected' : 'Failed'} />{health.version ? <Chip>{health.version}</Chip> : null}{health.detail ? <span className="dim">{health.detail}</span> : null}</span>;
 }
 
-function AdapterRow({ adapter }: { adapter: AdapterInfo }) {
+function AdapterRow({ adapter, orgId }: { adapter: AdapterInfo; orgId: string }) {
   const [model, setModel] = useState('');
   const [authRef, setAuthRef] = useState('');
   const test = useAction(() => api.testAdapter(adapter.id, { model: model.trim() || null, authRef: authRef.trim() || null }), { quiet: true });
@@ -30,7 +32,7 @@ function AdapterRow({ adapter }: { adapter: AdapterInfo }) {
         </div>
       </div>
       <form className="toolbar adapter-test" onSubmit={(e) => { e.preventDefault(); setResult(null); void test.run().then((h) => h && setResult(h)); }}>
-        <input aria-label={`Model to test with ${adapter.name}`} placeholder="Model (optional)" value={model} onChange={(e) => setModel(e.target.value)} autoCapitalize="none" spellCheck={false} />
+        <ModelSelect hideLabel label={`Model to test with ${adapter.name}`} adapterId={adapter.id} orgId={orgId} value={model} onChange={setModel} />
         <input aria-label={`API key secret for ${adapter.name}`} placeholder="API key secret name (optional)" value={authRef} onChange={(e) => setAuthRef(e.target.value)} autoCapitalize="none" spellCheck={false} />
         <Button type="submit" busy={test.busy}>{test.busy ? 'Testing…' : 'Test connection'}</Button>
       </form>
@@ -83,6 +85,7 @@ export function Providers() {
   const doctor = useQuery(checking ? k(org.id, 'doctor') : null, () => api.doctor({ orgId: org.id }));
   return (
     <div className="stack-lg">
+      <ProviderAccounts orgId={org.id} />
       <Panel title={`Bindings used by ${org.name}`} actions={<Button small busy={doctor.fetching} onClick={() => (checking ? doctor.reload() : setChecking(true))}>{doctor.fetching ? 'Testing…' : 'Test all bindings'}</Button>}>
         {!checking ? <p className="dim">Runs a live connection test for the organization default and every agent's own binding. This can take a few seconds per provider.</p> : (
           <Load q={doctor} lines={3}>
@@ -105,7 +108,7 @@ export function Providers() {
       </Panel>
       <Panel title="Installed adapters" flush>
         <Load q={adapters} empty={<Empty title="No adapters are installed" />}>
-          {(list) => <ul className="connectors">{list.map((a) => <AdapterRow key={a.id} adapter={a} />)}</ul>}
+          {(list) => <ul className="connectors">{list.map((a) => <AdapterRow key={a.id} adapter={a} orgId={org.id} />)}</ul>}
         </Load>
       </Panel>
       <Embeddings />
