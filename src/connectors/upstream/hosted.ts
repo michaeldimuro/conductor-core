@@ -15,6 +15,8 @@ import { connectHttp } from './mcp.js';
  */
 
 const COMPOSIO_API = 'https://backend.composio.dev';
+/** Composio Connect: the MCP endpoint for consumer keys (`ck_…`, dashboard → Sessions & API Key). */
+const COMPOSIO_CONNECT_MCP = 'https://connect.composio.dev/mcp';
 const ARCADE_MCP = 'https://api.arcade.dev/mcp';
 /** The slug old Arcade templates filled in; no account has it. */
 const PLACEHOLDER_GATEWAY = 'default';
@@ -22,7 +24,13 @@ const PLACEHOLDER_GATEWAY = 'default';
 export const ARCADE_GATEWAY_HELP =
   'Create an MCP gateway in the Arcade dashboard with user mode "Arcade Headers", then set its slug (the last part of https://api.arcade.dev/mcp/<slug>) in this connector\'s settings.';
 export const COMPOSIO_KEY_HELP =
-  'Use a project API key from the Composio dashboard (Settings → API keys) and replace COMPOSIO_API_KEY on this connector.';
+  'Use either your consumer API key (starts with ck_, dashboard → Sessions & API Key) or a project API key (Settings → API keys), and replace COMPOSIO_API_KEY on this connector.';
+
+/** Which Composio key this is: a consumer key goes to Composio Connect, a project key to the developer API. */
+export function composioKeyType(apiKey: string, configured?: string): 'consumer' | 'project' {
+  if (configured === 'consumer' || configured === 'project') return configured;
+  return apiKey.startsWith('ck_') ? 'consumer' : 'project';
+}
 
 function urlOf(raw: string, what: string): URL {
   try {
@@ -70,7 +78,20 @@ export async function composioUpstream(config: ComposioConfig, cred: CredentialC
   const userId = (await resolver.lookup('user_id')) ?? (await resolver.lookup('entity_id')) ?? config.entityId ?? (config.entityMode === 'agent' ? cred.agentId : cred.orgId);
   const apiKey = (await resolver.lookup(config.apiKeyRef ?? 'COMPOSIO_API_KEY')) ?? (await resolver.direct());
   if (!apiKey) throw new ConductorError('unavailable', `no Composio API key stored. ${COMPOSIO_KEY_HELP}`);
-  const headers: Record<string, string> = { ...(await resolver.map(config.headers, 'config.headers')), 'x-api-key': apiKey };
+  const custom = await resolver.map(config.headers, 'config.headers');
+
+  if (composioKeyType(apiKey, (config as { keyType?: string }).keyType) === 'consumer') {
+    // Composio Connect: one endpoint for the key's account; apps are connected through Composio's own OAuth links.
+    const url = urlOf(config.mcpUrl !== undefined ? await resolver.value(config.mcpUrl, 'config.mcpUrl') : COMPOSIO_CONNECT_MCP, 'composio mcpUrl');
+    try {
+      return await connectHttp({ url, headers: { ...custom, 'x-consumer-api-key': apiKey }, mode: 'auto' }, { timeoutMs, jitAuth: true });
+    } catch (e) {
+      if (/\b40[13]\b|unauthori[sz]ed|invalid.*key/i.test(errorMessage(e))) throw new ConductorError('unavailable', `Composio Connect rejected the consumer API key. ${COMPOSIO_KEY_HELP}`);
+      throw e;
+    }
+  }
+
+  const headers: Record<string, string> = { ...custom, 'x-api-key': apiKey };
   const base = config.baseUrl ?? COMPOSIO_API;
 
   let url: URL;

@@ -48,6 +48,8 @@ const composioConfig = z
     entityId: z.string().min(1).optional(),
     entityMode: z.enum(['org', 'agent']).optional(),
     apiKeyRef: z.string().min(1).optional(),
+    /** Default: from the key (`ck_…` = consumer key → Composio Connect; otherwise a project key → developer API). */
+    keyType: z.enum(['consumer', 'project']).optional(),
     headers: headerMap.optional(),
   });
 // No server or URL is fine for Composio: Conductor then opens a session covering every connected toolkit.

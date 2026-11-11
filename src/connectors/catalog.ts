@@ -25,7 +25,7 @@ const TEMPLATES: ConnectorTemplate[] = [
   {
     id: 'composio',
     name: 'Composio',
-    description: 'Hundreds of SaaS toolkits through Composio\'s MCP endpoint, one Composio entity per org or per agent.',
+    description: 'Hundreds of SaaS apps through Composio. Paste your consumer API key (ck_…, dashboard → Sessions & API Key) for Composio Connect, or a project API key for the developer API.',
     kind: 'composio',
     category: 'toolkit',
     config: { entityMode: 'org', apiKeyRef: 'COMPOSIO_API_KEY' },
@@ -33,11 +33,13 @@ const TEMPLATES: ConnectorTemplate[] = [
     configFields: [
       {
         key: 'serverId', label: 'MCP server ID (optional)', required: false, placeholder: 'leave empty to use all your connected toolkits',
-        help: 'An MCP server you created in Composio limits agents to its toolkits and tools. Leave empty and Conductor opens a Composio session with every toolkit you have connected.',
+        help: 'Project API keys only: an MCP server you created in Composio limits agents to its toolkits and tools. Leave empty for a session with every toolkit you have connected. Ignored with a consumer key (ck_…).',
       },
     ],
-    suggestedPolicies: guarded({ '*reply*': 'ask', '*create*': 'ask' }),
-    docsUrl: 'https://docs.composio.dev/docs/single-toolkit-mcp',
+    // Composio's meta-tools run arbitrary app actions (send, delete, pay) behind one name, so name-based gates
+    // cannot see what they do: executing tools ask first until the owner relaxes them per grant.
+    suggestedPolicies: guarded({ '*reply*': 'ask', '*create*': 'ask', '*EXECUTE*': 'ask', '*BASH*': 'ask', '*WORKBENCH*': 'ask', '*MANAGE*': 'ask' }),
+    docsUrl: 'https://docs.composio.dev/docs/composio-connect',
   },
   {
     id: 'arcade',

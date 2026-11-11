@@ -83,12 +83,30 @@ describe('hosted toolkits: Composio and Arcade', () => {
     expect(api.requests[0]).toMatchObject({ path: '/api/v3.1/mcp/servers/generate', body: { mcp_server_id: 'srv_gmail', managed_auth_by_composio: true } });
   });
 
+  it('Composio consumer key (ck_…): Composio Connect with x-consumer-api-key, no developer API involved', async () => {
+    const mcp = await startHttpMcp([
+      { name: 'COMPOSIO_SEARCH_TOOLS', description: 'Find app actions', handler: (_a, h) => ({ text: `consumer=${String(h['x-consumer-api-key'])} project=${String(h['x-api-key'])}` }) },
+      { name: 'COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Run app actions' },
+    ]);
+    closers.push(mcp.close);
+    // mcpUrl stands in for https://connect.composio.dev/mcp; the key type comes from the ck_ prefix.
+    const row = await gw.installFromTemplate(org.id, 'composio', { secrets: { COMPOSIO_API_KEY: 'ck_consumer_key_123' }, config: { mcpUrl: mcp.url } }, OWNER);
+    gw.grant(org.id, row.id, agent.id, {}, OWNER);
+    expect((await gw.discoverTools(org.id, row.id)).map((t) => t.name).sort()).toEqual(['COMPOSIO_MULTI_EXECUTE_TOOL', 'COMPOSIO_SEARCH_TOOLS']);
+    expect(textOf(await gw.callTool(runCtx(k, agent), 'composio__COMPOSIO_SEARCH_TOOLS', {}))).toContain('consumer=ck_consumer_key_123 project=undefined');
+    expect(mcp.calls.at(-1)?.url).not.toContain('user_id');
+    // The execute meta-tool hides which app action runs (send, delete, pay…): it asks first by default.
+    const r = await gw.callTool(runCtx(k, agent), 'composio__COMPOSIO_MULTI_EXECUTE_TOOL', {});
+    expect(textOf(r)).toMatch(/approval/i);
+    expect(mcp.calls.some((c) => c.tool === 'COMPOSIO_MULTI_EXECUTE_TOOL')).toBe(false);
+  });
+
   it('Composio errors say what to fix: a rejected key, an unknown server', async () => {
     const mcp = await startHttpMcp([]);
     closers.push(mcp.close);
     const api = await fakeComposio(mcp.url);
-    const bad = await gw.installFromTemplate(org.id, 'composio', { name: 'composio-bad-key', secrets: { COMPOSIO_API_KEY: 'ck_wrong' }, config: { baseUrl: api.origin } }, OWNER);
-    await expect(gw.discoverTools(org.id, bad.id)).rejects.toThrow(/Composio rejected the API key \(Invalid API key: ck_\*\*7VmY\)\. Use a project API key/);
+    const bad = await gw.installFromTemplate(org.id, 'composio', { name: 'composio-bad-key', secrets: { COMPOSIO_API_KEY: 'ak_wrong_project_key' }, config: { baseUrl: api.origin } }, OWNER);
+    await expect(gw.discoverTools(org.id, bad.id)).rejects.toThrow(/Composio rejected the API key \(Invalid API key: ck_\*\*7VmY\)\. Use either your consumer API key/);
     const missing = await gw.installFromTemplate(org.id, 'composio', { name: 'composio-bad-server', secrets: { COMPOSIO_API_KEY: 'good-composio-key' }, config: { baseUrl: api.origin, serverId: 'srv_nope' } }, OWNER);
     await expect(gw.discoverTools(org.id, missing.id)).rejects.toThrow(/Composio: MCP server not found\. Check the MCP server ID/);
   });
