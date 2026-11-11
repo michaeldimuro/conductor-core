@@ -96,7 +96,7 @@ export function buildOperations(doc: Json): Operation[] {
         const where = p.in as string;
         if (where !== 'path' && where !== 'query' && where !== 'header') continue;
         const pname = p.name as string;
-        const schema = isObj(p.schema) ? { ...p.schema } : { type: 'string' };
+        const schema: Json = isObj(p.schema) ? { ...p.schema } : { type: 'string' };
         if (typeof p.description === 'string' && schema.description === undefined) schema.description = p.description;
         properties[pname] = schema;
         const isRequired = where === 'path' || p.required === true;

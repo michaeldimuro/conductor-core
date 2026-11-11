@@ -55,7 +55,8 @@ function baseUrlOf(binding: ProviderBinding): string | undefined {
 }
 
 async function callAnthropic(binding: ProviderBinding, apiKey: string, model: string, req: Request): Promise<Usage | null> {
-  const client = new Anthropic({ apiKey, baseURL: baseUrlOf(binding) });
+  // Only the org's stored key is ever used: no ambient env token.
+  const client = new Anthropic({ apiKey, authToken: null, baseURL: baseUrlOf(binding) });
   const effortRaw = binding.config?.effort;
   const effort = effortRaw === 'medium' || effortRaw === 'high' || effortRaw === 'xhigh' || effortRaw === 'max' ? effortRaw : 'low';
   const system = [req.system, req.json ? JSON_INSTRUCTION : undefined].filter((s): s is string => Boolean(s)).join('\n\n');

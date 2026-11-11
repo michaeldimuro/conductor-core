@@ -33,11 +33,11 @@ export function stem(word: string): string {
   return w;
 }
 
-/** Stemmed content words (stopwords removed). */
+/** Stemmed content words (stopwords removed); figures and identifiers are kept verbatim. */
 export function contentTokens(text: string): string[] {
   return tokenize(text)
-    .filter((t) => t.length > 1 && !STOPWORDS.has(t))
-    .map(stem);
+    .filter((t) => /\d/.test(t) || (t.length > 1 && !STOPWORDS.has(t)))
+    .map((t) => (/\d/.test(t) ? t : stem(t)));
 }
 
 /** Build a safe FTS5 MATCH expression (OR of quoted terms) from free text; null when nothing searchable. */

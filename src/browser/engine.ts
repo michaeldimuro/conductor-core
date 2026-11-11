@@ -270,7 +270,7 @@ export class BrowserEngine {
   async collectSensitiveValues(rb: RunBrowser, page: Page): Promise<void> {
     for (const frame of page.frames()) {
       try {
-        const values = await frame.evaluate<string[]>(SENSITIVE_VALUES_JS);
+        const values = await frame.evaluate(SENSITIVE_VALUES_JS);
         for (const v of values) if (typeof v === 'string' && v.length > 0) rb.secrets.add(v);
       } catch {
         /* detached or cross-process frame mid-navigation */

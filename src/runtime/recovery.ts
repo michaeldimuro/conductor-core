@@ -27,10 +27,10 @@ export function recoverInFlight(k: Kernel, d: RuntimeDeps, journal: RunJournal, 
     if (run.issueId) {
       const issue = d.work.findIssue(run.orgId, run.issueId);
       const heldLock = issue?.checkoutLock === run.id;
-      // A paused run parked its issue as blocked; put it back in play either way.
-      const wasParked = issue?.status === 'blocked' && (issue.blockedReason === 'needs_human' || heldLock);
+      // A paused run parked its issue as blocked (needs_human); put it back in play either way.
+      const wasParked = issue?.status === 'blocked' && issue.blockedReason === 'needs_human';
       if (heldLock) d.work.releaseAllForRun(run.orgId, run.id, 'todo');
-      else if (wasParked && issue) d.work.updateIssue(run.orgId, issue.id, { status: 'todo', blockedReason: null }, SYSTEM);
+      if (wasParked && issue) d.work.updateIssue(run.orgId, issue.id, { status: 'todo', blockedReason: null }, SYSTEM);
 
       if (issue && (heldLock || wasParked)) {
         if (canResume && agent?.status === 'active') {
@@ -51,6 +51,15 @@ export function recoverInFlight(k: Kernel, d: RuntimeDeps, journal: RunJournal, 
       orgId: run.orgId, actor: SYSTEM, action: 'run.recovered', entityKind: 'run', entityId: run.id, runId: run.id,
       issueId: run.issueId ?? undefined, data: { resumed: canResume, phase: run.phase },
     });
+  }
+
+  // Locks whose run is not in flight any more (e.g. the process died between checkout and journaling).
+  const orphans = k.sqlite
+    .prepare("select org_id as orgId, checkout_lock as lock from issues where checkout_lock is not null and checkout_lock not in (select id from runs where status in ('queued','running','paused'))")
+    .all() as Array<{ orgId: string; lock: string }>;
+  for (const o of orphans) {
+    d.work.releaseAllForRun(o.orgId, o.lock, 'todo');
+    released++;
   }
 
   d.browser?.recoverLeases([]);

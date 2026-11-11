@@ -21,7 +21,7 @@ const manageSchema = z.object({
   replace: z.string().max(MAX_BODY_CHARS).optional(),
   files: z.record(z.string(), z.string()).optional(),
   reason: z.string().max(1000).optional(),
-});
+}).strict();
 
 const upsertSchema = z.object({
   scope: z.enum(SCOPES),

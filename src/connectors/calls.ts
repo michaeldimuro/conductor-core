@@ -10,7 +10,7 @@ import type { AccessResolver } from './access.js';
 import { callToolDef, findToolsDef, searchTools } from './meta.js';
 import { argsPreview, escalatePolicy, isExternalRisk, isGuardedRisk, redactArgs, resultSize, toolMatchKey, wrapUntrusted } from './risk.js';
 import type { ConnectorStore } from './store.js';
-import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER, type ToolEntry } from './types.js';
+import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER } from './types.js';
 
 type CallStatus = 'ok' | 'error' | 'denied' | 'approval_pending';
 

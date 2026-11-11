@@ -94,8 +94,8 @@ function createClient(cfg: Pick<Config, 'baseURL' | 'maxRetries'>, secrets: Reco
 
 class ClaudeDriver implements ToolLoopDriver {
   readonly model: string;
-  private tools: Beta.BetaToolUnion[] = [];
-  private readonly messages: Beta.BetaMessageParam[];
+  private tools: Anthropic.Beta.BetaToolUnion[] = [];
+  private readonly messages: Anthropic.Beta.BetaMessageParam[];
 
   constructor(
     private readonly client: Anthropic,
@@ -103,7 +103,7 @@ class ClaudeDriver implements ToolLoopDriver {
     private readonly cfg: Config,
   ) {
     this.model = ctx.model ?? CLAUDE_API_DEFAULT_MODEL;
-    this.messages = [...((cfg.priorMessages ?? []) as Beta.BetaMessageParam[]), { role: 'user', content: ctx.prompt }];
+    this.messages = [...((cfg.priorMessages ?? []) as Anthropic.Beta.BetaMessageParam[]), { role: 'user', content: ctx.prompt }];
   }
 
   start(tools: McpTool[]): void {
@@ -111,7 +111,7 @@ class ClaudeDriver implements ToolLoopDriver {
     this.tools = tools.map((t) => ({
       name: t.name,
       description: t.description || t.originalName,
-      input_schema: t.inputSchema as Beta.BetaTool.InputSchema,
+      input_schema: t.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
       ...(eager ? { eager_input_streaming: true } : {}),
     }));
   }
@@ -122,7 +122,7 @@ class ClaudeDriver implements ToolLoopDriver {
       this.messages.push({ role: 'user', content: results.map((r) => this.toolResult(r)) });
     }
     const useFallback = this.cfg.refusalFallback && !this.cfg.baseURL && REFUSAL_FALLBACK_MODELS.test(this.model);
-    const params: Beta.MessageCreateParamsNonStreaming = {
+    const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
       model: this.model,
       max_tokens: this.cfg.maxTokens,
       // Render order is tools -> system -> messages: this breakpoint caches tools + system,
@@ -134,11 +134,11 @@ class ClaudeDriver implements ToolLoopDriver {
       ...(this.tools.length > 0 ? { tools: this.tools } : {}),
       messages: this.messages,
       ...(this.cfg.effort ? { output_config: { effort: this.cfg.effort } } : {}),
-      ...(this.cfg.thinking ? { thinking: this.cfg.thinking as unknown as Beta.BetaThinkingConfigParam } : {}),
+      ...(this.cfg.thinking ? { thinking: this.cfg.thinking as unknown as Anthropic.Beta.BetaThinkingConfigParam } : {}),
       ...(useFallback ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
     };
 
-    let message: Beta.BetaMessage;
+    let message: Anthropic.Beta.BetaMessage;
     try {
       message = await this.client.beta.messages.stream(params, { signal }).finalMessage();
     } catch (e) {
@@ -146,7 +146,7 @@ class ClaudeDriver implements ToolLoopDriver {
     }
 
     // Replay the assistant turn verbatim (thinking blocks included) on the next request.
-    this.messages.push({ role: 'assistant', content: message.content as unknown as Beta.BetaContentBlockParam[] });
+    this.messages.push({ role: 'assistant', content: message.content as unknown as Anthropic.Beta.BetaContentBlockParam[] });
 
     const turn: ModelTurn = {
       text: '',
@@ -195,8 +195,8 @@ class ClaudeDriver implements ToolLoopDriver {
     return turn;
   }
 
-  private toolResult(r: ToolReturn): Beta.BetaToolResultBlockParam {
-    const content: Array<Beta.BetaTextBlockParam | Beta.BetaImageBlockParam> = [];
+  private toolResult(r: ToolReturn): Anthropic.Beta.BetaToolResultBlockParam {
+    const content: Array<Anthropic.Beta.BetaTextBlockParam | Anthropic.Beta.BetaImageBlockParam> = [];
     const notes: string[] = [];
     for (const img of r.images) {
       if (VISION_TYPES.has(img.mimeType)) {

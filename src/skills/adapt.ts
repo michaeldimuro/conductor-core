@@ -52,9 +52,13 @@ const pct = (s: VersionStats): number => Math.round((s.successes / s.graded) * 1
  *  - ≥ 5 graded uses and a success rate ≥ 20 points below the previous
  *    version's (the nearest earlier version that has graded uses), or
  *  - ≥ 3 of its last 5 uses had their output edited by a human.
+ * Restored versions are never auto-reverted again.
  */
 function regression(ctx: SkillCtx, skill: Skill): { toVersion: number; reason: string; data: Record<string, unknown> } | null {
   if (skill.version < 2 || skill.status !== 'active') return null;
+  // A version that restores earlier content (a rollback or a previous auto-revert) is the known-good
+  // fallback: reverting it again would only flap back to the version that was just judged worse.
+  if (ctx.store.versions(skill.id).some((v) => v.version < skill.version && v.contentHash === skill.contentHash)) return null;
   const stats = versionStats(ctx, skill.id);
   const cur = stats.get(skill.version);
   if (cur && cur.graded >= MIN_USES) {

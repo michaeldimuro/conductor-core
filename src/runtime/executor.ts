@@ -109,37 +109,33 @@ export class RunExecutor {
       return skip('no work');
     }
 
-    const run = this.journal.create({ orgId: org.id, orgSlug: org.slug, agentId: agent.id, issueId: null, trigger: req.trigger });
+    // Checkout first (it only needs a run id) so losing every race leaves no trace.
+    const runId = this.journal.newRunId();
+    let issue: Issue | null = null;
+    let checkedOut = false;
+    if (mode === 'loop') {
+      for (const c of candidates) {
+        if (this.d.work.checkout(org.id, c.id, runId)) {
+          issue = this.d.work.getIssue(org.id, c.id);
+          checkedOut = true;
+          break;
+        }
+      }
+      if (!issue && !hasReplies && !proactive && !req.prompt) return skip('no work (nothing could be checked out)');
+    } else if (pinned) {
+      issue = pinned;
+    }
+
+    const run = this.journal.create({ id: runId, orgId: org.id, orgSlug: org.slug, agentId: agent.id, issueId: issue?.id ?? null, trigger: req.trigger });
     const entry: ActiveRun = {
-      run, org, agent, dept, issueId: null, checkedOut: false, workspacePath: '', provider: '',
+      run, org, agent, dept, issueId: issue?.id ?? null, checkedOut, workspacePath: '', provider: '',
       handle: null, secrets: [], cancelReason: null, paused: false, mode,
     };
     this.active.set(run.id, entry);
 
-    let result: SupervisedResult | null = null;
+    let result: SupervisedResult;
     let evalDir: string | null = null;
     try {
-      let issue: Issue | null = null;
-      if (mode === 'loop') {
-        this.journal.setPhase(run.id, 'checkout');
-        for (const c of candidates) {
-          if (this.d.work.checkout(org.id, c.id, run.id)) {
-            issue = this.d.work.getIssue(org.id, c.id);
-            entry.checkedOut = true;
-            break;
-          }
-        }
-        if (!issue && candidates.length > 0 && !hasReplies && !proactive && !req.prompt) {
-          // Lost every race: someone else owns the work. Move on.
-          this.finishRun(entry, null, 'no_work', started);
-          return { ...skip('no work (all candidate issues are checked out)'), runId: run.id, outcome: 'no_work' };
-        }
-      } else if (pinned) {
-        issue = pinned;
-      }
-      entry.issueId = issue?.id ?? null;
-      if (issue) this.journal.update(run.id, { issueId: issue.id });
-
       // Playbook issues expand into their steps instead of being worked directly.
       if (issue && entry.checkedOut && issue.playbookId && this.d.work.listIssues(org.id, { parentIssueId: issue.id, limit: 1 }).length === 0) {
         const children = this.d.work.runPlaybook(org.id, issue.playbookId, issue.id, { kind: 'system', id: 'runtime' });
@@ -252,8 +248,11 @@ export class RunExecutor {
       } else {
         const handle = this.supervisor.start(job, (e) => this.onEvent(entry, e));
         entry.handle = handle;
+        // A cancel can land between the decision to start and the handle existing.
+        if (entry.cancelReason) void handle.cancel(entry.cancelReason);
         if (handle.pid) this.journal.update(run.id, { pid: handle.pid });
         result = await handle.done;
+        if (entry.cancelReason && result.outcome === 'completed') result = { ...result, outcome: 'cancelled' };
       }
     } catch (err) {
       this.k.log.error({ err, runId: run.id }, 'run failed before/while executing');

@@ -8,7 +8,7 @@ import { agents, departments, memories, organizations, MEMORY_KINDS, MEMORY_SCOP
 import { errorMessage, invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { externalRefKey, externalScopeKey, resolveBackend } from './external.js';
-import { heuristicConflict } from './heuristics.js';
+import { heuristicConflict, mergeable } from './heuristics.js';
 import { deleteSetting, getSetting, setSetting, type MemoryIndex } from './indexes.js';
 import {
   blendSimilarity, byScore, CONFLICT_MIN_SIMILARITY, IDENTICAL_THRESHOLD, MERGE_THRESHOLD, REVIEW_CONFIDENCE, scoreMemory, SIMILARITY_FLOOR,
@@ -190,7 +190,7 @@ export class MemoryStore {
     };
 
     // 1. The same statement again → merge.
-    const identical = p.kind === 'episodic' ? undefined : ranked.find((x) => x.sim >= IDENTICAL_THRESHOLD);
+    const identical = p.kind === 'episodic' ? undefined : ranked.find((x) => x.sim >= IDENTICAL_THRESHOLD && mergeable(x.m.content, p.content));
     if (identical) return mergeInto(identical.m);
 
     // 2. A conflicting fact about the same entity → the new memory supersedes the old one.
@@ -204,7 +204,7 @@ export class MemoryStore {
 
     // 3. Near-duplicate (very high similarity, same scope + kind) that does not contradict → merge.
     if (superseded.length === 0 && p.kind !== 'episodic') {
-      const near = ranked.find((x) => x.sim >= MERGE_THRESHOLD);
+      const near = ranked.find((x) => x.sim >= MERGE_THRESHOLD && mergeable(x.m.content, p.content));
       if (near) return mergeInto(near.m);
     }
 

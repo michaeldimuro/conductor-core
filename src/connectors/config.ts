@@ -112,7 +112,7 @@ export function parseWith<T>(schema: z.ZodType<T>, value: unknown, what: string)
 }
 
 export function parseConfig<K extends ConnectorKind>(kind: K, config: unknown): z.infer<(typeof CONFIG_SCHEMAS)[K]> {
-  return parseWith(CONFIG_SCHEMAS[kind] as z.ZodType<z.infer<(typeof CONFIG_SCHEMAS)[K]>>, config, `${kind} config`);
+  return parseWith(CONFIG_SCHEMAS[kind] as unknown as z.ZodType<z.infer<(typeof CONFIG_SCHEMAS)[K]>>, config, `${kind} config`);
 }
 
 /** Config is stored in the DB, so it must never carry a credential-looking literal. */

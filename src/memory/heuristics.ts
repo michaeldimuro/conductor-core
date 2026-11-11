@@ -171,6 +171,20 @@ export function heuristicSkillDraft(input: { title: string; taskType?: string | 
   return { name, description, body };
 }
 
+/**
+ * Guard for merging two similar texts into one: the shorter must say nothing
+ * the longer does not (no differing figures/identifiers, almost no missing words),
+ * so "Rule 7: vendor 7 …" never swallows "Rule 8: vendor 8 …".
+ */
+export function mergeable(a: string, b: string): boolean {
+  const ta = new Set(contentTokens(a));
+  const tb = new Set(contentTokens(b));
+  const [short, long] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  const missing = [...short].filter((t) => !long.has(t));
+  if (missing.some((t) => /\d/.test(t))) return false;
+  return missing.length <= Math.floor(short.size * 0.15);
+}
+
 const NEGATIONS = new Set(['not', 'no', 'never', 'none', 'without', 'cannot', 'isn', 'doesn', 'don', 'won']);
 
 /**

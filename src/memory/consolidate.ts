@@ -7,7 +7,7 @@ import { errorMessage } from '../shared/errors.js';
 import { slugify } from '../shared/ids.js';
 import { estimateTokens } from '../shared/util.js';
 import { cosine } from './embedder.js';
-import { compactDocument } from './heuristics.js';
+import { compactDocument, mergeable } from './heuristics.js';
 import { PROFILE_TOKEN_BUDGET } from './ranking.js';
 import { roleCard, type Recall } from './recall.js';
 import { openSkillDraft, type SkillDeps } from './skill-draft.js';
@@ -71,7 +71,7 @@ export class Consolidator {
           // Episodes of different runs are history, not duplicates, unless they are the same text.
           const threshold = kind === 'episodic' ? 0.97 : DREAM_MERGE_THRESHOLD;
           const mv = vectors.get(m.rowid);
-          return mv !== undefined && cosine(kv, mv) >= threshold;
+          return mv !== undefined && cosine(kv, mv) >= threshold && mergeable(keep.content, m.content);
         });
         clusterSize.set(keep.id, 1 + dupes.length);
         if (dupes.length === 0) continue;

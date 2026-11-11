@@ -6,10 +6,10 @@ import type { Kernel } from '../contracts/kernel.js';
 import type { ToolCallContext, ToolContent, ToolResult } from '../contracts/tools.js';
 import { ConductorError, errorMessage, invalid, isConductorError } from '../shared/errors.js';
 import { resolveInside } from '../shared/paths.js';
-import { sleep, truncate } from '../shared/util.js';
+import { randomToken, sleep, truncate } from '../shared/util.js';
 import { hostOf } from './domains.js';
 import type { BrowserEngine, RunBrowser } from './engine.js';
-import { DESCRIBE_ELEMENT_JS, type ElementDescriptor } from './page-scripts.js';
+import { DESCRIBE_ELEMENT_JS, STASH_ELEMENT_JS } from './page-scripts.js';
 import type { OrgLookup } from './profiles.js';
 import { descriptorKey, looksLikeCommit, touchesSensitiveDomain, type ActionGate } from './sensitive.js';
 import { schemas, type ToolArgs, type ToolName } from './tool-defs.js';
@@ -34,7 +34,7 @@ const REF_RE = /^(?:f\d+)?e\d+$/;
 const ANSI_RE = /\u001b\[[0-9;]*m/g;
 
 export function parseArgs<K extends ToolName>(tool: K, args: unknown): ToolArgs<K> {
-  const r = (schemas[tool] as z.ZodType<ToolArgs<K>>).safeParse(args ?? {});
+  const r = (schemas[tool] as unknown as z.ZodType<ToolArgs<K>>).safeParse(args ?? {});
   if (!r.success) {
     throw invalid(`invalid arguments for ${tool}: ${r.error.issues.map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`).join('; ')}`);
   }
@@ -64,7 +64,7 @@ export function errorResult(text: string, untrusted = false): ToolResult {
 /** Page-derived output: secrets redacted, marked untrusted. */
 export async function pageResult(c: Call, value: unknown, opts: { maxChars?: number; extra?: ToolContent[] } = {}): Promise<ToolResult> {
   await c.env.engine.collectSensitiveValues(c.rb, c.page);
-  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const raw = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2);
   const text = truncate(c.env.engine.scrub(c.rb, raw), opts.maxChars ?? 100_000);
   return { content: [...(opts.extra ?? []), { type: 'text', text }], untrusted: true };
 }
@@ -128,7 +128,7 @@ export async function afterAction(c: Call, payload: Record<string, unknown>): Pr
 export async function gateElementAction(c: Call, loc: Locator, action: 'click' | 'submit'): Promise<ToolResult | null> {
   const profile = c.env.engine.profileOf(c.rb);
   if (profile.sensitiveDomains.length === 0) return null;
-  const d = await loc.evaluate<ElementDescriptor>(DESCRIBE_ELEMENT_JS);
+  const d = await loc.evaluate(DESCRIBE_ELEMENT_JS);
   if (!touchesSensitiveDomain(profile, c.page.url(), d)) return null;
   if (action === 'click' ? !looksLikeCommit(d) : !d.inForm) return null;
   const host = hostOf(c.page.url()) ?? '';
@@ -185,4 +185,31 @@ export function workspaceRelative(workspace: string, abs: string): string {
 export function safeFileName(name: string): string {
   const cleaned = basename(name.replace(/\\/g, '/')).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 120);
   return cleaned.length > 0 ? cleaned : 'download';
+}
+
+/**
+ * Run an agent-supplied script in the page. The script is only ever evaluated
+ * by the browser (never parsed or executed in the daemon): an expression is
+ * returned as is, a function is called — with the target element when one was
+ * given. Scripts that are statements rather than an expression run verbatim.
+ */
+export async function runAgentScript(page: Page, target: Locator | null, script: string): Promise<unknown> {
+  const key = `__conductor_el_${randomToken(9)}`;
+  let frame: Frame = page.mainFrame();
+  if (target) {
+    const handle = await target.elementHandle();
+    if (!handle) throw invalid('evaluate: no element matched');
+    frame = (await handle.ownerFrame()) ?? frame;
+    await handle.evaluate(STASH_ELEMENT_JS, key);
+  }
+  const arg = target ? `window[${JSON.stringify(key)}]` : '';
+  const wrapped = `(() => { const __v = (\n${script}\n); return typeof __v === 'function' ? __v(${arg}) : __v; })()`;
+  try {
+    return await frame.evaluate(wrapped);
+  } catch (e) {
+    if (!/SyntaxError/.test(errorMessage(e))) throw e;
+    return await frame.evaluate(script);
+  } finally {
+    if (target) await frame.evaluate(`delete window[${JSON.stringify(key)}]`).catch(() => {});
+  }
 }

@@ -15,11 +15,12 @@ import { CREATABLE_STATUSES, assertTransition, isClosed } from './status.js';
 /**
  * True when every issue listed in `issues.blocked_by` is done. Written against
  * the outer table name so the same text works in the checkout UPDATE and in
- * the inbox SELECT.
+ * the inbox SELECT. CROSS JOIN pins the join order (blocker ids first, then a
+ * primary-key lookup each) — left to itself the planner scans the org's issues.
  */
 export const BLOCKERS_DONE_SQL = `NOT EXISTS (
   SELECT 1 FROM json_each("issues"."blocked_by") AS j
-  JOIN issues AS b ON b.id = j.value
+  CROSS JOIN issues AS b ON b.id = j.value
   WHERE b.org_id = "issues"."org_id" AND b.status <> 'done'
 )`;
 

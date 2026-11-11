@@ -23,10 +23,15 @@ export class RunJournal {
 
   constructor(private readonly k: Kernel) {}
 
+  /** Reserve a run id (checkout needs one before the run row is worth creating). */
+  newRunId(): string {
+    return newId('run');
+  }
+
   create(input: {
-    orgId: string; orgSlug: string; agentId: string; issueId: string | null; trigger: RunTrigger;
+    id?: string; orgId: string; orgSlug: string; agentId: string; issueId: string | null; trigger: RunTrigger;
   }): Run {
-    const id = newId('run');
+    const id = input.id ?? newId('run');
     const now = this.k.clock.now();
     const transcriptRef = this.k.paths.transcript(input.orgSlug, id);
     this.k.db

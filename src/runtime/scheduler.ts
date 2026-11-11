@@ -65,8 +65,12 @@ export class Scheduler {
     this.wireEvents();
     this.syncSchedules();
     this.lastTick = this.k.clock.now();
-    this.timer = setInterval(() => void this.tick(), this.d.options?.tickMs ?? 1000);
-    this.timer.unref?.();
+    // tickMs 0 = manual ticking (tests drive `tick()` themselves).
+    const tickMs = this.d.options?.tickMs ?? 1000;
+    if (tickMs > 0) {
+      this.timer = setInterval(() => void this.tick(), tickMs);
+      this.timer.unref?.();
+    }
   }
 
   async stop(): Promise<void> {
