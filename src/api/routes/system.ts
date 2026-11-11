@@ -10,7 +10,7 @@ import { errorMessage, invalid, notFound } from '../../shared/errors.js';
 import { body, param, parse, query, resolveOrg } from '../http.js';
 import { secretRef as secretRefSchema } from '../schemas/common.js';
 import * as q from '../schemas/capabilities.js';
-import type { BindingCheck, DoctorResponse, KillSwitchResponse, Ok, SecretStatus, SettingDto, StatusResponse } from '../types.js';
+import type { BindingCheck, DoctorResponse, KillSwitchResponse, SecretStatus, SettingDto, StatusResponse } from '../types.js';
 
 const httpUrl = z.string().max(2000).refine((v) => {
   try {
@@ -186,5 +186,3 @@ export function systemRoutes(app: FastifyInstance, s: Services): void {
     return testBinding(id, body(req, q.testAdapter));
   });
 }
-
-export type { Ok };

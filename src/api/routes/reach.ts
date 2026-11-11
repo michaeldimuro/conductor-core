@@ -16,8 +16,18 @@ import type { Ok, WebhookDto } from '../types.js';
  * are referenced (`authRef` / `secretRef`) and written through `/secrets`.
  * The messaging context watches the gateways table; nothing is emitted here.
  */
-export function reachRoutes(app: FastifyInstance, s: Services): void {
+export interface GatewayControl {
+  reload(): Promise<void>;
+  mintPairingCode(gatewayId: string, ttlMs?: number): string;
+  status(): Array<{ id: string; kind: string; status: string; lastError: string | null }>;
+}
+
+/** Keys the messaging context writes into a gateway's config at runtime; edits must not drop them. */
+const RUNTIME_CONFIG_KEYS = ['state', 'pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts'];
+
+export function reachRoutes(app: FastifyInstance, s: Services, control?: GatewayControl): void {
   const { db, clock, audit } = s.kernel;
+  const reload = () => void control?.reload().catch((err) => s.kernel.log.warn({ err }, 'gateway reload failed'));
 
   /* ── Gateways (org_id NULL = serves every org) ── */
   const gatewayOf = (req: FastifyRequest): Gateway => {
@@ -42,6 +52,7 @@ export function reachRoutes(app: FastifyInstance, s: Services): void {
       status: input.status ?? 'active', createdAt: now, updatedAt: now,
     }).run();
     audit.record({ orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: id, data: { op: 'create', kind: input.kind, name: input.name } });
+    reload();
     return db.select().from(gateways).where(eq(gateways.id, id)).get();
   });
   app.get('/gateways/:gatewayId', async (req) => gatewayOf(req));
@@ -51,7 +62,10 @@ export function reachRoutes(app: FastifyInstance, s: Services): void {
     const set: Partial<typeof gateways.$inferInsert> = { updatedAt: clock.now() };
     if (patch.orgId !== undefined) set.orgId = patch.orgId ? resolveOrg(s, patch.orgId).id : null;
     if (patch.name !== undefined) set.name = patch.name;
-    if (patch.config !== undefined) set.config = patch.config;
+    if (patch.config !== undefined) {
+      const kept = Object.fromEntries(RUNTIME_CONFIG_KEYS.filter((k) => k in (row.config ?? {}) && !(k in patch.config!)).map((k) => [k, (row.config as Record<string, unknown>)[k]]));
+      set.config = { ...patch.config, ...kept };
+    }
     if (patch.authRef !== undefined) set.authRef = patch.authRef;
     if (patch.status !== undefined) {
       set.status = patch.status;
@@ -59,12 +73,21 @@ export function reachRoutes(app: FastifyInstance, s: Services): void {
     }
     db.update(gateways).set(set).where(eq(gateways.id, row.id)).run();
     audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: row.id, data: { op: 'update', fields: Object.keys(patch) } });
+    reload();
     return db.select().from(gateways).where(eq(gateways.id, row.id)).get();
   });
+  /** One-time code the owner sends to the bot from the chat they want to pair. */
+  app.post('/gateways/:gatewayId/pairing-code', async (req): Promise<{ code: string }> => {
+    const row = gatewayOf(req);
+    if (!control) throw invalid('messaging gateways are not running in this process');
+    return { code: control.mintPairingCode(row.id) };
+  });
+  app.get('/gateways-status', async () => control?.status() ?? []);
   app.delete('/gateways/:gatewayId', async (req): Promise<Ok> => {
     const row = gatewayOf(req);
     db.delete(gateways).where(eq(gateways.id, row.id)).run();
     audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: row.id, data: { op: 'delete' } });
+    reload();
     return { ok: true };
   });
 

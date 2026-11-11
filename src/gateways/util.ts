@@ -71,6 +71,21 @@ export class KeyedQueue {
   }
 }
 
+/** True when a value could break out of a single protocol line (CR, LF or NUL). */
+export function hasLineBreak(value: string): boolean {
+  return value.includes('\r') || value.includes('\n') || value.includes('\u0000');
+}
+
+/** Remove ASCII control characters (keeps printable text only). */
+export function stripControlChars(value: string): string {
+  let out = '';
+  for (const ch of value) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0x20 && code !== 0x7f) out += ch;
+  }
+  return out;
+}
+
 export function trimBaseUrl(url: string): string {
   return url.replace(/\/+$/, '');
 }
@@ -87,7 +102,8 @@ export async function httpJson(
 ): Promise<HttpJsonResult> {
   const timeout = AbortSignal.timeout(init.timeoutMs ?? 30_000);
   const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-  let res: Response;
+  let res: Response | null = null;
+  let failure = '';
   try {
     res = await fetch(url, {
       method: init.method ?? 'POST',
@@ -97,9 +113,10 @@ export async function httpJson(
     });
   } catch (err) {
     const name = err instanceof Error ? err.name : '';
-    if (name === 'AbortError' || name === 'TimeoutError') throw new Error(init.signal?.aborted ? 'request aborted' : 'request timed out');
-    throw new Error('network request failed');
+    failure = name === 'AbortError' || name === 'TimeoutError' ? (init.signal?.aborted ? 'request aborted' : 'request timed out') : 'network request failed';
   }
+  // Thrown outside the catch on purpose: the original error (and its cause chain) can carry the URL.
+  if (!res) throw new Error(failure);
   const text = await res.text();
   let json: unknown = null;
   if (text) {

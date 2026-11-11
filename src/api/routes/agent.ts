@@ -4,7 +4,7 @@ import type { Principal } from '../../contracts/services.js';
 import type { ToolCallContext } from '../../contracts/tools.js';
 import { ConductorError, conflict, forbidden } from '../../shared/errors.js';
 import { bearerToken, requirePrincipal } from '../auth.js';
-import { body, errorBody, param, toErrorResponse } from '../http.js';
+import { body, param, toErrorResponse } from '../http.js';
 import { callTool } from '../schemas/capabilities.js';
 import type { AgentMeResponse } from '../types.js';
 
@@ -84,5 +84,3 @@ export function mcpRoute(app: FastifyInstance, s: Services): void {
     },
   });
 }
-
-export { errorBody };

@@ -139,7 +139,7 @@ export const createIssue = z.strictObject({
   assigneeAgentId: idStr.nullable().optional(),
   reviewerAgentId: idStr.nullable().optional(),
   status: issueStatus.optional(),
-  priority: z.number().int().min(0).max(10).optional(),
+  priority: z.number().int().min(0).max(3).optional(),
   parentIssueId: idStr.nullable().optional(),
   blockedBy: z.array(idStr).max(200).optional(),
   labels: z.array(z.string().trim().min(1).max(100)).max(100).optional(),

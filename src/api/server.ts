@@ -12,7 +12,7 @@ import { orgRoutes } from './routes/orgs.js';
 import { workRoutes } from './routes/work.js';
 import { runRoutes } from './routes/runs.js';
 import { capabilityRoutes } from './routes/capabilities.js';
-import { reachRoutes } from './routes/reach.js';
+import { reachRoutes, type GatewayControl } from './routes/reach.js';
 import { agentRoutes, mcpRoute } from './routes/agent.js';
 import { inboundWebhookRoutes } from './webhooks/inbound.js';
 import { startOutboundWebhooks } from './webhooks/outbound.js';
@@ -21,6 +21,8 @@ import { API_PREFIX, type HealthResponse } from './types.js';
 export interface ApiServerOptions {
   /** Routes mounted by other contexts (messaging gateways) without the API knowing about them. */
   plugins?: FastifyPluginAsync[];
+  /** Live control of the messaging gateways (reload after edits, pairing codes, status). */
+  gateways?: GatewayControl;
   /** Built web UI. Default: `ui/dist` at the project root. */
   uiDir?: string;
   /** Inbound webhook deliveries accepted per hook per minute (default 120). */
@@ -85,7 +87,7 @@ export async function createApiServer(services: Services, opts: ApiServerOptions
     workRoutes(api, s);
     runRoutes(api, s);
     capabilityRoutes(api, s);
-    reachRoutes(api, s);
+    reachRoutes(api, s, opts.gateways);
     agentRoutes(api, s);
     takeoverRoutes(api, s, guard);
     events = eventSocket(api, s, { heartbeatMs: opts.wsHeartbeatMs ?? 30_000 });

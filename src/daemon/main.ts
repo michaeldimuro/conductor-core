@@ -24,11 +24,13 @@ async function serve(): Promise<void> {
   const services = await createServices({ browserHeadless: true });
   const { kernel, config } = services;
   const log = kernel.log;
+  // The CLI and first-run UI pairing authenticate with the owner token on disk (0600).
+  services.governance.tokens.ownerTokenFile();
   const pidFile = join(kernel.paths.ensure(kernel.paths.runDir), 'conductord.pid');
 
   // Messaging gateways contribute their own HTTP routes (Slack events, etc.) as a plugin.
   const gateways = await startGateways(services);
-  const api = await createApiServer(services, { plugins: [gateways.routes] });
+  const api = await createApiServer(services, { plugins: [gateways.routes], gateways });
   await api.listen(config.host, config.port);
   // Runs are only dispatched once the API (and with it the MCP gateway endpoint) is up.
   await services.runtime.start();
