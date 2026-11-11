@@ -32,6 +32,13 @@ export const importSkill = z.strictObject({
 export const skillDiffQ = z.object({ from: intQ(1, 1_000_000).optional(), to: intQ(1, 1_000_000).optional() });
 export const skillRollback = z.strictObject({ toVersion: z.number().int().min(1) });
 export const skillActivate = z.strictObject({ force: z.boolean().optional() });
+const expectList = z.array(z.string().min(1).max(2000)).max(50);
+export const addEvalCase = z.strictObject({
+  prompt: z.string().trim().min(1).max(20_000),
+  criteria: z.string().max(8000).optional(),
+  expect: z.strictObject({ contains: expectList.optional(), notContains: expectList.optional(), regex: expectList.optional(), files: expectList.optional() }).optional(),
+  issueId: idStr.nullable().optional(),
+});
 export const skillPromote = z.strictObject({ toScope: scope });
 export const skillStatusBody = z.strictObject({ status: skillStatus });
 

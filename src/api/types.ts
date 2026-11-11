@@ -9,16 +9,16 @@ import type {
 } from '../contracts/rows.js';
 import type {
   CreateOrgInput, CreateDeptInput, HireAgentInput, CreateGoalInput, CreateIssueInput, IssueFilter, OrgChartNode, CapabilityRefs,
-  OrgTemplate, OrgBundle, GoalNode, TimelineEntry, OrgService, WorkService,
+  OrgTemplate, OrgBundle, GoalNode, TimelineEntry, OrgService, WorkService, IssueArtifact,
 } from '../contracts/org-work.js';
 import type {
   AgentScorecard, BudgetService, BudgetStatus, ConnectorTemplate, GrantInput, InstallConnectorInput, MemoryWriteInput, MemoryService,
   Principal, RuntimeService, ScoredMemory, BrowserInputEvent, ConnectorGateway, SkillService, BrowserService,
-  BrowserEngineConfig, BrowserProfileSettings, ExternalBackendConfig, ExternalBackendStatus, RunSkip,
+  BrowserEngineConfig, BrowserProfileSettings, ExternalBackendConfig, ExternalBackendStatus, RunSkip, EmbedderStatus,
 } from '../contracts/services.js';
 import type { AdapterRegistry, Health as AdapterHealth, RunEvent } from '../contracts/adapter.js';
-import type { AuditLog, AuditRecord } from '../contracts/kernel.js';
-import type { ProviderBinding, SkillEvalResult } from '../contracts/types.js';
+import type { AuditLog, AuditRecord, UtilityModelStatus } from '../contracts/kernel.js';
+import type { EvalExpectations, ProviderBinding, SkillEvalCase, SkillEvalResult } from '../contracts/types.js';
 import type { ToolDef, ToolResult } from '../contracts/tools.js';
 import type { DomainEvents, EventName } from '../shared/events.js';
 
@@ -29,6 +29,7 @@ export type {
   OrgTemplate, OrgBundle, GoalNode, TimelineEntry, AgentScorecard, BudgetStatus, ConnectorTemplate, GrantInput, InstallConnectorInput,
   ScoredMemory, BrowserInputEvent, AuditRecord, ProviderBinding, SkillEvalResult, ToolDef, ToolResult, RunEvent, Principal, AdapterHealth,
   BrowserEngineConfig, BrowserProfileSettings, ExternalBackendConfig, ExternalBackendStatus, RunSkip,
+  IssueArtifact, EmbedderStatus, UtilityModelStatus, SkillEvalCase, EvalExpectations,
 };
 
 export const API_PREFIX = '/api/v1';
@@ -140,9 +141,22 @@ export interface ImportOrgRequest {
   name: string;
   bundle: OrgBundle;
 }
+/** Every kind of owner-editable config that is revisioned with rollback. */
+export const REVISION_KINDS = [
+  'org', 'dept', 'agent', 'goal', 'playbook', 'project', 'connector', 'connector_grant', 'browser_profile', 'gateway', 'webhook',
+] as const;
+export type RevisionKind = (typeof REVISION_KINDS)[number];
 export interface RollbackRevisionRequest {
   entityKind: string;
   entityId: string;
+  revision: number;
+}
+/** Result of rolling back by revision id: which entity changed and the number of the new (restoring) revision. */
+export interface RollbackResponse {
+  ok: true;
+  entityKind: string;
+  entityId: string;
+  rolledBackTo: number;
   revision: number;
 }
 /** Hire / terminate: direct for the owner; `approval` when the action was queued for the board. */
@@ -188,6 +202,8 @@ export interface AddCommentRequest {
   parentCommentId?: string | null;
   attachments?: Comment['attachments'];
 }
+/** A file in the issue's artifact folder, with where to download it from (server-relative; needs the session cookie or a bearer token). */
+export type IssueArtifactDto = IssueArtifact & { contentType: string; downloadPath: string };
 export interface ReviewRequest {
   outcome: 'accepted' | 'edited' | 'rejected';
   note?: string;
@@ -215,6 +231,14 @@ export type ImportSkillRequest = Parameters<SkillService['importSkill']>[1];
 export type SkillDetail = ReturnType<SkillService['read']>;
 export interface SkillDiffResponse {
   diff: string;
+}
+export interface AddEvalCaseRequest {
+  prompt: string;
+  /** Natural-language success criteria. */
+  criteria?: string;
+  expect?: EvalExpectations;
+  /** Issue this case replays (id or per-org number). */
+  issueId?: string | null;
 }
 export interface PromoteSkillResponse {
   skill?: Skill;
@@ -265,6 +289,17 @@ export interface GatewayStatusDto {
 export interface PairingCodeResponse {
   code: string;
 }
+/**
+ * A gateway as the API returns it. The pending pairing code's hash never
+ * leaves the daemon: `config` carries no `pairingCodeHash` / `pairingExpiresAt`
+ * / `pairingAttempts` keys; `pairingPending` and `pairingExpiresAt` say
+ * whether a code is waiting to be redeemed and until when.
+ */
+export type GatewayDto = Gateway & {
+  pairingPending: boolean;
+  /** Expiry (epoch ms) of the pending pairing code; null when none is pending. */
+  pairingExpiresAt: number | null;
+};
 export interface CreateGatewayRequest {
   orgId?: string | null;
   kind: Gateway['kind'];

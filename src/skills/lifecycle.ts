@@ -88,7 +88,19 @@ export async function activateLocked(ctx: SkillCtx, skillId: string, actor: Acto
   ctx.store.assertCanEdit(skill, actor);
   const force = opts.force === true;
   if (force && actor.kind !== 'human') throw forbidden('only a human can force-activate a skill');
-  if (skill.status === 'active') return skill;
+  if (skill.status === 'active') {
+    // Nothing to do — unless a patch is waiting: then this activates the candidate version.
+    const candidate = ctx.store.pendingCandidate(skill);
+    if (!candidate) return skill;
+    if (!force) {
+      const ev = candidate.eval;
+      const details = { skillId, candidateVersion: candidate.version };
+      if (!ev) throw policyDenied('the candidate version has not been evaluated; run evaluate first (or force-activate as the owner)', details);
+      if (ev.needsReview) throw policyDenied('the candidate\'s evaluation was inconclusive and needs human review (the owner can force-activate)', { ...details, score: ev.score, needsReview: true });
+      if (!ev.passed) throw policyDenied('the candidate did not hold up against the live version in its evaluation', { ...details, score: ev.score });
+    }
+    return ctx.writer.promoteCandidate(skill, candidate, actor, { force });
+  }
   if (skill.status === 'quarantined' && !force) throw policyDenied('skill is quarantined: a human must edit or force-activate it', { skillId });
 
   const drift = driftOf(skill);

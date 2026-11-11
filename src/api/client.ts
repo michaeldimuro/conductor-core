@@ -117,8 +117,14 @@ export class ConductorClient {
   importOrg = (input: t.ImportOrgRequest) => this.post<t.Organization>('/orgs/import', input);
   engageOrgKillSwitch = (org: string) => this.post<t.KillSwitchResponse>(`/orgs/${e(org)}/kill-switch`);
   releaseOrgKillSwitch = (org: string) => this.del<t.KillSwitchResponse>(`/orgs/${e(org)}/kill-switch`);
+  /** Revision history of any revisioned kind (`t.REVISION_KINDS`) inside an org, newest first. */
   listRevisions = (org: string, query: { entityKind: string; entityId: string }) => this.get<t.ConfigRevision[]>(`/orgs/${e(org)}/revisions`, query);
   rollbackRevision = (org: string, input: t.RollbackRevisionRequest) => this.post<t.Ok>(`/orgs/${e(org)}/revisions/rollback`, input);
+  /** A gateway's history by gateway id (gateways may serve every org). */
+  listGatewayRevisions = (gatewayId: string) => this.get<t.ConfigRevision[]>(`/gateways/${e(gatewayId)}/revisions`);
+  getRevision = (revisionId: string) => this.get<t.ConfigRevision>(`/revisions/${e(revisionId)}`);
+  /** Roll the entity back to this revision, whatever its kind. */
+  rollbackToRevision = (revisionId: string) => this.post<t.RollbackResponse>(`/revisions/${e(revisionId)}/rollback`);
   orgChart = (org: string) => this.get<t.OrgChartNode[]>(`/orgs/${e(org)}/chart`);
 
   /* ── Departments ── */
@@ -171,6 +177,10 @@ export class ConductorClient {
   listComments = (org: string, issue: string | number, query?: { since?: number }) => this.get<t.Comment[]>(`${this.issue(org, issue)}/comments`, query);
   addComment = (org: string, issue: string | number, input: t.AddCommentRequest) => this.post<t.Comment>(`${this.issue(org, issue)}/comments`, input);
   issueTimeline = (org: string, issue: string | number) => this.get<t.TimelineEntry[]>(`${this.issue(org, issue)}/timeline`);
+  /** Comment attachments and run artifacts (browser screenshots, downloads) stored for an issue, newest first. */
+  listIssueArtifacts = (org: string, issue: string | number) => this.get<t.IssueArtifactDto[]>(`${this.issue(org, issue)}/artifacts`);
+  /** Server-relative download URL of one artifact (`path` as returned by `listIssueArtifacts`). */
+  artifactPath = (org: string, issue: string | number, path: string) => `${V1}${this.issue(org, issue)}/artifacts/${path.split('/').map(e).join('/')}`;
   /** Server-relative URL of a comment attachment (a download; needs the session cookie or a bearer token). */
   attachmentPath = (org: string, issue: string | number, commentId: string, index: number) => `${V1}${this.issue(org, issue)}/comments/${e(commentId)}/attachments/${index}`;
 
@@ -209,6 +219,9 @@ export class ConductorClient {
   evaluateSkill = (org: string, skillId: string) => this.post<t.SkillEvalResult>(`${this.skill(org, skillId)}/evaluate`);
   activateSkill = (org: string, skillId: string, opts: { force?: boolean } = {}) => this.post<t.Skill>(`${this.skill(org, skillId)}/activate`, opts);
   promoteSkill = (org: string, skillId: string, toScope: t.Skill['scope']) => this.post<t.PromoteSkillResponse>(`${this.skill(org, skillId)}/promote`, { toScope });
+  listSkillEvalCases = (org: string, skillId: string) => this.get<t.SkillEvalCase[]>(`${this.skill(org, skillId)}/eval-cases`);
+  addSkillEvalCase = (org: string, skillId: string, input: t.AddEvalCaseRequest) => this.post<t.SkillEvalCase>(`${this.skill(org, skillId)}/eval-cases`, input);
+  removeSkillEvalCase = (org: string, skillId: string, caseId: string) => this.del<t.Ok>(`${this.skill(org, skillId)}/eval-cases/${e(caseId)}`);
   setSkillStatus = (org: string, skillId: string, status: t.Skill['status']) => this.put<t.Skill>(`${this.skill(org, skillId)}/status`, { status });
 
   /* ── Memory ── */
@@ -223,6 +236,10 @@ export class ConductorClient {
   getMemoryBackend = (org: string) => this.get<t.MemoryBackendResponse>(`/orgs/${e(org)}/memory-backend`);
   putMemoryBackend = (org: string, config: t.ExternalBackendConfig) => this.put<t.MemoryBackendResponse>(`/orgs/${e(org)}/memory-backend`, config);
   clearMemoryBackend = (org: string) => this.del<t.MemoryBackendResponse>(`/orgs/${e(org)}/memory-backend`);
+  /** Which embedder backs semantic memory search right now (install-wide). */
+  embedderStatus = () => this.get<t.EmbedderStatus>('/memory/embedder');
+  /** Which backend answers utility-model calls for the org, and why. */
+  utilityModelStatus = (org: string) => this.get<t.UtilityModelStatus>(`/orgs/${e(org)}/utility-model`);
   searchSessions = (org: string, query: { text: string; agentId?: string; limit?: number }) => this.get<t.SessionHit[]>(`/orgs/${e(org)}/sessions/search`, query);
 
   /* ── Connectors ── */
@@ -249,10 +266,10 @@ export class ConductorClient {
   listBrowserSessions = (org: string, query?: { status?: t.BrowserSession['status'] }) => this.get<t.BrowserSessionDto[]>(`/orgs/${e(org)}/browser/sessions`, query);
 
   /* ── Gateways / webhooks ── */
-  listGateways = (query?: { orgId?: string }) => this.get<t.Gateway[]>('/gateways', query);
-  createGateway = (input: t.CreateGatewayRequest) => this.post<t.Gateway>('/gateways', input);
-  getGateway = (gatewayId: string) => this.get<t.Gateway>(`/gateways/${e(gatewayId)}`);
-  updateGateway = (gatewayId: string, patch: t.UpdateGatewayRequest) => this.patch<t.Gateway>(`/gateways/${e(gatewayId)}`, patch);
+  listGateways = (query?: { orgId?: string }) => this.get<t.GatewayDto[]>('/gateways', query);
+  createGateway = (input: t.CreateGatewayRequest) => this.post<t.GatewayDto>('/gateways', input);
+  getGateway = (gatewayId: string) => this.get<t.GatewayDto>(`/gateways/${e(gatewayId)}`);
+  updateGateway = (gatewayId: string, patch: t.UpdateGatewayRequest) => this.patch<t.GatewayDto>(`/gateways/${e(gatewayId)}`, patch);
   deleteGateway = (gatewayId: string) => this.del<t.Ok>(`/gateways/${e(gatewayId)}`);
   gatewayPairingCode = (gatewayId: string) => this.post<t.PairingCodeResponse>(`/gateways/${e(gatewayId)}/pairing-code`, {});
   gatewayStatus = () => this.get<t.GatewayStatusDto[]>('/gateways-status');

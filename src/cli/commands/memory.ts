@@ -37,6 +37,32 @@ export function memoryCommands(program: Command, deps: CliDeps): void {
   const memory = program.command('memory').description('what agents have learned: search, review, correct and forget');
 
   memory
+    .command('embedder')
+    .description('which embedding model backs semantic memory search, and why')
+    .action(action(deps, async (ctx) => {
+      const e = await ctx.client().embedderStatus();
+      ctx.emit(e, () => {
+        ctx.fields([
+          ['provider', e.provider], ['model', e.id], ['dimensions', e.dims], ['semantic search', e.semantic ? 'yes' : 'no (lexical hash embedder)'],
+          ['mode', e.mode], ['key', e.authRef], ['why', e.reason],
+        ]);
+        if (!e.semantic) ctx.note(ctx.style.dim('for real embeddings: conductor secret set <ref>, then conductor config set embeddings.provider openai'));
+        else if (e.mode !== 'auto') ctx.note(ctx.style.dim('back to automatic selection: conductor config set embeddings.provider'));
+      });
+    }));
+
+  memory
+    .command('utility-model')
+    .description('which model does the background work (summaries, memory extraction, skill judging), and why')
+    .action(action(deps, async (ctx) => {
+      const u = await ctx.client().utilityModelStatus(await ctx.org());
+      ctx.emit(u, () => ctx.fields([
+        ['backend', u.backend], ['model', u.model], ['billing', u.backend === 'offline' ? null : u.subscription ? 'subscription (CLI login)' : 'metered API'],
+        ['local calls today', u.localCalls ? `${u.localCalls.today} of ${u.localCalls.dailyCap}` : null], ['why', u.reason],
+      ]));
+    }));
+
+  memory
     .command('search <query...>')
     .description('hybrid search over memories (scoped to what an agent can see with --agent)')
     .option('--agent <agent>', 'search as this agent: its own, its department\'s and the org\'s memories')

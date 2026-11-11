@@ -1,0 +1,17 @@
+#!/bin/sh
+# Installed by the Conductor package (@VERSION@). Runs `@COMMAND@` from @LIB_DIR@.
+LIB='@LIB_DIR@'
+if [ -x "$LIB/libexec/node" ]; then
+  NODE="$LIB/libexec/node"
+else
+  NODE="$(command -v node 2>/dev/null)"
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
+    [ -n "$NODE" ] && break
+    [ -x "$candidate" ] && NODE="$candidate"
+  done
+fi
+if [ -z "$NODE" ]; then
+  echo "@COMMAND@: Node.js @NODE_RANGE@ is required, but no \`node\` was found on PATH." >&2
+  exit 127
+fi
+exec "$NODE" "$LIB/bin/@COMMAND@.mjs" "$@"

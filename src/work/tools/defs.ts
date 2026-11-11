@@ -232,6 +232,18 @@ export const TOOL_SPECS = {
       reason: z.string().trim().min(1).max(2000).describe('Why — the owner reads this when deciding.'),
     }),
   }),
+  propose_skill_grant: spec({
+    description:
+      'Propose giving a skill to yourself, one of your reports, a department in your reporting line (shared by its agents) or the whole organization. While the organization gates skill grants this creates a board approval; the skill is granted only if the owner approves.',
+    risk: 'write',
+    minAutonomy: AUTONOMY.LEAD,
+    schema: z.strictObject({
+      skill: z.string().trim().min(1).max(300).describe('Skill name.'),
+      scope: z.enum(['agent', 'dept', 'org']).default('agent').describe('Who gets it: one agent, a department (shared skills) or every agent (org default skills).'),
+      target: z.string().min(1).max(200).optional().describe('Agent id/slug or department id. Default: you (agent) or your department (dept). Not used for org.'),
+      reason: z.string().trim().min(1).max(2000).describe('Why — the owner reads this when deciding.'),
+    }),
+  }),
   reassign: spec({
     description: 'Move an issue to another agent (or unassign it), within your reporting line.',
     risk: 'write',

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Put `conductor` and `conductord` on PATH. They are small real files, not symlinks:
+# `conductor install` only ever replaces a /usr/local/bin/conductord symlink it made itself.
+# This script does not load, start or restart any launchd job; `conductor install` does that, as the user.
+set -eu
+LIB="$2"
+BIN="$(dirname "$(dirname "$LIB")")/bin"
+mkdir -p "$BIN"
+for name in conductor conductord; do
+  rm -f "$BIN/$name"
+  install -m 755 "$LIB/libexec/$name" "$BIN/$name"
+done
+exit 0

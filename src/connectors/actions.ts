@@ -1,10 +1,12 @@
+import { isPayment, nameWords, type PaymentEvidence } from './payment.js';
+
 /**
  * What a tool call *does*, as far as the gateway can tell from its name and
  * arguments. Categories drive the default approval gates (payment, first send
  * to a new recipient, publish) and decide which calls are escalated after a
- * run has read untrusted content. Upstream tools only give us a name, so the
- * classification is deliberately conservative: a miss falls back to the
- * tool's configured policy, a false hit costs one approval.
+ * run has read untrusted content. The classification is deliberately
+ * conservative: a miss falls back to the tool's configured policy, a false
+ * hit costs one approval.
  */
 export type ActionCategory =
   /** Pay, purchase, charge, refund, place an order. */
@@ -25,14 +27,7 @@ export type ActionCategory =
   | 'write'
   | 'other';
 
-/** Split snake/kebab/dot/camelCase tool names into lowercase words. */
-export function nameWords(name: string): string[] {
-  return name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-}
+export { nameWords };
 
 const PAY_VERBS = new Set(['pay', 'purchase', 'buy', 'charge', 'refund', 'donate']);
 const PAY_NOUNS = new Set(['payment', 'payout', 'checkout']);
@@ -54,11 +49,18 @@ const any = (words: string[], set: Set<string>): boolean => words.some((w) => se
 /**
  * Category of a tool from its (unqualified) name. `builtin` tools are
  * Conductor's own servers, where page-interaction verbs are recognised; for an
- * upstream tool the same words are just a generic write.
+ * upstream tool the same words are just a generic write. For upstream tools
+ * the optional evidence (description, annotations, call arguments) widens
+ * payment detection — see `payment.ts`.
  */
-export function classifyAction(toolName: string, opts: { builtin?: boolean } = {}): ActionCategory {
+export function classifyAction(toolName: string, opts: { builtin?: boolean } & PaymentEvidence = {}): ActionCategory {
   const words = nameWords(toolName);
-  if (any(words, PAY_VERBS) || (any(words, PAY_NOUNS) && any(words, COMMIT_VERBS)) || (words.includes('order') && words.includes('place'))) return 'payment';
+  // Conductor's own servers are named by us: their names alone are authoritative. For an upstream
+  // tool the payment classifier also weighs its description, annotations and the arguments.
+  const payment = opts.builtin
+    ? any(words, PAY_VERBS) || (any(words, PAY_NOUNS) && any(words, COMMIT_VERBS)) || (words.includes('order') && words.includes('place'))
+    : isPayment(toolName, opts);
+  if (payment) return 'payment';
   if (any(words, EXEC_WORDS) || (opts.builtin && any(words, BUILTIN_EXEC_WORDS))) return 'exec';
   if (any(words, DESTRUCTIVE_WORDS)) return 'destructive';
   if (any(words, SEND_VERBS) || (words.includes('post') && any(words, MESSAGE_NOUNS))) return 'send';
@@ -127,37 +129,64 @@ export function extractAmountUsd(args: unknown, depth = 0): number | null {
 const RECIPIENT_KEYS = new Set([
   'to', 'cc', 'bcc', 'recipient', 'recipients', 'recipientemail', 'toemail', 'toaddress', 'email', 'emails', 'emailaddress',
   'phone', 'phonenumber', 'tonumber', 'channel', 'channelid', 'chatid', 'userid', 'user', 'username', 'handle',
+  // Variants seen across toolkits (Graph, Twilio, Slack, Discord, iMessage, WhatsApp, …).
+  'tos', 'toaddresses', 'toemails', 'torecipients', 'ccrecipients', 'bccrecipients', 'recipientid', 'recipientids', 'recipientaddress',
+  'recipientphone', 'recipientnumber', 'receiver', 'receiverid', 'receivers', 'destination', 'destinationnumber', 'destinationaddress', 'addressee',
+  'address', 'addresses', 'emailaddresses', 'mailto', 'phones', 'phonenumbers', 'number', 'msisdn', 'mobile', 'channelname', 'channels',
+  'conversation', 'conversationid', 'thread', 'threadid', 'threadts', 'room', 'roomid', 'group', 'groupid', 'chat', 'chatguid', 'contact', 'contactid',
+  'contacts', 'users', 'userids', 'usernames', 'handles', 'jid', 'peer', 'peerid', 'target', 'targetid', 'inreplyto', 'replytomessageid', 'parentmessageid',
 ]);
+/** Who the message is *from*: never a recipient, and nothing below it is searched. */
+const SENDER_KEYS = new Set(['from', 'fromemail', 'fromaddress', 'fromnumber', 'sender', 'senderid', 'author', 'replyto', 'me', 'self', 'account', 'accountid']);
+const RECIPIENT_KEY_RE = /^(to|cc|bcc)(email|emails|address|addresses|recipients?|numbers?|phones?|users?|userids?|ids?)$|recipient/;
+const isRecipientKey = (k: string): boolean => RECIPIENT_KEYS.has(k) || RECIPIENT_KEY_RE.test(k);
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+/i;
 const MAX_RECIPIENTS = 50;
+/** Fields of one entry of a recipient list: `{ email }`, `{ emailAddress: { address } }`, `{ id }`, … */
+const ENTRY_KEYS = ['email', 'emailaddress', 'address', 'phone', 'phonenumber', 'number', 'id', 'userid', 'handle', 'username'];
 
 function recipientStrings(value: unknown, depth = 0): string[] {
   if (typeof value === 'number' && Number.isFinite(value)) return [String(value)];
   if (typeof value === 'string') return value.split(/[,;\n]/).map((s) => s.trim()).filter((s) => s.length > 0 && s.length <= 320);
-  if (depth > 2 || value === null || typeof value !== 'object') return [];
+  if (depth > 3 || value === null || typeof value !== 'object') return [];
   if (Array.isArray(value)) return value.slice(0, MAX_RECIPIENTS).flatMap((v) => recipientStrings(v, depth + 1));
-  // { email: … } / { address: … } / { id: … } entries of a recipient list.
-  const o = value as Record<string, unknown>;
-  for (const k of ['email', 'address', 'phone', 'number', 'id']) if (o[k] !== undefined) return recipientStrings(o[k], depth + 1);
+  const o = new Map(Object.entries(value as Record<string, unknown>).map(([k, v]) => [norm(k), v]));
+  for (const k of ENTRY_KEYS) if (o.get(k) !== undefined && o.get(k) !== null) return recipientStrings(o.get(k), depth + 1);
   return [];
 }
 
 /**
  * Who a send-type call addresses, as stable keys for the known-recipient
  * list: a bare lowercase address for email (shared across connectors), and
- * `<server>:<id>` for everything else (channels, phone numbers, handles).
- * Empty when the arguments name nobody.
+ * `<server>:<id>` for everything else (channels, phone numbers, handles,
+ * threads). Recipient fields are looked for under their common names at the
+ * top level and inside nested objects (`{ message: { toRecipients: […] } }`).
+ * Empty when the arguments name nobody the gateway can recognise — the caller
+ * must then treat the recipient as unknown, not as absent.
  */
 export function extractRecipients(args: Record<string, unknown>, serverName: string): string[] {
   const out = new Set<string>();
-  for (const [key, value] of Object.entries(args)) {
-    if (!RECIPIENT_KEYS.has(norm(key))) continue;
-    for (const raw of recipientStrings(value)) {
-      const email = EMAIL_RE.exec(raw)?.[0];
-      out.add(email ? email.toLowerCase() : `${serverName}:${raw.toLowerCase()}`.slice(0, 500));
-      if (out.size >= MAX_RECIPIENTS) return [...out];
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > 4 || value === null || typeof value !== 'object' || out.size >= MAX_RECIPIENTS) return;
+    if (Array.isArray(value)) {
+      for (const v of value.slice(0, MAX_RECIPIENTS)) walk(v, depth + 1);
+      return;
     }
-  }
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      const k = norm(key);
+      if (SENDER_KEYS.has(k)) continue;
+      if (!isRecipientKey(k)) {
+        walk(v, depth + 1);
+        continue;
+      }
+      for (const raw of recipientStrings(v)) {
+        const email = EMAIL_RE.exec(raw)?.[0];
+        out.add(email ? email.toLowerCase() : `${serverName}:${raw.toLowerCase()}`.slice(0, 500));
+        if (out.size >= MAX_RECIPIENTS) return;
+      }
+    }
+  };
+  walk(args, 0);
   return [...out];
 }
 

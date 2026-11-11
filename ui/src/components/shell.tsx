@@ -80,9 +80,11 @@ function KillSwitch({ status, org }: { status: StatusResponse; org: Organization
   const label = globalStopped ? 'All runs stopped' : orgStopped ? `${org?.name} stopped` : 'Kill switch';
   return (
     <>
-      <button type="button" className={`strip-btn${globalStopped || orgStopped ? ' strip-btn-stop' : ''}`} onClick={() => setOpen(true)}>
+      <button type="button" className={`strip-btn${globalStopped || orgStopped ? ' strip-btn-stop' : ''}`} aria-label={label} onClick={() => setOpen(true)}>
         <Lamp tone={globalStopped || orgStopped ? 'stop' : 'idle'} />
         <span>{label}</span>
+        {/* Narrow screens hide the full label; a bare lamp does not say what the button is. */}
+        {globalStopped || orgStopped ? null : <span className="strip-btn-short">Stop</span>}
       </button>
       <Modal open={open} onClose={() => setOpen(false)} title="Kill switch">
         <div className="stack">

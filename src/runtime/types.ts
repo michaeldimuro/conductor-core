@@ -76,6 +76,8 @@ export interface RunRequest {
   resumeSessionId?: string;
   /** Planning wake: decompose this goal into issues instead of working the inbox. */
   goalId?: string | null;
+  /** Approvals this agent requested that were decided or expired: the run is told each outcome and retries or changes course. */
+  approvalIds?: string[];
   /** eval mode: the exact skill set to expose. */
   evalSkills?: ResolvedSkillRef[];
 }

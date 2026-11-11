@@ -10,7 +10,9 @@
     "lint": "eslint --config config/eslint.config.mjs src tests",
     "db:generate": "drizzle-kit generate --config config/drizzle.config.ts",
     "dev": "tsx src/daemon/main.ts --serve",
-    "dev:ui": "vite --config ui/vite.config.ts"
+    "dev:ui": "vite --config ui/vite.config.ts",
+    "package:pkg": "node scripts/build-pkg.mjs",
+    "package:formula": "node scripts/build-formula.mjs"
   },
   "license": "UNLICENSED",
   "type": "module",
@@ -69,6 +71,7 @@
   "files": [
     "bin",
     "dist",
+    "ui/dist",
     "examples"
   ]
 }

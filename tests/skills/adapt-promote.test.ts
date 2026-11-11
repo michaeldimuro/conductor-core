@@ -20,6 +20,11 @@ describe('skills: adapt, retire and promote', () => {
   const agentActor = (a: Agent, runId?: string) => ({ kind: 'agent' as const, id: a.id, runId });
   const activeOwn = (name = 'stripe-export', owner = ada): Promise<Skill> =>
     h.svc.manage({ orgId: org.id, agentId: owner.id, runId: 'run_c' }, { action: 'create', name, description: `${name} skill`, body: BODY }).then((s) => h.svc.activate(s.id, OWNER, { force: true }));
+  /** An agent patch of a live skill is a candidate; the owner force-activates it so the new version is in use. */
+  const patchLive = async (name: string, body: string, runId?: string, owner = ada): Promise<Skill> => {
+    const live = await h.svc.manage({ orgId: org.id, agentId: owner.id, runId }, { action: 'patch', name, body });
+    return h.svc.activate(live.id, OWNER, { force: true });
+  };
   const use = (skill: Skill, n: number, outcome: { success: boolean | null; humanEdited?: boolean }) =>
     Array.from({ length: n }).reduce<Promise<void>>(
       (p, _x, i) => p.then(() => h.svc.recordUsage({ orgId: org.id, runId: `run_${k.clock.now()}_${i}`, agentId: ada.id, skillIds: [skill.id], costUsd: 0.01, steps: 3, ...outcome })),
@@ -44,7 +49,7 @@ describe('skills: adapt, retire and promote', () => {
     const v1 = await activeOwn();
     await use(v1, 5, { success: true });
     expect(h.svc.get(v1.id)).toMatchObject({ useCount: 5, successCount: 5, lastUsedAt: k.clock.now() });
-    const v2 = await h.svc.manage({ orgId: org.id, agentId: ada.id, runId: 'run_p' }, { action: 'patch', name: v1.name, body: 'A worse procedure.' });
+    const v2 = await patchLive(v1.name, 'A worse procedure.', 'run_p');
     expect(v2).toMatchObject({ version: 2, status: 'active' });
 
     await use(v2, 3, { success: true });
@@ -73,7 +78,7 @@ describe('skills: adapt, retire and promote', () => {
     const v1 = await activeOwn();
     await use(v1, 4, { success: true });
     await use(v1, 1, { success: false }); // 80%
-    const v2 = await h.svc.manage({ orgId: org.id, agentId: ada.id }, { action: 'patch', name: v1.name, body: 'Slightly different.' });
+    const v2 = await patchLive(v1.name, 'Slightly different.');
     await use(v2, 3, { success: true });
     await use(v2, 1, { success: false });
     await use(v2, 1, { success: true }); // 4/5 = 80% vs 80% before
@@ -85,7 +90,7 @@ describe('skills: adapt, retire and promote', () => {
     const other = await activeOwn('weekly-report');
     await use(other, 5, { success: true, humanEdited: true }); // version 1 has nothing to fall back to
     expect(h.svc.get(other.id).version).toBe(1);
-    const o2 = await h.svc.manage({ orgId: org.id, agentId: ada.id }, { action: 'patch', name: 'weekly-report', body: 'New template.' });
+    const o2 = await patchLive('weekly-report', 'New template.');
     await use(o2, 4, { success: true }); // 100% success, 80% before → no regression
     expect(h.svc.get(other.id).version).toBe(2);
     await use(o2, 2, { success: true, humanEdited: true });
@@ -143,7 +148,7 @@ describe('skills: adapt, retire and promote', () => {
     expect(k.audit.query({ action: 'skill.promoted', entityId: skill.id })[0]?.data).toMatchObject({ fromScope: 'agent', toScope: 'dept', toSkillId: dept?.id });
 
     // promoting again after a patch updates the department copy as a new version
-    await h.svc.manage({ orgId: org.id, agentId: ada.id }, { action: 'patch', name: 'stripe-export', body: 'Improved.' });
+    await patchLive('stripe-export', 'Improved.');
     const again = await h.svc.promote(skill.id, 'dept', OWNER);
     expect(again.skill).toMatchObject({ id: dept?.id, version: 2, status: 'active' });
     expect(h.svc.loadBody(org.id, lena.id, 'stripe-export')).toBe('Improved.\n');
@@ -187,7 +192,7 @@ describe('skills: adapt, retire and promote', () => {
 
     // an approval is bound to the content that was reviewed
     const stale = await h.svc.promote(skill.id, 'global', agentActor(ada));
-    await h.svc.manage({ orgId: org.id, agentId: ada.id }, { action: 'patch', name: 'stripe-export', body: 'Changed after the request.' });
+    await patchLive('stripe-export', 'Changed after the request.');
     h.approvals.decide(org.id, stale.approval!.id, 'approved', OWNER);
     await h.svc.diff(skill.id, 0, 1);
     expect(h.svc.list({ orgId: null })).toEqual([]);

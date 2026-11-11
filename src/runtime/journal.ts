@@ -12,6 +12,9 @@ import { redact, truncate } from '../shared/util.js';
 
 const MAX_EVENT_CHARS = 20_000;
 
+/** Status event a run journals when it continues the journaled session of an earlier run: `<marker><run id>`. */
+export const RESUMED_FROM = 'resumed journaled session of run ';
+
 /**
  * The run journal. Every status transition is a durable write, so a daemon
  * restart can tell exactly which runs were in flight. Events are indexed in
@@ -106,6 +109,35 @@ export class RunJournal {
       .orderBy(asc(runEvents.seq))
       .all()
       .map((r) => ({ seq: r.seq, ts: r.ts, event: r.payload as RunEvent }));
+  }
+
+  /**
+   * The whole journaled session a run belongs to, oldest first: its own events
+   * preceded by those of every earlier interrupted run it resumed (found
+   * through the `RESUMED_FROM` marker each resumed run journals). A run that
+   * crashes twice therefore still resumes with everything since the start.
+   * Only runs of the same agent on the same issue are chained.
+   */
+  sessionEvents(orgId: string, runId: string, maxRuns = 20): RunEvent[] {
+    const head = this.get(orgId, runId);
+    const chain: RunEvent[][] = [];
+    const seen = new Set<string>();
+    let current: string | null = runId;
+    while (current && !seen.has(current) && seen.size < maxRuns) {
+      seen.add(current);
+      const run: Run | undefined = this.k.db.select().from(runs).where(and(eq(runs.id, current), eq(runs.orgId, orgId))).get();
+      if (!run || run.agentId !== head.agentId || run.issueId !== head.issueId) break;
+      const events: RunEvent[] = this.events(orgId, current).map((e) => e.event);
+      chain.unshift(events);
+      current = null;
+      for (const e of events) {
+        if (e.type === 'status' && e.status.startsWith(RESUMED_FROM)) {
+          current = e.status.slice(RESUMED_FROM.length).trim() || null;
+          break;
+        }
+      }
+    }
+    return chain.flat();
   }
 
   finish(runId: string, patch: Partial<typeof runs.$inferInsert> & { status: RunStatus; outcome: string }): void {

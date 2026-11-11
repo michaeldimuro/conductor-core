@@ -42,7 +42,7 @@ describe('conductor-tasks tool provider', () => {
       [
         'inbox', 'get_issue', 'search_issues', 'create_issue', 'update_issue', 'comment', 'delegate', 'escalate',
         'report_progress', 'review_issue', 'list_goals', 'create_goal', 'list_team', 'propose_hire', 'reassign',
-        'request_approval', 'run_playbook', 'list_playbooks', 'propose_termination', 'propose_budget_change',
+        'request_approval', 'run_playbook', 'list_playbooks', 'propose_termination', 'propose_budget_change', 'propose_skill_grant',
       ].sort(),
     );
     const reads = ['inbox', 'get_issue', 'search_issues', 'list_goals', 'list_team', 'list_playbooks'];
@@ -329,6 +329,43 @@ describe('conductor-tasks tool provider', () => {
     );
     expect(errorOf(await provider.call(toolCtx(f.lead), 'propose_hire', { name: 'Sam', role: 'SRE', reportsTo: 'ghost' }))).toMatch(/not_found/);
     expect(errorOf(await provider.call(toolCtx(f.lead), 'propose_hire', { name: 'Sam' }))).toMatch(/validation.*role/);
+  });
+
+  it('propose_skill_grant goes through the Org context\'s grant_skill gate as the agent', async () => {
+    const proposeSkillGrant = vi.fn<NonNullable<OrgService['proposeSkillGrant']>>((orgId, input) => (input.skill === 'already-there'
+      ? { agent: { ...f.dev, skills: ['already-there'] } }
+      : { approval: fakeApproval({ orgId, kind: 'grant_skill', title: `Grant skill "${input.skill}"`, requesterAgentId: f.lead.id }) }));
+    const gated = Object.assign(Object.create(org) as OrgService, { proposeSkillGrant });
+    const provider = createTasksToolProvider(k, { work, org: gated, approvals });
+    const asLead = toolCtx(f.lead, { runId: 'run_g' });
+    const actor = { kind: 'agent', id: f.lead.id, runId: 'run_g' };
+
+    const res = payloadOf<{ approval: { kind: string; status: string }; note: string }>(
+      await provider.call(asLead, 'propose_skill_grant', { skill: 'release-notes', target: 'dev', reason: 'Dev owns the changelog; key sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345' }),
+    );
+    expect(res.approval).toMatchObject({ kind: 'grant_skill', status: 'pending' });
+    expect(res.note).toMatch(/only if the owner approves/);
+    expect(proposeSkillGrant).toHaveBeenLastCalledWith(f.org.id, { scope: 'agent', id: f.dev.id, skill: 'release-notes', reason: expect.stringContaining('[REDACTED]') }, actor);
+    expect(JSON.stringify(proposeSkillGrant.mock.calls)).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    // Defaults: the caller itself, its own department, or the whole org.
+    await provider.call(asLead, 'propose_skill_grant', { skill: 'x', reason: 'r' });
+    expect(proposeSkillGrant).toHaveBeenLastCalledWith(f.org.id, expect.objectContaining({ scope: 'agent', id: f.lead.id }), actor);
+    await provider.call(asLead, 'propose_skill_grant', { skill: 'x', scope: 'dept', reason: 'r' });
+    expect(proposeSkillGrant).toHaveBeenLastCalledWith(f.org.id, expect.objectContaining({ scope: 'dept', id: f.eng.id }), actor);
+    await provider.call(asLead, 'propose_skill_grant', { skill: 'x', scope: 'org', reason: 'r' });
+    expect(proposeSkillGrant).toHaveBeenLastCalledWith(f.org.id, expect.objectContaining({ scope: 'org', id: undefined }), actor);
+    // An ungated (or already present) grant reports the result instead of an approval.
+    const direct = payloadOf<{ granted: boolean; agent: { skills: string[] } }>(await provider.call(asLead, 'propose_skill_grant', { skill: 'already-there', target: 'dev', reason: 'r' }));
+    expect(direct).toMatchObject({ granted: true, agent: { skills: ['already-there'] } });
+
+    expect(errorOf(await provider.call(asLead, 'propose_skill_grant', { skill: 'x' }))).toMatch(/validation.*reason/);
+    expect(errorOf(await provider.call(asLead, 'propose_skill_grant', { skill: 'x', target: 'ghost', reason: 'r' }))).toMatch(/not_found/);
+    const calls = proposeSkillGrant.mock.calls.length;
+    expect(errorOf(await provider.call(toolCtx(f.dev), 'propose_skill_grant', { skill: 'x', reason: 'r' }))).toMatch(/forbidden.*autonomy level 3/);
+    expect(proposeSkillGrant).toHaveBeenCalledTimes(calls);
+    // An Org context without the operation says so instead of failing obscurely.
+    const without = createTasksToolProvider(k, { work, org: Object.assign(Object.create(org) as OrgService, { proposeSkillGrant: undefined }), approvals });
+    expect(errorOf(await without.call(asLead, 'propose_skill_grant', { skill: 'x', reason: 'r' }))).toMatch(/unavailable/);
   });
 
   it('propose_termination and propose_budget_change go through the Org context\'s gated actions as the agent', async () => {

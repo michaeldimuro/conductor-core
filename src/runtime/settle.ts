@@ -3,6 +3,7 @@ import type { Agent } from '../contracts/rows.js';
 import { SYSTEM, type Actor } from '../contracts/types.js';
 import { truncate } from '../shared/util.js';
 import type { RunJournal } from './journal.js';
+import { parkForApprovals, unresolvedApprovals } from './approval-wake.js';
 import type { RuntimeDeps } from './types.js';
 
 const RUNTIME: Actor = { kind: 'system', id: 'runtime' };
@@ -21,7 +22,8 @@ export interface SettleInput {
  * Step 7 of the heartbeat loop — "Report". Always releases the checkout lock.
  * If the agent already reported through conductor-tasks (status moved off
  * in_progress) we only release. Otherwise the runtime posts the result and
- * picks the next status from the run outcome.
+ * picks the next status from the run outcome — except that a run which ended
+ * with an approval it asked for still unresolved parks the issue instead.
  */
 export function settleIssue(k: Kernel, d: RuntimeDeps, journal: RunJournal, s: SettleInput): void {
   const { work } = d;
@@ -46,6 +48,12 @@ export function settleIssue(k: Kernel, d: RuntimeDeps, journal: RunJournal, s: S
     if (openChildren.length > 0) {
       // Delegated: park until the children finish (the scheduler wakes the parent).
       work.release(s.orgId, s.issueId, s.runId, { status: 'blocked', blockedReason: 'waiting_on_children' });
+      return;
+    }
+    // An action this work needs is still with the board: the issue is not finished, whatever the run said.
+    const waiting = unresolvedApprovals(k, s.orgId, s.issueId, s.agent.id, s.runId);
+    if (waiting.length > 0) {
+      parkForApprovals(k, d, { orgId: s.orgId, issueId: s.issueId, runId: s.runId, agentId: s.agent.id }, waiting);
       return;
     }
     const needsReview = issue.reviewerAgentId !== null || s.agent.autonomyLevel < 2;

@@ -12,6 +12,8 @@ export interface Wake {
   resumeSessionId?: string;
   /** Planning wake: decompose this goal into issues. */
   goalId?: string | null;
+  /** Approvals this agent requested that were decided or expired; the run is told the outcome of each. */
+  approvalIds?: string[];
 }
 
 export type JobPayload = Record<string, unknown>;
@@ -35,6 +37,8 @@ function toWake(raw: unknown): Wake | null {
   if (prompt) wake.prompt = prompt;
   if (resumeSessionId) wake.resumeSessionId = resumeSessionId;
   if (goalId) wake.goalId = goalId;
+  const approvalIds = Array.isArray(r.approvalIds) ? r.approvalIds.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
+  if (approvalIds.length > 0) wake.approvalIds = [...new Set(approvalIds)];
   return wake;
 }
 
@@ -50,7 +54,11 @@ export const deferralsOf = (payload: JobPayload): number => (typeof payload.defe
 /** A nudge only says "look at your inbox" (optionally "start with this issue"); it carries nothing that could be lost by folding. */
 export const isNudge = (w: Wake): boolean => !w.prompt && !w.goalId && !w.resumeSessionId;
 
-const key = (w: Wake): string => JSON.stringify([w.trigger, w.issueId ?? null, w.triggerNote ?? null, w.prompt ?? null, w.resumeSessionId ?? null, w.goalId ?? null]);
+/** A nudge that can be dropped under pressure: it tells the agent nothing the inbox will not. */
+const isDroppable = (w: Wake): boolean => isNudge(w) && !w.approvalIds?.length;
+
+const key = (w: Wake): string =>
+  JSON.stringify([w.trigger, w.issueId ?? null, w.triggerNote ?? null, w.prompt ?? null, w.resumeSessionId ?? null, w.goalId ?? null, w.approvalIds ?? null]);
 
 function compact(wakes: Wake[]): Wake[] {
   const seen = new Set<string>();
@@ -63,7 +71,7 @@ function compact(wakes: Wake[]): Wake[] {
   if (out.length > MAX_QUEUED_WAKES) {
     // Dropping a nudge loses nothing while another wake remains: the next run reads the whole inbox.
     let excess = out.length - MAX_QUEUED_WAKES;
-    out = out.filter((w) => !(excess > 0 && isNudge(w) && excess--));
+    out = out.filter((w) => !(excess > 0 && isDroppable(w) && excess--));
   }
   return out.slice(-MAX_QUEUED_WAKES);
 }
@@ -86,7 +94,8 @@ export function mergeWakePayloads(existing: JobPayload, incoming: JobPayload, op
 /**
  * Pick what ONE run handles. A wake carrying a prompt, a goal or a session to
  * resume runs alone. Plain nudges fold into one run (their notes are joined,
- * the first pinned issue wins); everything else stays queued, in order.
+ * decided approvals are collected, the first pinned issue wins); everything
+ * else stays queued, in order.
  */
 export function foldWakes(wakes: Wake[]): { request: Wake | null; rest: Wake[] } {
   const [head, ...others] = wakes;
@@ -95,6 +104,7 @@ export function foldWakes(wakes: Wake[]): { request: Wake | null; rest: Wake[] }
 
   const request: Wake = { ...head };
   const notes = new Set<string>(head.triggerNote ? [head.triggerNote] : []);
+  const approvalIds = new Set<string>(head.approvalIds ?? []);
   const rest: Wake[] = [];
   for (const w of others) {
     const conflicts = !!w.issueId && !!request.issueId && w.issueId !== request.issueId;
@@ -107,8 +117,10 @@ export function foldWakes(wakes: Wake[]): { request: Wake | null; rest: Wake[] }
       request.trigger = w.trigger;
     }
     if (w.triggerNote) notes.add(w.triggerNote);
+    for (const id of w.approvalIds ?? []) approvalIds.add(id);
   }
   if (notes.size > 0) request.triggerNote = [...notes].join(' ');
+  if (approvalIds.size > 0) request.approvalIds = [...approvalIds];
   return { request, rest };
 }
 

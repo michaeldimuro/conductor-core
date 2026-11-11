@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { useParams } from 'react-router-dom';
 import { Button, ErrorNote, Lamp, Segmented } from '../components/ui.js';
-import { api, errorText, wsUrl } from '../lib/api.js';
+import { ConductorApiError, api, errorText, wsUrl } from '../lib/api.js';
 import type { BrowserInputEvent, ClaimResponse, TakeoverServerMessage } from '../lib/api.js';
 import { clock } from '../lib/format.js';
 
@@ -10,6 +10,9 @@ const SHARE_TTL_MS = 15 * 60_000;
 const TAP_SLOP = 8;
 const TAP_MS = 500;
 const MAX_RETRIES = 5;
+/** The daemon stops serving a viewer without closing its socket when the link is re-issued or the session ends elsewhere. */
+const DISPLACED = /no longer active|not the active viewer/i;
+const DISPLACED_TEXT = 'This device no longer has control. The takeover was reopened on another device, handed back, or it expired.';
 type Conn = 'connecting' | 'live' | 'reconnecting' | 'lost';
 type Meta = Extract<TakeoverServerMessage, { type: 'frame' }>['meta'];
 type Phase = { step: 'confirm' } | { step: 'live'; session: ClaimResponse; deadline: number; exact: boolean } | { step: 'done' } | { step: 'ended'; why: string };
@@ -80,7 +83,7 @@ function useViewer(sessionId: string, canvas: React.RefObject<HTMLCanvasElement 
         } catch {
           return;
         }
-        if (msg.type === 'error') return setNotice(msg.message);
+        if (msg.type === 'error') return DISPLACED.test(msg.message) ? ended.current(DISPLACED_TEXT) : setNotice(msg.message);
         if (decoding) waiting = msg;
         else draw(msg);
       };
@@ -270,6 +273,8 @@ function Stage({ session, deadline, exact, onDone, onEnded }: { session: ClaimRe
     setHanding(true);
     setError(undefined);
     api.handBackTakeover(session.sessionId).then(onDone, (e: unknown) => {
+      // 403: this device is not the viewer any more, so there is nothing left to hand back from here.
+      if (e instanceof ConductorApiError && e.status === 403) return onEnded(DISPLACED_TEXT);
       setHanding(false);
       setError(e);
     });
@@ -348,7 +353,7 @@ export function Takeover() {
     setError(undefined);
     api.claimTakeover(token).then(
       (session) => {
-        // The claim response carries no expiry today; when it does, the countdown is exact.
+        // The countdown is exact when the claim carries the session's expiry; an older daemon may omit it.
         const expiresAt = (session as ClaimResponse & { expiresAt?: number }).expiresAt;
         setPhase({ step: 'live', session, deadline: expiresAt ?? Date.now() + SHARE_TTL_MS, exact: typeof expiresAt === 'number' });
       },

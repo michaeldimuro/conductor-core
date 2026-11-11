@@ -140,25 +140,58 @@ describe('end-to-end: an issue goes from assignment to done through the whole st
     expect(s.kernel.db.select().from(costLedger).where(eq(costLedger.orgId, org.id)).all().every((l) => l.costUsd === 0)).toBe(true);
   }, 120_000);
 
-  it('gates an external action behind a board approval and wakes the agent when it is decided', async () => {
+  it('parks an issue on a gated tool call and executes the call once the board approves it', async () => {
     const org = s.org.createOrg({ name: 'Approval Co', defaultProvider: provider('ask') }, OWNER);
     const dept = s.org.createDept(org.id, { name: 'Marketing' }, OWNER);
     const agent = s.org.hireAgent(org.id, { deptId: dept.id, name: 'Mia', role: 'Marketer', autonomyLevel: 1 }, OWNER).agent!;
     const issue = s.work.createIssue(org.id, { title: 'Announce the launch', assigneeAgentId: agent.id }, OWNER);
     await drain();
 
+    // Run 1: the gateway refused to execute and filed an approval tied to the run and the issue.
+    const first = JSON.parse(readFileSync(trace, 'utf8'));
+    expect(first.history).toHaveLength(1);
+    expect(first.history[0].gated.text).toMatch(/awaiting board approval/);
+    expect(first.history[0].gated.text).not.toContain('launch-announcement-sent');
     const pending = s.governance.approvals.list(org.id, { status: 'pending' });
     expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({ kind: 'external_send', requesterAgentId: agent.id });
-    expect(s.work.getIssue(org.id, issue.id).status).toBe('in_review'); // supervised agent → needs review
+    const [run1] = s.runtime.listRuns(org.id, { agentId: agent.id });
+    expect(pending[0]).toMatchObject({ kind: 'tool_call', requesterAgentId: agent.id, issueId: issue.id, runId: run1!.id });
+    expect(typeof pending[0]!.payload.matchKey).toBe('string');
 
-    const before = s.runtime.listRuns(org.id, { agentId: agent.id }).length;
+    // The issue is parked, not finished: blocked on the approval, lock released, nothing to review yet.
+    expect(run1).toMatchObject({ outcome: 'completed', issueId: issue.id });
+    expect(s.work.getIssue(org.id, issue.id)).toMatchObject({ status: 'blocked', blockedReason: 'awaiting_approval', checkoutLock: null });
+    await drain();
+    expect(s.runtime.listRuns(org.id, { agentId: agent.id })).toHaveLength(1); // and nothing runs until the board acts
+
+    // The decision ALONE (no review, no comment) brings the agent back onto the same issue.
     s.governance.approvals.decide(org.id, pending[0]!.id, 'approved', OWNER, 'go ahead');
-    s.work.review(org.id, issue.id, 'rejected', 'Approved — now send it.', OWNER);
     await drain();
     const runs = s.runtime.listRuns(org.id, { agentId: agent.id });
-    expect(runs.length).toBeGreaterThan(before); // woken by the decision
-    expect(JSON.parse(readFileSync(trace, 'utf8')).prompt).toMatch(/approval request .* was approved|sent back for rework/i);
+    expect(runs).toHaveLength(2);
+    const run2 = runs.find((r) => r.id !== run1!.id)!;
+    expect(run2).toMatchObject({ trigger: 'approval', issueId: issue.id, outcome: 'completed' });
+
+    const second = JSON.parse(readFileSync(trace, 'utf8'));
+    expect(second.history).toHaveLength(2);
+    const retry = second.history[1];
+    expect(retry.issueId).toBe(issue.id);
+    expect(retry.prompt).toContain(pending[0]!.id);
+    expect(retry.prompt).toMatch(/was APPROVED/);
+    expect(retry.prompt).toContain('go ahead'); // the board's note reaches the agent
+    // The same call, with the same arguments, now really ran.
+    expect(retry.gated.isError).toBe(false);
+    expect(retry.gated.text).toContain('launch-announcement-sent');
+
+    // The approval was used exactly once; the gateway logged one refused and one executed call.
+    const used = s.governance.approvals.get(org.id, pending[0]!.id);
+    expect(used.status).toBe('approved');
+    expect(used.consumedAt).not.toBeNull();
+    const calls = s.kernel.db.select().from(toolCalls).where(and(eq(toolCalls.orgId, org.id), eq(toolCalls.tool, 'conductor-files__run_command'))).all();
+    expect(calls.map((c) => c.status).sort()).toEqual(['approval_pending', 'ok']);
+    expect(calls.find((c) => c.status === 'ok')).toMatchObject({ runId: run2.id, approvalId: used.id });
+    // With nothing left waiting on the board the issue settles normally (supervised agent → review).
+    expect(s.work.getIssue(org.id, issue.id)).toMatchObject({ status: 'in_review', checkoutLock: null });
 
     // Cross-org isolation at the API boundary: another org's ids are not found.
     const owner = s.governance.tokens.issueOwnerToken('e2e');

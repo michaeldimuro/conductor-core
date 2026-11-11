@@ -35,6 +35,7 @@
 .strip-btn { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 3px 10px; background: none; border: 1px solid var(--line); border-radius: 15px; color: var(--ink-2); font-weight: 500; cursor: pointer; white-space: nowrap; }
 .strip-btn:hover { border-color: var(--ink-3); color: var(--ink); text-decoration: none; }
 .strip-btn-stop { background: var(--stop-wash); border-color: var(--stop); color: var(--stop); }
+.strip-btn-short { display: none; }
 .badge { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn); color: var(--raised); font-size: 12px; font-weight: 700; }
 .badge-zero { background: var(--sunk); color: var(--ink-3); }
 #content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px 48px; outline: none; }
@@ -97,7 +98,7 @@ kbd { display: inline-block; min-width: 20px; padding: 0 5px; border: 1px solid 
   .strip-org { display: block; font: 600 17px var(--font-head); flex: 1 1 auto; }
   .strip-lamps { flex: 0 0 auto; gap: 10px; font-size: 13px; }
   .strip-queued, .strip-approvals, .strip-btn span:not(.lamp) { display: none; }
-  .strip-btn-stop span:not(.lamp) { display: inline; }
+  .strip-btn-stop span:not(.lamp), .strip-btn span.strip-btn-short { display: inline; }
   .strip-btn { min-height: 36px; padding-inline: 12px; }
   #content { padding: 14px 12px 32px; }
   .tabbar { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; flex: none; background: var(--surface); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }

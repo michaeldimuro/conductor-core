@@ -69,10 +69,14 @@ describe('connector kinds and catalog', () => {
     const ctx = runCtx(k, agent);
     expect(textOf(await gw.callTool(ctx, 'slack__list_channels', {}))).toContain('list_channels ok');
     expect(upstream.calls.at(-1)?.authorization).toBe('Bearer slack-user-token-1');
-    expect(textOf(await gw.callTool(ctx, 'slack__chat_send_message', { text: 'hi' }))).toMatch(/Approval required/);
+    // The channel is already a known recipient, so what asks here is the template's policy, not the first-send gate.
+    approvals.rememberRecipient(org.id, 'slack:c012ab');
+    const message = { channel: 'C012AB', text: 'hi' };
+    expect(textOf(await gw.callTool(ctx, 'slack__chat_send_message', message))).toMatch(/Approval required/);
+    expect(approvals.all().at(-1)).toMatchObject({ kind: 'tool_call' });
     // An explicit per-tool policy on the grant wins over the template.
     gw.grant(org.id, row.id, agent.id, { toolPolicies: { chat_send_message: 'allowed' } }, OWNER);
-    expect(textOf(await gw.callTool(runCtx(k, agent), 'slack__chat_send_message', { text: 'hi' }))).toContain('chat_send_message ok');
+    expect(textOf(await gw.callTool(runCtx(k, agent), 'slack__chat_send_message', { ...message, text: 'hello' }))).toContain('chat_send_message ok');
   });
 
   it('mcp_http OAuth: a missing or expired token raises a connector_auth Approval with the advertised authorization URL', async () => {

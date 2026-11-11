@@ -142,6 +142,17 @@ export class SkillStore {
     return row ?? null;
   }
 
+  /**
+   * A patch waiting for its evaluation: the newest version written AFTER the live one of an
+   * active skill. The folder and the `skills` row keep serving the live version until the
+   * candidate is activated; any later live write (human edit, rollback) supersedes it.
+   */
+  pendingCandidate(skill: Skill): SkillVersion | null {
+    if (skill.status !== 'active') return null;
+    const newest = this.versions(skill.id)[0];
+    return newest && newest.version > skill.version ? newest : null;
+  }
+
   /** Validate (orgId, scope, scopeId) and compute the skill folder for a name. */
   target(orgId: string | null, scope: Scope, scopeId: string | null, name: string): ScopeTarget {
     const skillName = assertSkillName(name);

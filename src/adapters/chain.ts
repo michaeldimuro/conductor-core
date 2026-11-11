@@ -2,6 +2,7 @@ import type { AdapterErrorKind, AdapterRegistry, RunContext, RunEvent, RunResult
 import type { WorkerJob } from '../contracts/services.js';
 import { FALLBACK_KINDS, isRetryable, toAdapterError } from './shared/errors.js';
 import { createScrubber, secretValuesOf } from './shared/events.js';
+import { RunPauseClock } from './shared/guard.js';
 
 export type ChainResult = RunResult & { adapterId: string; model: string | null };
 
@@ -36,7 +37,8 @@ function failed(kind: AdapterErrorKind, message: string): RunResult {
  * an attempt fails with a rate limit, an auth failure or an outage. Anything
  * else — success, `invalid_request`, cancel, `max_steps`, `timeout`, `budget`
  * — is final. Usage accumulates across attempts, and each later attempt gets
- * only the budget and wall time the earlier ones left.
+ * only the budget and wall time the earlier ones left (time the run spent
+ * paused for a human is not counted as used).
  */
 export async function runChain(registry: AdapterRegistry, job: WorkerJob, onEvent: (e: RunEvent) => void): Promise<ChainResult> {
   const base = job.ctx;
@@ -55,6 +57,8 @@ export async function runChain(registry: AdapterRegistry, job: WorkerJob, onEven
   };
 
   const startedAt = Date.now();
+  // Time a human held the run (takeover, approval) is not the run's: a fallback attempt gets the wall time actually left.
+  const pauseClock = new RunPauseClock(base.runId);
   const state = { adapterId: null as string | null, cancelled: false };
   inFlight.set(base.runId, state);
   let usage: RunUsage = { tokensIn: 0, tokensOut: 0, costUsd: 0, subscription: false, seatSeconds: 0 };
@@ -64,7 +68,7 @@ export async function runChain(registry: AdapterRegistry, job: WorkerJob, onEven
   try {
     for (let i = 0; i < chain.length; i++) {
       const binding = chain[i] as Binding;
-      const remainingMs = base.maxWallMs - (Date.now() - startedAt);
+      const remainingMs = base.maxWallMs - (Date.now() - startedAt - pauseClock.pausedMs());
       const remainingBudget = base.budgetCapUsd === null ? null : Math.max(0, base.budgetCapUsd - usage.costUsd);
       let result: RunResult;
 
@@ -125,6 +129,7 @@ export async function runChain(registry: AdapterRegistry, job: WorkerJob, onEven
     }
     return last;
   } finally {
+    pauseClock.dispose();
     if (inFlight.get(base.runId) === state) inFlight.delete(base.runId);
   }
 }

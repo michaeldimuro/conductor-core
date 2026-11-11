@@ -118,6 +118,8 @@ export async function manage(ctx: SkillCtx, caller: Parameters<SkillService['man
       change: 'patch',
       message: input.reason ?? `patch skill ${name}`,
       decideStatus: agentWriteStatus,
+      // A patch to a skill that is live goes through the eval gate first.
+      holdLive: true,
       extraAudit: { patch: input.body !== undefined ? 'body' : input.find !== undefined ? 'find_replace' : 'meta' },
     });
   });
@@ -145,6 +147,7 @@ export async function upsert(ctx: SkillCtx, orgId: string | null, raw: Parameter
       change: existing ? 'edit' : 'create',
       message: `${existing ? 'edit' : 'create'} skill ${target.name}`,
       decideStatus: byAgent ? agentWriteStatus : humanWriteStatus(input.status),
+      holdLive: byAgent,
     });
   });
 }

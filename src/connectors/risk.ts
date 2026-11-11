@@ -10,9 +10,9 @@ const maxRisk = (a: ToolRisk, b: ToolRisk): ToolRisk => (RISK_ORDER.indexOf(a) >
 
 export { nameWords };
 
-/** Risk floor of a tool from what its name says it does. */
-function riskFromName(name: string): ToolRisk {
-  switch (classifyAction(name)) {
+/** Risk floor of a tool from what its name (and, for payments, its title / description) says it does. */
+function riskFromName(name: string, annotations?: UpstreamAnnotations, description?: string): ToolRisk {
+  switch (classifyAction(name, { annotations, description })) {
     case 'payment':
     case 'destructive':
     case 'exec':
@@ -37,8 +37,8 @@ function riskFromAnnotations(a: UpstreamAnnotations | undefined): ToolRisk {
  * Risk of an upstream tool. Annotations come from the (untrusted) upstream, so
  * they can only raise the risk derived from the name, never lower it.
  */
-export function classifyRisk(name: string, annotations?: UpstreamAnnotations): ToolRisk {
-  return maxRisk(riskFromName(name), riskFromAnnotations(annotations));
+export function classifyRisk(name: string, annotations?: UpstreamAnnotations, description?: string): ToolRisk {
+  return maxRisk(riskFromName(name, annotations, description), riskFromAnnotations(annotations));
 }
 
 export const isExternalRisk = (r: ToolRisk): boolean => r === 'external_read' || r === 'external_write' || r === 'high';

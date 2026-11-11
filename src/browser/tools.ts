@@ -5,6 +5,7 @@ import type { BuiltinToolProvider, ToolCallContext, ToolDef, ToolResult } from '
 import { AUTONOMY } from '../contracts/types.js';
 import { errorMessage, invalid, notFound } from '../shared/errors.js';
 import { sha256, truncate } from '../shared/util.js';
+import { ATTACH_HINT, saveArtifact, screenshotName } from './artifacts.js';
 import { checkNavigation, hostOf } from './domains.js';
 import { isOpReference, opVault, readOnePassword } from './onepassword.js';
 import type { RunBrowser } from './engine.js';
@@ -19,6 +20,12 @@ import {
 
 const MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024;
 type Handler = (c: Call, args: unknown) => Promise<ToolResult>;
+
+/** Copy a finished download into the org's artifacts for this run's issue; `artifact` is the path to attach. */
+function artifactOf(c: Call, file: string): { artifact?: string; attach?: string } {
+  const saved = saveArtifact(c, file, { file });
+  return saved ? { artifact: saved.path, attach: ATTACH_HINT } : {};
+}
 
 const agentActor = (c: Call) => ({ kind: 'agent' as const, id: c.ctx.agentId, runId: c.ctx.runId });
 
@@ -86,7 +93,9 @@ const handlers: Record<Exclude<ToolName, 'request_human'>, Handler> = {
     const buf = hasTarget(a)
       ? await locate(c.page, a).screenshot({ type: a.format, mask })
       : await c.page.screenshot({ type: a.format, fullPage: a.fullPage, mask });
-    return pageResult(c, `Screenshot of ${c.page.url()}`, {
+    // Kept under the org's artifacts for this run's issue, so the result comment can carry it.
+    const saved = saveArtifact(c, screenshotName(c.env.kernel.clock.now(), hostOf(c.page.url()), a.format), { data: buf });
+    return pageResult(c, `Screenshot of ${c.page.url()}${saved ? `\nSaved as artifact: ${saved.path}\n${ATTACH_HINT}` : ''}`, {
       extra: [{ type: 'image', data: buf.toString('base64'), mimeType: a.format === 'png' ? 'image/png' : 'image/jpeg' }],
     });
   },
@@ -132,7 +141,7 @@ const handlers: Record<Exclude<ToolName, 'request_human'>, Handler> = {
         const named = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(resp.headers()['content-disposition'] ?? '')?.[1];
         const file = dest(named ? decodeURIComponent(named) : new URL(check.url).pathname.split('/').pop() || 'download');
         writeFileSync(file, body);
-        return pageResult(c, { saved: workspaceRelative(ws, file), bytes: body.length, from: publicUrl(check.url) });
+        return pageResult(c, { saved: workspaceRelative(ws, file), bytes: body.length, from: publicUrl(check.url), ...artifactOf(c, file) });
       }
     }
     const loc = locate(c.page, a);
@@ -141,7 +150,7 @@ const handlers: Record<Exclude<ToolName, 'request_human'>, Handler> = {
     const [dl] = await Promise.all([c.page.waitForEvent('download'), loc.click()]);
     const file = dest(dl.suggestedFilename());
     await dl.saveAs(file);
-    return pageResult(c, { saved: workspaceRelative(ws, file), bytes: statSync(file).size, suggestedFilename: dl.suggestedFilename() });
+    return pageResult(c, { saved: workspaceRelative(ws, file), bytes: statSync(file).size, suggestedFilename: dl.suggestedFilename(), ...artifactOf(c, file) });
   },
 
   async upload(c, args) {

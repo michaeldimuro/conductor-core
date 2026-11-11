@@ -52,7 +52,7 @@ describe('skills: eval gate without a utility model, eval cases, review outcomes
     expect(cases[0]!.prompt).toContain('Export the monthly Stripe report');
 
     const result = await svc.evaluate(draft.id);
-    expect(runner.run).toHaveBeenCalledTimes(2);
+    expect(runner.run).toHaveBeenCalledTimes(4); // two samples per arm
     // Both arms completed; the skill is cheaper in cost and steps → a real pass, not "unknown = fail".
     expect(result).toMatchObject({ passed: true, baseline: { success: true, steps: 12 }, withSkill: { success: true, steps: 4 } });
     expect(result.needsReview).toBeUndefined();
@@ -63,8 +63,9 @@ describe('skills: eval gate without a utility model, eval cases, review outcomes
   it('without a model the gate still fails a skill that is not better, crashes, or answers nothing', async () => {
     const worse = realService(k, fakeRunner('s-worse', { baseline: { steps: 4, costUsd: 0.02 }, withSkill: { steps: 9, costUsd: 0.05 } }));
     const a = await worse.manage(caller(), { action: 'create', name: 's-worse', description: 'd', body: BODY });
-    expect(await worse.evaluate(a.id)).toMatchObject({ passed: false, withSkill: { success: true } });
-    await expect(worse.activate(a.id, agent())).rejects.toMatchObject({ code: 'policy_denied', message: expect.stringContaining('did not beat the baseline') });
+    // Same success, costlier beyond the noise margin: never auto-activated — the owner gets to look.
+    expect(await worse.evaluate(a.id)).toMatchObject({ passed: false, needsReview: true, withSkill: { success: true } });
+    await expect(worse.activate(a.id, agent())).rejects.toMatchObject({ code: 'policy_denied', message: expect.stringContaining('needs human review') });
 
     const crashed = realService(k, fakeRunner('s-crash', { baseline: { steps: 4, costUsd: 0.02 }, withSkill: { steps: 1, costUsd: 0.01, outcome: 'failed' } }));
     const b = await crashed.manage(caller(), { action: 'create', name: 's-crash', description: 'd', body: BODY });
@@ -162,6 +163,9 @@ describe('skills: eval gate without a utility model, eval cases, review outcomes
     const { svc } = createHarness(k);
     const v1: Skill = await svc.manage(caller('run_c'), { action: 'create', name: 'stripe-export', description: 'd', body: BODY }).then((s) => svc.activate(s.id, OWNER, { force: true }));
     await svc.manage(caller('run_p'), { action: 'patch', name: 'stripe-export', body: 'A sloppier procedure.' });
+    // The patch of a live skill waits as a candidate; here the owner waves it through.
+    expect(svc.get(v1.id).version).toBe(1);
+    await svc.activate(v1.id, OWNER, { force: true });
     // Reflection ran before review: every use was recorded as a success nobody edited.
     for (const runId of ['r1', 'r2', 'r3']) await svc.recordUsage({ orgId: org.id, runId, agentId: ada.id, skillIds: [v1.id], success: true, humanEdited: false, costUsd: 0.01, steps: 3 });
     expect(svc.get(v1.id)).toMatchObject({ version: 2, useCount: 3, successCount: 3 });

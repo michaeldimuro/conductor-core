@@ -1,0 +1,10 @@
+#!/bin/sh
+# Remove the previous application tree so files dropped by a newer version do not linger.
+# User data (~/.conductor), logs and the LaunchAgent are not touched.
+set -eu
+LIB="$2"
+case "$LIB" in
+  */lib/conductor) rm -rf "$LIB" ;;
+  *) echo "conductor preinstall: unexpected install location '$LIB'; nothing removed" >&2 ;;
+esac
+exit 0

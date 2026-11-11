@@ -29,6 +29,16 @@ export function approvalTtlMs(policies: OrgPolicies | null | undefined): number 
   return hours === 0 ? null : Math.round(hours * 3_600_000);
 }
 
+/** An approved single-use grant must be used within this long, unless the org says otherwise. */
+export const DEFAULT_APPROVAL_USE_WITHIN_HOURS = 72;
+
+/** Use-by window of an approved, not yet consumed grant; null = never lapses (`approvalUseWithinHours: 0`). */
+export function approvalUseTtlMs(policies: OrgPolicies | null | undefined): number | null {
+  const h = policies?.approvalUseWithinHours;
+  const hours = typeof h === 'number' && Number.isFinite(h) && h >= 0 ? Math.min(h, MAX_APPROVAL_EXPIRY_HOURS) : DEFAULT_APPROVAL_USE_WITHIN_HOURS;
+  return hours === 0 ? null : Math.round(hours * 3_600_000);
+}
+
 /**
  * Defaults + org policy. Orgs can tighten freely (`extraGated`, spend
  * threshold); loosening a default gate needs the explicit per-action owner

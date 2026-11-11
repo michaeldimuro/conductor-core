@@ -150,7 +150,9 @@ describe('skill eval sandbox gateway', () => {
     expect(out.finalText).toBe('evaluated');
     expect(seen.endpoints).toBe(1);
     expect(String(seen.url)).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
-    expect(seen.tools).toEqual(['conductor-skills__list_skills', 'conductor-skills__load_skill', 'conductor-skills__read_skill_file']); // nothing that writes
+    // The skill under test, plus file tools confined to the throwaway eval workspace — nothing with external side effects.
+    expect(seen.tools).toEqual(expect.arrayContaining(['conductor-skills__list_skills', 'conductor-skills__load_skill', 'conductor-skills__read_skill_file']));
+    expect((seen.tools as string[]).every((t) => t.startsWith('conductor-skills__') || t.startsWith('conductor-files__'))).toBe(true);
     expect(String(seen.list)).toContain('deploy-check');
     expect(String(seen.body)).toContain('Run the smoke suite, then report.');
     expect(String(seen.body)).toContain('references/checklist.md');

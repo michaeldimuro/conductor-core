@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, lt, lte, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, lt, lte, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Kernel, UtilityModel } from '../contracts/kernel.js';
+import type { WorkService } from '../contracts/org-work.js';
 import type { Issue, Memory, Run } from '../contracts/rows.js';
 import type { MemoryWriteInput, ReflectionResult, ReviewRegrade } from '../contracts/services.js';
 import type { Actor, RunGrade } from '../contracts/types.js';
@@ -11,6 +12,7 @@ import { heuristicExtract, type ExtractedItem, type Extraction } from './heurist
 import { reviewNote, reviewOutcomeFor, reviewedRun } from './review.js';
 import { openSkillDraft, skillExists, type SkillDeps } from './skill-draft.js';
 import type { MemoryStore } from './store.js';
+import { canonicalTaskType, heuristicTaskType, normalizeTaskType, taskTypeCluster } from './tasktype.js';
 import { fitTranscript, renderSteps, tag, toSteps, type TranscriptStep } from './transcript.js';
 
 /** "Solved after many steps" threshold. */
@@ -32,7 +34,14 @@ const extractionSchema = z.object({
   facts: z.array(itemSchema).catch([]),
   lessons: z.array(itemSchema).catch([]),
   preferences: z.array(itemSchema).catch([]),
+  taskType: z.string().trim().max(200).nullish().catch(null),
 });
+
+/** Task types the classifier never assigns or merges into: they are set by the system for its own issues. */
+const RESERVED_TASK_TYPES = new Set(['skill-adapt']);
+const KNOWN_TYPES_IN_PROMPT = 40;
+
+export type ReflectWork = Partial<Pick<WorkService, 'updateIssue'>>;
 
 const EXTRACT_SYSTEM =
   'You are the reflection pass of an agent workforce. From the transcript of one finished run, extract durable knowledge that will make the ' +
@@ -55,6 +64,7 @@ export class Reflector {
     private readonly store: MemoryStore,
     private readonly utility: UtilityModel,
     private readonly skills: () => SkillDeps | undefined,
+    private readonly work: () => ReflectWork | undefined = () => undefined,
   ) {}
 
   async reflect(orgId: string, runId: string): Promise<ReflectionResult> {
@@ -62,17 +72,26 @@ export class Reflector {
     const run = db.select().from(runs).where(and(eq(runs.orgId, orgId), eq(runs.id, runId))).get();
     if (!run) throw notFound('run', runId);
     const agent = this.store.agent(orgId, run.agentId);
-    const issue = run.issueId ? (db.select().from(issues).where(and(eq(issues.orgId, orgId), eq(issues.id, run.issueId))).get() ?? null) : null;
+    let issue = run.issueId ? (db.select().from(issues).where(and(eq(issues.orgId, orgId), eq(issues.id, run.issueId))).get() ?? null) : null;
     const eventRows = db.select().from(runEvents).where(and(eq(runEvents.orgId, orgId), eq(runEvents.runId, runId))).orderBy(asc(runEvents.seq)).all();
     const steps = toSteps(eventRows.map((r) => (r.payload !== null && typeof r.payload === 'object' ? { type: r.type, ...(r.payload as object) } : { type: r.type })));
+    const actor: Actor = { kind: 'system', id: 'reflection', runId };
 
-    // 1. Outcome grading.
-    const grade = this.grade(run, issue);
+    // 1. Outcome grading (stored before anything else touches the issue, so a concurrent review re-grade sees it).
+    let grade = this.grade(run, issue);
     db.update(runs).set({ grade }).where(and(eq(runs.orgId, orgId), eq(runs.id, runId))).run();
 
-    // 2. Extract memories.
+    // 2. Extract memories — and, for an issue nobody typed, what kind of task this was.
     const extraction = await this.extract(orgId, run, issue, steps);
-    const actor: Actor = { kind: 'system', id: 'reflection', runId };
+    if (issue && !issue.taskType) {
+      const typed = this.classify(orgId, issue, extraction.taskType ?? null, actor);
+      if (typed.taskType) {
+        issue = typed;
+        // "Cost vs. median for this task type" only exists once the type does.
+        grade = this.grade(run, issue);
+        db.update(runs).set({ grade }).where(and(eq(runs.orgId, orgId), eq(runs.id, runId))).run();
+      }
+    }
     const written: string[] = [];
     const queued: string[] = [];
     const save = async (input: MemoryWriteInput): Promise<void> => {
@@ -181,7 +200,7 @@ export class Reflector {
         .select({ costUsd: runs.costUsd })
         .from(runs)
         .innerJoin(issues, and(eq(issues.id, runs.issueId), eq(issues.orgId, runs.orgId)))
-        .where(and(eq(runs.orgId, run.orgId), eq(issues.taskType, issue.taskType), ne(runs.id, run.id), lte(runs.createdAt, run.createdAt), inArray(runs.status, ['succeeded', 'failed'])))
+        .where(and(eq(runs.orgId, run.orgId), inArray(issues.taskType, this.cluster(run.orgId, issue.taskType)), ne(runs.id, run.id), lte(runs.createdAt, run.createdAt), inArray(runs.status, ['succeeded', 'failed'])))
         .all();
       const med = median(prior.map((r) => r.costUsd));
       if (med !== null && med > 0) costVsMedian = run.costUsd / med;
@@ -196,9 +215,52 @@ export class Reflector {
     return { issueClosed, reviewOutcome, costVsMedian, success, notes };
   }
 
-  private async extract(orgId: string, run: Run, issue: Issue | null, steps: TranscriptStep[]): Promise<Extraction> {
+  /** The org's task types, most used first. */
+  private knownTaskTypes(orgId: string): string[] {
+    return this.kernel.db
+      .select({ taskType: issues.taskType, n: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(eq(issues.orgId, orgId), isNotNull(issues.taskType)))
+      .groupBy(issues.taskType)
+      .orderBy(desc(sql`count(*)`), asc(issues.taskType))
+      .all()
+      .map((r) => r.taskType)
+      .filter((t): t is string => typeof t === 'string' && t.length > 0 && !RESERVED_TASK_TYPES.has(t));
+  }
+
+  /** Every stored spelling of the same kind of task ("stripe-export", "export-stripe-report"…). */
+  private cluster(orgId: string, taskType: string): string[] {
+    return RESERVED_TASK_TYPES.has(taskType) ? [taskType] : taskTypeCluster(taskType, this.knownTaskTypes(orgId));
+  }
+
+  /**
+   * Give an untyped issue its task type: the model's suggestion when there is one, otherwise the
+   * normalised title/labels; then snapped onto the nearest type the org already uses so repeats
+   * are recognised. Persisted through the Work context; without it the type only serves this pass.
+   */
+  private classify(orgId: string, issue: Issue, suggested: string | null, actor: Actor): Issue {
+    const raw = normalizeTaskType(suggested) ?? heuristicTaskType(issue.title, issue.labels ?? []);
+    if (!raw || RESERVED_TASK_TYPES.has(raw)) return issue;
+    const taskType = canonicalTaskType(raw, this.knownTaskTypes(orgId));
+    const work = this.work();
+    if (!work?.updateIssue) return { ...issue, taskType };
+    try {
+      const saved = work.updateIssue(orgId, issue.id, { taskType }, actor);
+      this.kernel.audit.record({
+        orgId, actor, action: 'issue.classified', entityKind: 'issue', entityId: issue.id, issueId: issue.id, runId: actor.runId,
+        data: { taskType, proposed: raw, source: normalizeTaskType(suggested) ? 'utility_model' : 'title' },
+      });
+      return saved;
+    } catch (e) {
+      this.kernel.log.warn({ orgId, issueId: issue.id, err: errorMessage(e) }, 'could not store the classified task type');
+      return { ...issue, taskType };
+    }
+  }
+
+  private async extract(orgId: string, run: Run, issue: Issue | null, steps: TranscriptStep[]): Promise<Extraction & { taskType?: string | null }> {
     const meta = { title: issue?.title, outcome: run.outcome ?? run.status, reviewOutcome: issue?.reviewOutcome ?? null, expectedOutput: issue?.expectedOutput || undefined };
     const fallback = () => heuristicExtract(steps, meta);
+    const untyped = issue !== null && !issue.taskType;
     try {
       const res = await this.utility.complete({
         orgId,
@@ -207,19 +269,29 @@ export class Reflector {
         system: EXTRACT_SYSTEM,
         prompt: [
           tag('task', 'memory_extraction'),
-          tag('meta', JSON.stringify({ ...meta, taskType: issue?.taskType ?? null, issueBody: issue?.body ? issue.body.slice(0, 4000) : undefined })),
+          tag('meta', JSON.stringify({
+            ...meta, taskType: issue?.taskType ?? null, issueBody: issue?.body ? issue.body.slice(0, 4000) : undefined,
+            ...(untyped ? { labels: issue.labels ?? [], knownTaskTypes: this.knownTaskTypes(orgId).slice(0, KNOWN_TYPES_IN_PROMPT) } : {}),
+          })),
           tag('transcript', fitTranscript(renderSteps(steps))),
           'Answer as JSON: {"summary":"<2-3 sentences: what was done and how it ended>",' +
             '"facts":[{"content":"","kind":"semantic"|"procedural","entity":"<name or null>","confidence":0.0,"importance":0.0}],' +
             '"lessons":[{"content":"","kind":"lesson","entity":null,"confidence":0.0,"importance":0.0}],' +
-            '"preferences":[{"content":"","kind":"owner_model","entity":null,"confidence":0.0,"importance":0.0}]}',
+            '"preferences":[{"content":"","kind":"owner_model","entity":null,"confidence":0.0,"importance":0.0}]' +
+            (untyped
+              ? ',"taskType":"<the reusable KIND of task, 2-4 lowercase words in kebab-case, without dates, names or ids of this one instance; reuse one of meta.knownTaskTypes when it is the same kind of task>"}'
+              : '}'),
         ].join('\n\n'),
       });
       const parsed = extractionSchema.safeParse(res.json);
       if (parsed.success) {
         const norm = (list: z.infer<typeof itemSchema>[], kind: ExtractedItem['kind']): ExtractedItem[] =>
           list.slice(0, 12).map((i) => ({ content: i.content, kind: kind === 'semantic' && i.kind === 'procedural' ? 'procedural' : kind, entity: i.entity ?? null, confidence: i.confidence, importance: i.importance }));
-        return { summary: parsed.data.summary, facts: norm(parsed.data.facts, 'semantic'), lessons: norm(parsed.data.lessons, 'lesson'), preferences: norm(parsed.data.preferences, 'owner_model') };
+        return {
+          summary: parsed.data.summary, facts: norm(parsed.data.facts, 'semantic'), lessons: norm(parsed.data.lessons, 'lesson'), preferences: norm(parsed.data.preferences, 'owner_model'),
+          // The offline heuristic answers the same prompt but never names a type: only a real model's suggestion counts.
+          taskType: untyped && !res.offline ? (parsed.data.taskType ?? null) : null,
+        };
       }
     } catch (e) {
       this.kernel.log.warn({ orgId, runId: run.id, err: errorMessage(e) }, 'reflection model call failed; using rule-based extraction');
@@ -267,7 +339,8 @@ export class Reflector {
         .select({ id: runs.id })
         .from(runs)
         .innerJoin(issues, and(eq(issues.id, runs.issueId), eq(issues.orgId, runs.orgId)))
-        .where(and(eq(runs.orgId, run.orgId), eq(runs.agentId, run.agentId), eq(runs.status, 'succeeded'), eq(issues.taskType, issue.taskType)))
+        // Near-duplicate spellings of the type count as the same procedure.
+        .where(and(eq(runs.orgId, run.orgId), eq(runs.agentId, run.agentId), eq(runs.status, 'succeeded'), inArray(issues.taskType, this.cluster(run.orgId, issue.taskType))))
         .all();
       if (same.length >= REPEAT_THRESHOLD) return 'repeated_procedure';
     }

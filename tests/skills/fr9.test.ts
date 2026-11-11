@@ -47,17 +47,18 @@ describe('skills: agent-authored skill with eval gate and versioning (FR-9)', ()
 
     // 3. evaluate: the originating issue is replayed without and with the skill
     const result = await svc.evaluate(draft.id);
-    expect(runner.run).toHaveBeenCalledTimes(2);
+    // two samples per arm (the default), interleaved baseline / with-skill
+    expect(runner.run).toHaveBeenCalledTimes(4);
     const [base, withSkill] = runner.run.mock.calls.map((c) => c[0]);
     expect(base.skills).toEqual([]);
     expect(base.prompt).toContain('Export the monthly Stripe report');
     expect(withSkill.skills.map((s: { name: string }) => s.name)).toEqual(['stripe-export']);
     expect(withSkill).toMatchObject({ orgId: org.id, agentId: ada.id });
-    expect(utility.complete).toHaveBeenCalledTimes(2);
+    expect(utility.complete).toHaveBeenCalledTimes(4);
     expect(utility.complete.mock.calls[0]?.[0]).toMatchObject({ purpose: 'judge', json: true, orgId: org.id });
     expect(result.baseline).toEqual({ success: true, steps: 12, tokens: 1200, costUsd: 0.06, wallMs: 12_000 });
     expect(result.withSkill).toEqual({ success: true, steps: 4, tokens: 400, costUsd: 0.02, wallMs: 4_000 });
-    expect(result.passed).toBe(true);
+    expect(result).toMatchObject({ passed: true, samples: 2, successRate: { baseline: 1, withSkill: 1 } });
     expect(svc.get(draft.id).evalScore).toBe(result.score);
     expect(svc.history(draft.id)[0]?.eval?.passed).toBe(true);
 
@@ -68,10 +69,30 @@ describe('skills: agent-authored skill with eval gate and versioning (FR-9)', ()
       { id: draft.id, name: 'stripe-export', description: 'Export the monthly Stripe balance report', path: draft.path, scope: 'agent', version: 1, hasScripts: false },
     ]);
 
-    // 5. the agent patches the active skill: stays active, version bumps
+    // 5. the agent patches the active skill: the patch is a CANDIDATE (v2); v1 stays live until it passes the gate
     const patched = await svc.manage({ ...caller(), runId: 'run_patch' }, { action: 'patch', name: 'stripe-export', find: '2. Click Export.', replace: '2. Click Export and choose CSV.', reason: 'export defaulted to PDF' });
-    expect(patched).toMatchObject({ status: 'active', version: 2 });
-    expect(patched.contentHash).not.toBe(draft.contentHash);
+    expect(patched).toMatchObject({ status: 'active', version: 1, contentHash: draft.contentHash });
+    expect(svc.loadBody(org.id, ada.id, 'stripe-export')).not.toContain('choose CSV');
+    expect(svc.resolveForAgent(org.id, ada.id)[0]).toMatchObject({ version: 1, path: draft.path });
+    expect(svc.history(draft.id)[0]).toMatchObject({ version: 2, eval: null });
+    expect(git(k, 'status', '--porcelain')).toBe(''); // the folder is back at v1 and committed as such
+    // not evaluated yet: neither the agent nor a non-forcing owner can put it live
+    await expect(svc.activate(draft.id, { kind: 'agent', id: ada.id })).rejects.toMatchObject({ code: 'policy_denied', message: expect.stringContaining('candidate') });
+
+    // 5b. the candidate is evaluated against the LIVE version and, holding the line, goes live
+    runner.run.mockClear();
+    const candidateEval = await svc.evaluate(draft.id);
+    expect(runner.run).toHaveBeenCalledTimes(4);
+    const [liveArm, candidateArm] = runner.run.mock.calls.map((c) => c[0]);
+    expect(liveArm.skills).toMatchObject([{ name: 'stripe-export', version: 1, path: draft.path }]);
+    expect(candidateArm.skills).toMatchObject([{ name: 'stripe-export', version: 2 }]);
+    expect(candidateArm.skills[0].path).not.toBe(draft.path);
+    expect(candidateEval).toMatchObject({ passed: true, candidate: true });
+    expect(existsSync(candidateArm.skills[0].path)).toBe(false); // the staged copy is gone after the eval
+    expect(svc.get(draft.id)).toMatchObject({ version: 1, evalScore: result.score }); // the live row is untouched by the candidate's eval
+    const live2 = await svc.activate(draft.id, { kind: 'agent', id: ada.id, runId: 'run_patch' });
+    expect(live2).toMatchObject({ status: 'active', version: 2, evalScore: candidateEval.score });
+    expect(live2.contentHash).not.toBe(draft.contentHash);
     expect(svc.loadBody(org.id, ada.id, 'stripe-export')).toContain('choose CSV');
 
     // 6. the owner reviews the diff and rolls back
@@ -89,28 +110,32 @@ describe('skills: agent-authored skill with eval gate and versioning (FR-9)', ()
 
     const rolled = await svc.rollback(draft.id, 1, OWNER);
     expect(rolled).toMatchObject({ version: 3, status: 'active', contentHash: draft.contentHash, evalScore: result.score });
+    expect(svc.history(draft.id).map((v) => v.version)).toEqual([3, 2, 1]);
     expect(svc.read(draft.id).body).not.toContain('choose CSV');
     expect(svc.read(draft.id).files).toEqual(['SKILL.md', 'references/notes.md']);
-    // history is never rewritten: three commits, the rollback is a new one authored by the human
+    // history is never rewritten: the candidate, the hold of v1, its activation and the human's rollback are all commits
     const log = git(k, 'log', '--format=%an|%s', '--', git(k, 'ls-files').split('\n')[1] as string).trim().split('\n');
     expect(log).toEqual([
       'human|skill(agent/stripe-export): rollback v3',
-      `agent:${ada.id}|skill(agent/stripe-export): patch v2`,
+      `agent:${ada.id}|skill(agent/stripe-export): activate candidate v2`,
+      `agent:${ada.id}|skill(agent/stripe-export): keep v1 live (candidate v2 awaits evaluation)`,
+      `agent:${ada.id}|skill(agent/stripe-export): candidate v2`,
       `agent:${ada.id}|skill(agent/stripe-export): create v1`,
     ]);
     expect(await svc.diff(draft.id, 1, 3)).toBe('');
 
     // every status/version change was announced and audited with author and run
-    expect(events.map((e) => e.status)).toEqual(['draft', 'active', 'active', 'active']);
+    expect(events.map((e) => e.status)).toEqual(['draft', 'active', 'active', 'active', 'active']);
     expect(events.every((e) => e.orgId === org.id && e.skillId === draft.id)).toBe(true);
     const audit = k.audit.query({ orgId: org.id, action: 'skill.changed', entityId: draft.id }).reverse();
     expect(audit.map((a) => [a.data?.change, a.data?.author, a.runId])).toEqual([
       ['create', `agent:${ada.id}`, 'run_author'],
       ['status', `agent:${ada.id}`, 'run_author'],
-      ['patch', `agent:${ada.id}`, 'run_patch'],
+      ['candidate', `agent:${ada.id}`, 'run_patch'],
+      ['candidate_activated', `agent:${ada.id}`, 'run_patch'],
       ['rollback', 'human', undefined],
     ]);
-    expect(k.audit.query({ action: 'skill.evaluated', entityId: draft.id })).toHaveLength(1);
+    expect(k.audit.query({ action: 'skill.evaluated', entityId: draft.id })).toHaveLength(2);
   });
 
   it('commits carry the author identity and the run trailer, and only skill folders are tracked', async () => {
@@ -184,7 +209,7 @@ describe('skills: agent-authored skill with eval gate and versioning (FR-9)', ()
     const failing = fakeRunner('fixer', { baseline: { steps: 9, costUsd: 0.05 }, withSkill: { outcome: 'failed', steps: 1, costUsd: 0.001 } });
     const worse = createHarness(k, { evalRunner: failing, verdict: false });
     expect(await worse.svc.evaluate(a.id)).toMatchObject({ passed: false, withSkill: { success: false } });
-    expect(worse.utility.complete).toHaveBeenCalledTimes(1); // a failed run is not sent to the judge
+    expect(worse.utility.complete).toHaveBeenCalledTimes(2); // only the two baseline samples: a failed run is not sent to the judge
   });
 
   it('evaluate is unavailable without an eval runner, and usable once the runtime sets one', async () => {

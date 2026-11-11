@@ -9,7 +9,9 @@ import { newId } from '../../shared/ids.js';
 import { body, orgOf, param, query, resolveOrg } from '../http.js';
 import * as q from '../schemas/capabilities.js';
 import { assertDeliverableUrl } from '../webhooks/outbound.js';
-import type { Ok, WebhookDto } from '../types.js';
+import { GATEWAY_RUNTIME_KEYS, recordGatewayRevision } from '../../gateways/revisions.js';
+import { recordWebhookRevision } from '../revisions.js';
+import type { GatewayDto, Ok, WebhookDto } from '../types.js';
 
 /**
  * Plain CRUD over the `gateways` and `webhooks` tables. Config only: secrets
@@ -23,7 +25,9 @@ export interface GatewayControl {
 }
 
 /** Keys the messaging context writes into a gateway's config at runtime; edits must not drop them. */
-const RUNTIME_CONFIG_KEYS = ['state', 'pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts', 'approverUserIds'];
+const RUNTIME_CONFIG_KEYS = [...GATEWAY_RUNTIME_KEYS, 'approverUserIds'];
+/** Never returned: the pairing code's hash is a credential of the pairing flow. */
+const PAIRING_KEYS = ['pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts'];
 
 export function reachRoutes(app: FastifyInstance, s: Services, control?: GatewayControl): void {
   const { db, clock, audit } = s.kernel;
@@ -31,18 +35,29 @@ export function reachRoutes(app: FastifyInstance, s: Services, control?: Gateway
 
   /* ── Gateways (org_id NULL = serves every org) ── */
   const gatewayOf = (req: FastifyRequest): Gateway => {
-    const id = param(req, 'gatewayId');
+    return gatewayById(param(req, 'gatewayId'));
+  };
+
+  /** The row without the pairing internals; `pairingPending` (+ expiry) tells the UI a code is waiting. */
+  const gatewayDto = (row: Gateway): GatewayDto => {
+    const raw = (row.config ?? {}) as Record<string, unknown>;
+    const expiresAt = typeof raw.pairingExpiresAt === 'number' ? raw.pairingExpiresAt : null;
+    const pairingPending = typeof raw.pairingCodeHash === 'string' && expiresAt !== null && expiresAt > clock.now();
+    const config = Object.fromEntries(Object.entries(raw).filter(([key]) => !PAIRING_KEYS.includes(key)));
+    return { ...row, config, pairingPending, pairingExpiresAt: pairingPending ? expiresAt : null };
+  };
+  const gatewayById = (id: string): Gateway => {
     const row = db.select().from(gateways).where(eq(gateways.id, id)).get();
     if (!row) throw notFound('gateway', id);
     return row;
   };
 
-  app.get('/gateways', async (req) => {
+  app.get('/gateways', async (req): Promise<GatewayDto[]> => {
     const { orgId } = query(req, q.listGatewaysQ);
     const where = orgId ? eq(gateways.orgId, resolveOrg(s, orgId).id) : undefined;
-    return db.select().from(gateways).where(where).orderBy(asc(gateways.createdAt)).all();
+    return db.select().from(gateways).where(where).orderBy(asc(gateways.createdAt)).all().map(gatewayDto);
   });
-  app.post('/gateways', async (req) => {
+  app.post('/gateways', async (req): Promise<GatewayDto> => {
     const input = body(req, q.createGateway);
     const orgId = input.orgId ? resolveOrg(s, input.orgId).id : null;
     const now = clock.now();
@@ -51,12 +66,14 @@ export function reachRoutes(app: FastifyInstance, s: Services, control?: Gateway
       id, orgId, kind: input.kind, name: input.name, config: input.config ?? {}, authRef: input.authRef ?? null,
       status: input.status ?? 'active', createdAt: now, updatedAt: now,
     }).run();
-    audit.record({ orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: id, data: { op: 'create', kind: input.kind, name: input.name } });
+    const created = gatewayById(id);
+    const revision = recordGatewayRevision(s.kernel, created, OWNER, 'created');
+    audit.record({ orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: id, data: { op: 'create', kind: input.kind, name: input.name, revision } });
     reload();
-    return db.select().from(gateways).where(eq(gateways.id, id)).get();
+    return gatewayDto(created);
   });
-  app.get('/gateways/:gatewayId', async (req) => gatewayOf(req));
-  app.patch('/gateways/:gatewayId', async (req) => {
+  app.get('/gateways/:gatewayId', async (req): Promise<GatewayDto> => gatewayDto(gatewayOf(req)));
+  app.patch('/gateways/:gatewayId', async (req): Promise<GatewayDto> => {
     const row = gatewayOf(req);
     const patch = body(req, q.updateGateway);
     const set: Partial<typeof gateways.$inferInsert> = { updatedAt: clock.now() };
@@ -72,9 +89,11 @@ export function reachRoutes(app: FastifyInstance, s: Services, control?: Gateway
       set.lastError = null;
     }
     db.update(gateways).set(set).where(eq(gateways.id, row.id)).run();
-    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: row.id, data: { op: 'update', fields: Object.keys(patch) } });
+    const next = gatewayById(row.id);
+    const revision = recordGatewayRevision(s.kernel, next, OWNER, 'updated');
+    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: row.id, data: { op: 'update', fields: Object.keys(patch), revision } });
     reload();
-    return db.select().from(gateways).where(eq(gateways.id, row.id)).get();
+    return gatewayDto(next);
   });
   /** One-time code the owner sends to the bot from the chat they want to pair. */
   app.post('/gateways/:gatewayId/pairing-code', async (req): Promise<{ code: string }> => {
@@ -85,8 +104,10 @@ export function reachRoutes(app: FastifyInstance, s: Services, control?: Gateway
   app.get('/gateways-status', async () => control?.status() ?? []);
   app.delete('/gateways/:gatewayId', async (req): Promise<Ok> => {
     const row = gatewayOf(req);
+    // The last state is kept as one more revision, so a deleted gateway can be restored by rolling back.
+    const revision = recordGatewayRevision(s.kernel, row, OWNER, 'removed', { removed: true });
     db.delete(gateways).where(eq(gateways.id, row.id)).run();
-    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: row.id, data: { op: 'delete' } });
+    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'gateway', entityId: row.id, data: { op: 'delete', revision } });
     reload();
     return { ok: true };
   });
@@ -127,7 +148,8 @@ export function reachRoutes(app: FastifyInstance, s: Services, control?: Gateway
     };
     check(orgId, row);
     db.insert(webhooks).values(row).run();
-    audit.record({ orgId, actor: OWNER, action: 'config.changed', entityKind: 'webhook', entityId: row.id, data: { op: 'create', direction: row.direction, name: row.name } });
+    const revision = recordWebhookRevision(s, row, OWNER, 'created');
+    audit.record({ orgId, actor: OWNER, action: 'config.changed', entityKind: 'webhook', entityId: row.id, data: { op: 'create', direction: row.direction, name: row.name, revision } });
     return dto(row);
   });
   app.get('/orgs/:orgId/webhooks/:webhookId', async (req) => dto(webhookOf(req)));
@@ -147,13 +169,15 @@ export function reachRoutes(app: FastifyInstance, s: Services, control?: Gateway
     check(row.orgId, next);
     const { id: _id, orgId: _orgId, createdAt: _createdAt, direction: _direction, ...set } = next;
     db.update(webhooks).set(set).where(and(eq(webhooks.orgId, row.orgId), eq(webhooks.id, row.id))).run();
-    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'webhook', entityId: row.id, data: { op: 'update', fields: Object.keys(patch) } });
+    const revision = recordWebhookRevision(s, next, OWNER, 'updated');
+    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'webhook', entityId: row.id, data: { op: 'update', fields: Object.keys(patch), revision } });
     return dto(next);
   });
   app.delete('/orgs/:orgId/webhooks/:webhookId', async (req): Promise<Ok> => {
     const row = webhookOf(req);
+    const revision = recordWebhookRevision(s, row, OWNER, 'removed', { removed: true });
     db.delete(webhooks).where(and(eq(webhooks.orgId, row.orgId), eq(webhooks.id, row.id))).run();
-    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'webhook', entityId: row.id, data: { op: 'delete' } });
+    audit.record({ orgId: row.orgId, actor: OWNER, action: 'config.changed', entityKind: 'webhook', entityId: row.id, data: { op: 'delete', revision } });
     return { ok: true };
   });
 }

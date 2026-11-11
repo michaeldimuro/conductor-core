@@ -50,6 +50,8 @@ async function showIssue(ctx: Ctx, org: string, issue: Issue): Promise<void> {
   });
 }
 
+const bytes = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`);
+
 export function workCommands(program: Command, deps: CliDeps): void {
   const goal = program.command('goal').description('goals: what the organization is trying to achieve');
 
@@ -189,6 +191,20 @@ export function workCommands(program: Command, deps: CliDeps): void {
     .action(action(deps, async (ctx, args) => {
       const o = await ctx.org();
       await showIssue(ctx, o, await resolveIssue(ctx, o, arg(args, 0, 'issue')));
+    }));
+
+  issue
+    .command('artifacts <issue>')
+    .description('files the issue\'s runs produced (browser downloads, screenshots) and comment attachments')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.org();
+      const key = issueKey(arg(args, 0, 'issue'));
+      const list = await ctx.client().listIssueArtifacts(o, key);
+      ctx.emit(list, () => ctx.table(
+        ['name', 'size', 'from', 'saved', 'file'],
+        list.map((a) => [a.name, bytes(a.bytes), a.originId ? `${a.origin} ${a.originId}` : a.origin, ago(a.modifiedAt, ctx.deps.now()), a.file]),
+        'no artifacts yet — browser downloads and screenshots taken while working on the issue land here',
+      ));
     }));
 
   issue

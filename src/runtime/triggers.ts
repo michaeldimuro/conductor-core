@@ -41,9 +41,22 @@ export function wireTriggers(k: Kernel, d: RuntimeDeps, s: Scheduler, executor: 
     }
   });
 
-  on('approval.decided', (e) => {
-    if (!e.requesterAgentId) return;
-    s.wake(e.orgId, e.requesterAgentId, { trigger: 'approval', triggerNote: `Your approval request ${e.approvalId} was ${e.status}. If approved, repeat the exact action that was waiting on it.` });
+  // An approval the agent asked for was decided, or expired undecided: wake it on the issue the request
+  // belongs to. The run reads the outcome (and the board's note) itself and retries or changes course.
+  const approvalSettled = (orgId: string, approvalId: string, requesterAgentId: string | null): void => {
+    if (!requesterAgentId) return;
+    let issueId: string | null;
+    try {
+      issueId = d.governance.approvals.get(orgId, approvalId).issueId;
+    } catch {
+      return; // not an approval of this org
+    }
+    s.wake(orgId, requesterAgentId, { trigger: 'approval', issueId, approvalIds: [approvalId] });
+  };
+  on('approval.decided', (e) => approvalSettled(e.orgId, e.approvalId, e.requesterAgentId));
+  on('approval.expired', (e) => {
+    // An approved grant that lapsed unused is not news worth a run; a request nobody answered is.
+    if (e.phase === 'pending') approvalSettled(e.orgId, e.approvalId, e.requesterAgentId);
   });
 
   on('webhook.received', (e) => {

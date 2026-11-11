@@ -24,7 +24,8 @@ const httpUrl = z.string().max(2000).refine((v) => {
 /** The only settings reachable over the API. Everything else in the table is internal. */
 const SETTING_SCHEMAS: Record<string, z.ZodType> = {
   'daemon.public_url': httpUrl.nullable(),
-  'embeddings.provider': z.enum(['local', 'openai']),
+  // null clears the setting: the embedder then picks by itself (auto mode).
+  'embeddings.provider': z.enum(['local', 'openai']).nullable(),
   'embeddings.authRef': secretRefSchema.nullable(),
   'embeddings.baseUrl': httpUrl.nullable(),
 };
@@ -152,7 +153,9 @@ export function systemRoutes(app: FastifyInstance, s: Services, bind: () => Bind
     if (!checked.success) throw invalid(checked.error.issues.map((i) => `${i.path.join('.') || 'value'}: ${i.message}`).join('; '));
     const value = checked.data;
     const now = k.clock.now();
-    k.db.insert(settings).values({ key, value, updatedAt: now }).onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } }).run();
+    // Clearing removes the row (the column is NOT NULL); readers treat a missing setting as unset.
+    if (value === null) k.db.delete(settings).where(eq(settings.key, key)).run();
+    else k.db.insert(settings).values({ key, value, updatedAt: now }).onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } }).run();
     k.audit.record({ orgId: null, actor: OWNER, action: 'config.changed', entityKind: 'setting', entityId: key, data: { value } });
     return { key, value };
   });

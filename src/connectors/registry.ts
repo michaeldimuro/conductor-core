@@ -145,7 +145,7 @@ export class ConnectorRegistry {
   }
 
   /** After a connector was re-scoped to a department: grants to agents outside it no longer stand. */
-  private dropOutOfScopeGrants(orgId: string, connector: Connector, actor: Actor): void {
+  dropOutOfScopeGrants(orgId: string, connector: Connector, actor: Actor): void {
     if (connector.scope !== 'dept') return;
     for (const grant of this.store.listGrants(orgId, { connectorId: connector.id })) {
       let deptId: string | null = null;

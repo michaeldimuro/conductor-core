@@ -8,7 +8,7 @@ import type { ToolEntry } from './types.js';
 /** Why a call needs the board, beyond its configured tool policy. */
 export interface Gate {
   kind: ApprovalKind;
-  reason: 'payment' | 'spend_threshold' | 'new_recipient' | 'publish' | 'credential_new_origin' | 'org_policy';
+  reason: 'payment' | 'spend_threshold' | 'new_recipient' | 'unknown_recipient' | 'publish' | 'credential_new_origin' | 'org_policy';
   /** Shown to the approver (already free of secrets: recipients, amount, origin). */
   detail: Record<string, unknown>;
   /** Known-recipient keys to remember once the approved call has succeeded. */
@@ -45,7 +45,8 @@ export class ActionGates {
   }
 
   evaluate(ctx: ToolCallContext, entry: ToolEntry, args: Record<string, unknown>, category: ActionCategory, ingestedUntrusted: boolean): Gate | null {
-    if (!isGuardedRisk(entry.def.risk)) return null;
+    // A payment recognised only at call time (from the arguments) is gated even when the tool's listed risk was a read.
+    if (!isGuardedRisk(entry.def.risk) && !(category === 'payment' && !entry.builtin)) return null;
     const a = this.approvals;
     const orgId = ctx.orgId;
 
@@ -58,9 +59,15 @@ export class ActionGates {
       }
     }
     if (category === 'send') {
-      const fresh = extractRecipients(args, entry.serverName).filter((r) => !a.isKnownRecipient(orgId, r));
-      if (fresh.length > 0 && a.requiresApproval(orgId, 'external_send')) {
-        return { kind: 'external_send', reason: 'new_recipient', detail: { newRecipients: fresh }, remember: fresh };
+      const recipients = extractRecipients(args, entry.serverName);
+      const fresh = recipients.filter((r) => !a.isKnownRecipient(orgId, r));
+      // No recipient the gateway can read (nested oddly, unusually named, or implied by the upstream):
+      // that is an unknown recipient, never a known one. Nothing can be remembered, so it asks each time.
+      const unknown = recipients.length === 0;
+      if ((fresh.length > 0 || unknown) && a.requiresApproval(orgId, 'external_send')) {
+        return unknown
+          ? { kind: 'external_send', reason: 'unknown_recipient', detail: { newRecipients: [], recipientUnknown: true }, remember: [] }
+          : { kind: 'external_send', reason: 'new_recipient', detail: { newRecipients: fresh }, remember: fresh };
       }
     }
     if (category === 'publish' && a.requiresApproval(orgId, 'publish')) {

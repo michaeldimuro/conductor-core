@@ -13,6 +13,7 @@ import { workRoutes } from './routes/work.js';
 import { runRoutes } from './routes/runs.js';
 import { capabilityRoutes } from './routes/capabilities.js';
 import { reachRoutes, type GatewayControl } from './routes/reach.js';
+import { revisionRoutes } from './routes/revisions.js';
 import { agentRoutes, mcpRoute } from './routes/agent.js';
 import { inboundWebhookRoutes } from './webhooks/inbound.js';
 import { startOutboundWebhooks } from './webhooks/outbound.js';
@@ -102,6 +103,7 @@ export async function createApiServer(services: Services, opts: ApiServerOptions
     runRoutes(api, s);
     capabilityRoutes(api, s);
     reachRoutes(api, s, opts.gateways);
+    revisionRoutes(api, s, () => void opts.gateways?.reload().catch((err) => log.warn({ err }, 'gateway reload failed')));
     agentRoutes(api, s);
     takeoverRoutes(api, s, guard);
     events = eventSocket(api, s, { heartbeatMs: opts.wsHeartbeatMs ?? 30_000 });

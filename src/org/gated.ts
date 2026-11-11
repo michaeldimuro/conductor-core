@@ -9,6 +9,7 @@ import { isAbove } from './chart.js';
 import { persistDept } from './departments.js';
 import { findAgentRow, requireActiveOrg, requireAgent, requireDept, requireOrg } from './repo.js';
 import { budgetChangeSchema, hireAgentSchema, parse, reasonSchema, type BudgetChangeParsed } from './schemas.js';
+import { applySkillGrant, skillGrantSchema } from './skill-grants.js';
 
 /** Marks approvals filed by this context so we only ever execute our own. */
 const CONTEXT = 'org';
@@ -33,7 +34,9 @@ export function hireAgent(ctx: Ctx, orgId: string, raw: HireAgentInput, actor: A
   const input = { ...parsed, reportsTo: parsed.reportsTo === undefined ? requester.id : parsed.reportsTo };
   const dept = validateHire(ctx, orgId, input);
 
-  if (!ctx.deps.approvals.requiresApproval(orgId, 'hire_agent')) {
+  // A hire that comes with skills is also a skill grant: either gate sends it to the board.
+  const grantsSkills = (input.skills?.length ?? 0) > 0 && ctx.deps.approvals.requiresApproval(orgId, 'grant_skill');
+  if (!ctx.deps.approvals.requiresApproval(orgId, 'hire_agent') && !grantsSkills) {
     return { agent: ctx.mutate(() => insertAgent(ctx, org, input, actor)) };
   }
   const matchKey = `hire_agent:${sha256(stableStringify({ by: requester.id, input }))}`;
@@ -180,7 +183,7 @@ export function proposeBudgetChange(ctx: Ctx, orgId: string, raw: BudgetChangeIn
 }
 
 /**
- * Bus handler for `approval.decided`. Executes an approved hire/termination/budget change
+ * Bus handler for `approval.decided`. Executes an approved hire/termination/budget change/skill grant
  * that this context filed, exactly once: `approvals.consume` is the single-use
  * guard, so replays and duplicate events are no-ops.
  */
@@ -197,7 +200,7 @@ export function onApprovalDecided(
     return;
   }
   if (decided.orgId !== event.orgId) return;
-  if (decided.kind !== 'hire_agent' && decided.kind !== 'terminate_agent' && decided.kind !== 'budget_raise') return;
+  if (decided.kind !== 'hire_agent' && decided.kind !== 'terminate_agent' && decided.kind !== 'budget_raise' && decided.kind !== 'grant_skill') return;
   const matchKey = decided.payload.matchKey;
   if (decided.payload.context !== CONTEXT || typeof matchKey !== 'string') return;
 
@@ -211,6 +214,9 @@ export function onApprovalDecided(
     if (approval.kind === 'hire_agent') {
       const input = parse(hireAgentSchema, approval.payload.input, 'approved hire');
       ctx.mutate(() => insertAgent(ctx, requireActiveOrg(k, event.orgId), input, actor, { audit }));
+    } else if (approval.kind === 'grant_skill') {
+      const input = parse(skillGrantSchema, approval.payload.input, 'approved skill grant');
+      ctx.mutate(() => applySkillGrant(ctx, event.orgId, input, actor, audit));
     } else if (approval.kind === 'budget_raise') {
       const input = parse(budgetChangeSchema, approval.payload.input, 'approved budget change');
       ctx.mutate(() => applyBudget(ctx, event.orgId, input, actor, audit));

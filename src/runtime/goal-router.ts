@@ -6,6 +6,19 @@ import type { Wake } from './wakes.js';
 
 export type WakeFn = (orgId: string, agentId: string, wake: Wake) => string;
 
+/** Audit action recorded each time a goal's owner is woken to plan it (the retry counter). */
+export const PLANNING_REQUESTED = 'goal.planning_requested';
+/** Planning wakes per goal before the sweep stops retrying and tells the owner. */
+export const MAX_PLANNING_ATTEMPTS = 5;
+/** Wait before the first retry; doubles each attempt up to the cap. */
+export const PLANNING_RETRY_BASE_MS = 15 * 60_000;
+export const PLANNING_RETRY_CAP_MS = 6 * 3_600_000;
+
+/** How long after planning attempt number `attempts` (1-based) the next one may start. */
+export function planningBackoffMs(attempts: number): number {
+  return Math.min(PLANNING_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), PLANNING_RETRY_CAP_MS);
+}
+
 /**
  * Goal cascade (PRD: "set a goal, the org breaks it down"). A new goal is
  * routed to the agent who should plan it — the top of the org chart for org
@@ -95,20 +108,67 @@ export class GoalRouter {
     // Already broken down (template seeded issues, or an earlier planning run): nothing to plan.
     if (this.d.work.listIssues(orgId, { goalId: goal.id, limit: 1 }).length > 0) return null;
 
+    const attempt = this.attempts(goal).length + 1;
     this.wake(orgId, owner.id, {
       trigger: 'assignment', goalId: goal.id,
       triggerNote: `You own the goal "${goal.title}". Break it down into issues.`,
     });
+    this.k.audit.record({
+      orgId, actor: SYSTEM, action: PLANNING_REQUESTED, entityKind: 'goal', entityId: goal.id,
+      data: { ownerAgentId: owner.id, attempt },
+    });
     return owner;
   }
 
-  /** Heartbeat sweep: route every active goal of the org that still has no owner. */
+  /** Planning wakes already sent for this goal, newest first. */
+  private attempts(goal: Goal): Array<{ ts: number }> {
+    return this.k.audit
+      .query({ orgId: goal.orgId, entityKind: 'goal', entityId: goal.id, action: PLANNING_REQUESTED, limit: MAX_PLANNING_ATTEMPTS + 1 })
+      .slice()
+      .sort((a, b) => b.ts - a.ts);
+  }
+
+  /**
+   * An owned goal that still has no issues: its planning run failed, was
+   * cancelled, or produced nothing. Plan it again — with backoff, and at most
+   * `MAX_PLANNING_ATTEMPTS` times, after which the owner (the board) is told once.
+   */
+  private retryPlanning(goal: Goal): boolean {
+    if (goal.status !== 'active' || this.isDefaultGoal(goal)) return false;
+    if (this.d.work.listIssues(goal.orgId, { goalId: goal.id, limit: 1 }).length > 0) return false;
+    const attempts = this.attempts(goal);
+    const last = attempts[0];
+    // Never asked (e.g. owner assigned by hand, or it was inactive at the time): route it now.
+    if (!last) return this.route(goal.orgId, goal.id) !== null;
+    if (attempts.length >= MAX_PLANNING_ATTEMPTS) {
+      this.giveUp(goal, attempts.length);
+      return false;
+    }
+    if (this.k.clock.now() - last.ts < planningBackoffMs(attempts.length)) return false;
+    return this.route(goal.orgId, goal.id) !== null;
+  }
+
+  private giveUp(goal: Goal, attempts: number): void {
+    const action = 'goal.planning_abandoned';
+    if (this.k.audit.query({ orgId: goal.orgId, entityKind: 'goal', entityId: goal.id, action, limit: 1 }).length > 0) return;
+    this.k.audit.record({ orgId: goal.orgId, actor: SYSTEM, action, entityKind: 'goal', entityId: goal.id, data: { attempts, ownerAgentId: goal.ownerAgentId } });
+    this.k.bus.emit('notification', {
+      orgId: goal.orgId, kind: 'goal', title: `Goal not broken down: ${goal.title}`,
+      body: `The goal "${goal.title}" still has no issues after ${attempts} planning attempts, so Conductor stopped retrying. Check its owner's recent runs, or create the first issues yourself.`,
+      data: { goalId: goal.id },
+    });
+  }
+
+  /**
+   * Heartbeat sweep: route every active goal of the org that still has no
+   * owner, and retry planning for owned goals that still have no issues.
+   * Returns the number of planning wakes sent.
+   */
   sweep(orgId: string): number {
     let routed = 0;
     for (const goal of this.d.work.listGoals(orgId, { status: 'active' })) {
-      if (goal.ownerAgentId) continue;
       try {
-        if (this.route(orgId, goal.id)) routed++;
+        if (goal.ownerAgentId ? this.retryPlanning(goal) : this.route(orgId, goal.id)) routed++;
       } catch (err) {
         this.k.log.warn({ err, orgId, goalId: goal.id }, 'goal routing failed');
       }

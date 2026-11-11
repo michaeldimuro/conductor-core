@@ -100,6 +100,22 @@ export class SkillGit {
     await this.run(['checkout', '-q', sha, '--', rel]);
   }
 
+  /**
+   * Write the skill folder as it was at `sha` into `dest` (a directory outside the working copy),
+   * through a throwaway index: neither the repo's index nor the live folder is touched.
+   */
+  async exportTree(sha: string, dir: string, dest: string): Promise<void> {
+    const rel = this.rel(dir);
+    mkdirSync(dest, { recursive: true });
+    const index = `${dest.replace(/\/+$/, '')}.index`;
+    try {
+      await this.run(['read-tree', `${sha}:${rel}`], { GIT_INDEX_FILE: index });
+      await this.run(['checkout-index', '-a', '-f', `--prefix=${dest.replace(/\/+$/, '')}/`], { GIT_INDEX_FILE: index });
+    } finally {
+      rmSync(index, { force: true });
+    }
+  }
+
   /** Best effort: throw away uncommitted changes to the folder after a failed write. */
   async discard(dir: string, existedBefore: boolean): Promise<void> {
     try {
@@ -121,7 +137,7 @@ export class SkillGit {
     return this.run(['log', `-${max}`, `--format=${format}`, '--', this.rel(dir)]);
   }
 
-  private run(args: string[]): Promise<string> {
+  private run(args: string[], env: Record<string, string> = {}): Promise<string> {
     const full = ['-C', this.root, '-c', 'core.autocrlf=false', '-c', 'core.quotepath=false', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args];
     return new Promise((resolve, reject) => {
       execFile(
@@ -130,7 +146,7 @@ export class SkillGit {
         {
           maxBuffer: 64 * 1024 * 1024,
           encoding: 'utf8',
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CEILING_DIRECTORIES: dirname(this.root), GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined },
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CEILING_DIRECTORIES: dirname(this.root), GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined, ...env },
         },
         (err, stdout, stderr) => {
           if (!err) return resolve(stdout);

@@ -39,7 +39,11 @@ export async function runNow(orgId: string, agentId: string, agentName: string, 
     if (seen) settle({ kind: 'skipped', reason: seen.reason, temporary: seen.temporary });
     const result = await outcome;
     if (result.kind === 'started') toast(`${agentName} started a run`, 'ok');
-    else if (result.kind === 'skipped') toast(`No run started for ${agentName}: ${result.reason}${result.temporary ? ' It will run when that clears.' : ''}`, 'info');
+    else if (result.kind === 'skipped') {
+      // The daemon's reason is a bare phrase; close it before the follow-up sentence.
+      const reason = /[.!?]$/.test(result.reason.trim()) ? result.reason.trim() : `${result.reason.trim()}.`;
+      toast(`No run started for ${agentName}: ${reason}${result.temporary ? ' It will run when that clears.' : ''}`, 'info');
+    }
     else toast(`${agentName} is queued and has not started yet. It runs when a slot is free.`, 'info');
     return result;
   } finally {

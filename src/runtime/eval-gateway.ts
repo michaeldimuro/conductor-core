@@ -1,12 +1,17 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import type { McpEndpoint, ResolvedSkillRef } from '../contracts/adapter.js';
+import type { Kernel } from '../contracts/kernel.js';
 import type { TokenService } from '../contracts/services.js';
+import type { BuiltinToolProvider, ToolCallContext, ToolDef } from '../contracts/tools.js';
+import { confine, createFilesToolProvider } from '../connectors/files/provider.js';
+import { runSandboxed, sandboxAvailable } from '../connectors/files/sandbox.js';
 import { errorMessage } from '../shared/errors.js';
 import { resolveInside } from '../shared/paths.js';
 import type { Logger } from '../shared/util.js';
@@ -15,6 +20,31 @@ const MAX_FILE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_FILES_LISTED = 200;
 const NS = 'conductor-skills__';
+/** Same qualified names as the real gateway, so a skill that says "use conductor-files__write_file" replays as written. */
+const FILES_NS = 'conductor-files__';
+const RUN_COMMAND = 'run_command';
+const MAX_COMMAND_MS = 120_000;
+const MAX_COMMAND_OUTPUT = 64_000;
+
+/** The throwaway workspace of one eval run; the file tools see nothing else. */
+export interface EvalSandbox {
+  workspacePath: string;
+  orgId: string;
+  agentId: string;
+  deptId: string;
+}
+
+const commandArgs = z.object({
+  command: z.string().min(1).max(20_000),
+  cwd: z.string().min(1).optional(),
+  timeoutMs: z.number().int().min(100).max(MAX_COMMAND_MS).optional(),
+});
+const RUN_COMMAND_DEF = {
+  name: `${FILES_NS}${RUN_COMMAND}`,
+  description:
+    'Run a shell command in your workspace inside a sandbox: it can read and write only the workspace and a temp dir, and has NO network access. Returns exit code, stdout and stderr.',
+  inputSchema: { type: 'object' as const, properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeoutMs: { type: 'integer', minimum: 100, maximum: MAX_COMMAND_MS } }, required: ['command'] },
+};
 
 const nameProp = { type: 'string', description: 'Skill name.' } as const;
 const TOOLS = [
@@ -103,26 +133,61 @@ export function callEvalSkillTool(skills: ResolvedSkillRef[], tool: string, args
 }
 
 /**
- * Sandboxed, read-only tool gateway for skill-eval runs. Eval runs must not
- * reach connectors, tasks or memory, but API / process / http adapters can
- * only read a skill body through an MCP endpoint — so the runtime serves one
- * on a loopback port that exposes nothing but the skills under evaluation,
- * authenticated with the eval run's own run token.
+ * The shell of an eval run: the same seatbelt confinement as the real `run_command` (reads and
+ * writes only inside the eval workspace and a private temp dir) with the network always off —
+ * the org's network allowlist is deliberately not applied, so a replay cannot reach anything.
+ */
+async function evalRunCommand(sandbox: EvalSandbox, raw: Record<string, unknown>): Promise<ToolOut> {
+  const parsed = commandArgs.safeParse(raw);
+  if (!parsed.success) return text(`invalid run_command arguments: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`, true);
+  const root = realpathSync(sandbox.workspacePath);
+  const cwd = confine(root, parsed.data.cwd ?? '.', sandbox.workspacePath);
+  if (!lstatSync(cwd).isDirectory()) return text(`not a directory: ${String(parsed.data.cwd).slice(0, 120)}`, true);
+  const timeoutMs = parsed.data.timeoutMs ?? 60_000;
+  const r = await runSandboxed({ command: parsed.data.command, workspace: root, cwd, networkAllowlist: [], timeoutMs, maxOutputBytes: MAX_COMMAND_OUTPUT });
+  const parts = [
+    r.timedOut ? `timed out after ${timeoutMs} ms (killed)` : `exit code: ${r.exitCode ?? `signal ${r.signal}`}`,
+    r.stdout ? `stdout:\n${r.stdout}` : 'stdout: (empty)',
+    r.stderr ? `stderr:\n${r.stderr}` : '',
+    r.truncated ? `[output truncated at ${MAX_COMMAND_OUTPUT} bytes]` : '',
+  ].filter(Boolean);
+  return text(parts.join('\n'), r.timedOut || r.exitCode !== 0);
+}
+
+interface EvalRun {
+  skills: ResolvedSkillRef[];
+  sandbox: EvalSandbox | null;
+}
+
+/**
+ * Sandboxed tool gateway for skill-eval runs. Eval runs must not reach
+ * connectors, the browser, tasks or memory, but API / process / http adapters
+ * have no tools of their own — so the runtime serves an MCP endpoint on a
+ * loopback port, authenticated with the eval run's own run token, that exposes
+ * exactly two things: the skills under evaluation (read-only) and file tools
+ * confined to the run's throwaway eval workspace (read / write / list / search,
+ * plus a network-less sandboxed shell where the macOS sandbox is available).
+ * Nothing here has an effect outside that workspace.
  */
 export class EvalGateway {
   private server: HttpServer | null = null;
   private starting: Promise<number> | null = null;
-  private readonly runs = new Map<string, ResolvedSkillRef[]>();
+  private readonly runs = new Map<string, EvalRun>();
+  private readonly files: BuiltinToolProvider | null;
 
   constructor(
     private readonly tokens: Pick<TokenService, 'verify'>,
     private readonly log: Logger,
-  ) {}
+    /** Enables the workspace file tools (the files provider is built on the kernel). */
+    kernel?: Kernel,
+  ) {
+    this.files = kernel ? createFilesToolProvider(kernel) : null;
+  }
 
-  /** Register an eval run and return the endpoint its adapter should use. */
-  async open(runId: string, skills: ResolvedSkillRef[], runToken: string): Promise<{ endpoint: McpEndpoint; baseUrl: string }> {
+  /** Register an eval run and return the endpoint its adapter should use. `sandbox` = the run's throwaway workspace. */
+  async open(runId: string, skills: ResolvedSkillRef[], runToken: string, sandbox?: EvalSandbox): Promise<{ endpoint: McpEndpoint; baseUrl: string }> {
     const port = await this.listen();
-    this.runs.set(runId, skills);
+    this.runs.set(runId, { skills, sandbox: sandbox ?? null });
     const baseUrl = `http://127.0.0.1:${port}`;
     return { baseUrl, endpoint: { name: 'conductor', url: `${baseUrl}/mcp`, headers: { Authorization: `Bearer ${runToken}` } } };
   }
@@ -149,12 +214,45 @@ export class EvalGateway {
     return this.starting;
   }
 
-  private authorize(req: IncomingMessage): { skills: ResolvedSkillRef[] } | null {
+  private authorize(req: IncomingMessage): (EvalRun & { runId: string }) | null {
     const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
     const principal = m?.[1] ? this.tokens.verify(m[1].trim()) : null;
     if (!principal || principal.kind !== 'run') return null;
-    const skills = this.runs.get(principal.runId);
-    return skills ? { skills } : null;
+    const run = this.runs.get(principal.runId);
+    return run ? { ...run, runId: principal.runId } : null;
+  }
+
+  private fileContext(run: EvalRun & { runId: string }): ToolCallContext | null {
+    if (!this.files || !run.sandbox) return null;
+    return { orgId: run.sandbox.orgId, agentId: run.sandbox.agentId, deptId: run.sandbox.deptId, runId: run.runId, issueId: null, workspacePath: run.sandbox.workspacePath, autonomyLevel: 0 };
+  }
+
+  /** The tools one eval run sees: its skills, and — when it has a workspace — the confined file tools. */
+  async toolsFor(run: EvalRun & { runId: string }): Promise<Array<{ name: string; description: string; inputSchema: Record<string, unknown>; readOnly: boolean }>> {
+    const out = TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown>, readOnly: true }));
+    const ctx = this.fileContext(run);
+    if (!ctx || !this.files) return out;
+    // The provider's own shell honours the org's network allowlist; eval runs get the network-less one below instead.
+    const defs: ToolDef[] = (await this.files.tools(ctx)).filter((t) => t.name !== RUN_COMMAND);
+    for (const t of defs) out.push({ name: `${FILES_NS}${t.name}`, description: t.description, inputSchema: t.inputSchema, readOnly: t.risk === 'read' });
+    if (sandboxAvailable()) out.push({ ...RUN_COMMAND_DEF, readOnly: false });
+    return out;
+  }
+
+  /** Dispatch one tool call of an eval run. Never throws: failures come back as tool errors. */
+  async callTool(run: EvalRun & { runId: string }, name: string, args: Record<string, unknown>): Promise<ToolOut> {
+    if (!name.startsWith(FILES_NS)) return callEvalSkillTool(run.skills, name, args);
+    const ctx = this.fileContext(run);
+    if (!ctx || !this.files || !run.sandbox) return text(`Unknown tool: ${name}`, true);
+    const tool = name.slice(FILES_NS.length);
+    try {
+      if (tool === RUN_COMMAND) return await evalRunCommand(run.sandbox, args);
+      const result = await this.files.call(ctx, tool, args);
+      const body = result.content.map((c) => (c.type === 'text' ? c.text : `[${c.type} content]`)).join('\n');
+      return text(body, result.isError === true);
+    } catch (err) {
+      return text(`Tool failed: ${errorMessage(err)}`, true);
+    }
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -171,10 +269,10 @@ export class EvalGateway {
 
       const server = new Server({ name: 'conductor-eval-gateway', version: '0.1.0' }, { capabilities: { tools: {} } });
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: TOOLS.map((t) => ({ ...t, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } })),
+        tools: (await this.toolsFor(who)).map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: readOnly, destructiveHint: false, openWorldHint: false } })),
       }));
       server.setRequestHandler(CallToolRequestSchema, async (request) => {
-        return callEvalSkillTool(who.skills, request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>);
+        return this.callTool(who, request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>);
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.once('close', () => {

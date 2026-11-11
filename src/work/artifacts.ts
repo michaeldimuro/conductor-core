@@ -1,7 +1,9 @@
-import { copyFileSync, constants, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, constants, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
+import type { IssueArtifact } from '../contracts/org-work.js';
 import type { Comment, Organization } from '../contracts/rows.js';
 import { invalid } from '../shared/errors.js';
+import { ID_PREFIX } from '../shared/ids.js';
 import { resolveInside } from '../shared/paths.js';
 import type { WorkCtx } from './context.js';
 
@@ -81,4 +83,43 @@ export function storeAttachments(
     discard();
     throw e;
   }
+}
+
+const MAX_LISTED_ARTIFACTS = 2000;
+const MAX_ARTIFACT_DEPTH = 6;
+
+/**
+ * Every regular file under `orgs/<org>/artifacts/<issueId>/`, newest first:
+ * `<commentId>/…` are comment attachments, `<runId>/…` what a run's tools saved
+ * (browser screenshots and downloads). Symlinks are never followed or listed.
+ */
+export function listIssueArtifacts(ctx: WorkCtx, org: Organization, issueId: string): IssueArtifact[] {
+  const root = ctx.kernel.paths.artifactDir(org.slug, issueId);
+  const out: IssueArtifact[] = [];
+  const walk = (dir: string, rel: string[], depth: number): void => {
+    if (depth > MAX_ARTIFACT_DEPTH || out.length >= MAX_LISTED_ARTIFACTS) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // no artifacts yet
+    }
+    for (const entry of entries) {
+      if (out.length >= MAX_LISTED_ARTIFACTS) return;
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) walk(file, [...rel, entry.name], depth + 1);
+      else if (entry.isFile()) {
+        const stat = lstatSync(file, { throwIfNoEntry: false });
+        if (!stat?.isFile()) continue;
+        const top = rel[0] ?? '';
+        const origin = top.startsWith(`${ID_PREFIX.run}_`) ? 'run' : top.startsWith(`${ID_PREFIX.comment}_`) ? 'comment' : 'other';
+        out.push({
+          name: entry.name, path: [...rel, entry.name].join('/'), file, bytes: stat.size, modifiedAt: Math.round(stat.mtimeMs),
+          origin, originId: origin === 'other' ? null : top,
+        });
+      }
+    }
+  };
+  walk(root, [], 0);
+  return out.sort((a, b) => b.modifiedAt - a.modifiedAt || a.path.localeCompare(b.path));
 }

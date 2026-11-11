@@ -117,15 +117,19 @@ export function createToolProvider(ctx: SkillCtx): BuiltinToolProvider {
         }
         case 'skill_manage': {
           const skill = await manage(ctx, { orgId: call.orgId, agentId: call.agentId, runId: call.runId, issueId: call.issueId }, args as unknown as SkillManageInput);
+          const candidate = ctx.store.pendingCandidate(skill);
           return jsonResult({
             id: skill.id,
             name: skill.name,
             scope: skill.scope,
             status: skill.status,
             version: skill.version,
+            ...(candidate ? { candidateVersion: candidate.version } : {}),
             scanFindings: skill.scanFindings.filter((f) => f.severity !== 'info'),
             note:
-              skill.status === 'quarantined'
+              candidate
+                ? `This skill is live, so your change was saved as candidate v${candidate.version}. v${skill.version} stays in use until the candidate passes its evaluation against it.`
+                : skill.status === 'quarantined'
                 ? 'The static scan blocked this skill. Remove the flagged content; a human must review it before it can be used.'
                 : skill.status === 'draft'
                   ? 'Saved as draft. It becomes active once its evaluation beats the baseline.'

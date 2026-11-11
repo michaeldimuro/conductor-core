@@ -7,10 +7,11 @@ import type { Kernel } from '../contracts/kernel.js';
 import type { OrgService } from '../contracts/org-work.js';
 import type { BrowserProfile } from '../contracts/rows.js';
 import { SYSTEM, type Actor } from '../contracts/types.js';
-import { ConductorError, conflict, invalid, notFound } from '../shared/errors.js';
+import { ConductorError, conflict, forbidden, invalid, notFound } from '../shared/errors.js';
 import { newId, slugify } from '../shared/ids.js';
 import { newKey } from './crypto.js';
 import { normalizePatterns } from './domains.js';
+import { readProfileRevision, recordProfileRevision } from './revisions.js';
 
 export type OrgLookup = Pick<OrgService, 'getAgent' | 'getOrg' | 'getDept'>;
 
@@ -131,7 +132,9 @@ export class ProfileStore {
       .where(and(eq(browserProfiles.orgId, orgId), eq(browserProfiles.deptId, agent.deptId), isNull(browserProfiles.agentId)))
       .orderBy(asc(browserProfiles.createdAt)).get();
     if (shared) return shared;
-    return this.insert(orgId, { name: agent.name, agentId, deptId: null, slugBase: agent.slug, uniquify: true }, SYSTEM);
+    const created = this.insert(orgId, { name: agent.name, agentId, deptId: null, slugBase: agent.slug, uniquify: true }, SYSTEM);
+    this.revision(created, SYSTEM, 'created on first use');
+    return created;
   }
 
   create(orgId: string, input: CreateProfileInput, actor: Actor): BrowserProfile {
@@ -159,10 +162,42 @@ export class ProfileStore {
         .where(and(eq(browserProfiles.orgId, orgId), eq(browserProfiles.id, profile.id))).run();
     }
     this.writeFile(profile, v);
-    return this.get(orgId, profile.id);
+    const created = this.get(orgId, profile.id);
+    this.revision(created, actor, 'created');
+    return created;
   }
 
-  update(orgId: string, profileId: string, patch: UpdateProfileInput, actor: Actor): BrowserProfile {
+  /** Snapshot the profile's owner-editable config into `config_revisions`. */
+  private revision(profile: BrowserProfile, actor: Actor, note: string): number {
+    let settings: ProfileSettings;
+    try {
+      settings = this.settings(profile);
+    } catch {
+      settings = { engine: { kind: 'chromium' }, headed: profile.headed ?? null, onePasswordVaults: [] }; // unreadable side file: record the columns
+    }
+    return recordProfileRevision(this.kernel, profile.orgId, profile.id, {
+      name: profile.name, slug: profile.slug, agentId: profile.agentId, deptId: profile.deptId,
+      domainAllowlist: profile.domainAllowlist, sensitiveDomains: profile.sensitiveDomains,
+      engine: { ...settings.engine }, headed: settings.headed, onePasswordVaults: settings.onePasswordVaults,
+    }, actor, note);
+  }
+
+  /**
+   * Restore the allowlists, engine, headed mode, vault allowlist and name
+   * captured by `revision`. The restore is a new revision; the profile's
+   * cookies, lease and on-disk directory are untouched.
+   */
+  rollback(orgId: string, profileId: string, revision: number, actor: Actor): BrowserProfile {
+    if (actor.kind === 'agent') throw forbidden('agents may not roll back configuration; this is a board action');
+    this.get(orgId, profileId);
+    const { config } = readProfileRevision(this.kernel, orgId, profileId, revision);
+    return this.update(orgId, profileId, {
+      name: config.name, domainAllowlist: config.domainAllowlist, sensitiveDomains: config.sensitiveDomains,
+      engine: parse(engineSchema, config.engine, 'browser engine'), headed: config.headed, onePasswordVaults: config.onePasswordVaults,
+    }, actor, { rollbackTo: revision });
+  }
+
+  update(orgId: string, profileId: string, patch: UpdateProfileInput, actor: Actor, opts: { rollbackTo?: number } = {}): BrowserProfile {
     const v = parse(updateSchema, patch, 'browser profile');
     const before = this.get(orgId, profileId);
     const set: Partial<typeof browserProfiles.$inferInsert> = { updatedAt: this.kernel.clock.now() };
@@ -174,11 +209,16 @@ export class ProfileStore {
     this.kernel.db.update(browserProfiles).set(set)
       .where(and(eq(browserProfiles.orgId, orgId), eq(browserProfiles.id, profileId))).run();
     this.writeFile(before, v);
+    const next = this.get(orgId, profileId);
+    const revision = this.revision(next, actor, opts.rollbackTo ? `rollback to revision ${opts.rollbackTo}` : 'updated');
     this.kernel.audit.record({
-      orgId, actor, action: 'browser.profile_updated', entityKind: 'browser_profile', entityId: profileId,
-      data: { changes: v, previous: { name: before.name, domainAllowlist: before.domainAllowlist, sensitiveDomains: before.sensitiveDomains } },
+      orgId, actor, action: opts.rollbackTo ? 'config.changed' : 'browser.profile_updated', entityKind: 'browser_profile', entityId: profileId,
+      data: {
+        changes: v, previous: { name: before.name, domainAllowlist: before.domainAllowlist, sensitiveDomains: before.sensitiveDomains }, revision,
+        ...(opts.rollbackTo ? { change: 'rollback', rollbackTo: opts.rollbackTo } : {}),
+      },
     });
-    return this.get(orgId, profileId);
+    return next;
   }
 
   private insert(

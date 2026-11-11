@@ -1,6 +1,6 @@
 import { and, desc, eq, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { approvals, knownRecipients } from '../db/schema/index.js';
+import { approvals, knownRecipients, organizations } from '../db/schema/index.js';
 import { APPROVAL_KINDS, type ApprovalKind } from '../db/schema/governance.js';
 import type { Kernel } from '../contracts/kernel.js';
 import type { Approval } from '../contracts/rows.js';
@@ -8,7 +8,7 @@ import type { ApprovalService } from '../contracts/services.js';
 import { SYSTEM, type Actor } from '../contracts/types.js';
 import { conflict, forbidden, invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
-import { approvalTtlMs, evaluateGate, scrubSecrets, summarizePayload } from './policy.js';
+import { approvalTtlMs, approvalUseTtlMs, evaluateGate, scrubSecrets, summarizePayload } from './policy.js';
 import { parse, requireAgent, requireOrg } from './store.js';
 
 const requestSchema = z.object({
@@ -32,12 +32,19 @@ const STATUSES = ['pending', 'approved', 'denied', 'expired', 'cancelled'] as co
 
 const matchKeyIs = (matchKey: string): SQL => sql`json_extract(${approvals.payload}, '$.matchKey') = ${matchKey}`;
 
-/** Flip one pending approval to `expired` (no-op if it was decided meanwhile). */
-function markExpired(k: Kernel, a: Approval): boolean {
+type ExpiryPhase = 'pending' | 'unused';
+
+/**
+ * Flip one approval to `expired` (no-op if it changed meanwhile): a pending one
+ * nobody decided in time, or an approved grant that was never used. Audited,
+ * and announced on the bus so the agent waiting on it is woken.
+ */
+function markExpired(k: Kernel, a: Approval, phase: ExpiryPhase = 'pending'): boolean {
+  const from = phase === 'pending' ? 'pending' : 'approved';
   const res = k.db
     .update(approvals)
     .set({ status: 'expired' })
-    .where(and(eq(approvals.id, a.id), eq(approvals.orgId, a.orgId), eq(approvals.status, 'pending')))
+    .where(and(eq(approvals.id, a.id), eq(approvals.orgId, a.orgId), eq(approvals.status, from), isNull(approvals.consumedAt)))
     .run();
   if (res.changes !== 1) return false;
   k.audit.record({
@@ -48,24 +55,50 @@ function markExpired(k: Kernel, a: Approval): boolean {
     entityId: a.id,
     runId: a.runId ?? undefined,
     issueId: a.issueId ?? undefined,
-    data: { kind: a.kind, expiresAt: a.expiresAt },
+    data: { kind: a.kind, expiresAt: a.expiresAt, phase, ...(phase === 'unused' ? { decidedAt: a.decidedAt } : {}) },
   });
+  k.bus.emit('approval.expired', { orgId: a.orgId, approvalId: a.id, requesterAgentId: a.requesterAgentId, phase });
   return true;
 }
 
+/** Earliest `decidedAt` an approved grant of this org may have and still be usable; null = no use-by window. */
+function useCutoff(k: Kernel, orgId: string, now: number): number | null {
+  const org = k.db.select({ policies: organizations.policies }).from(organizations).where(eq(organizations.id, orgId)).get();
+  const ttl = approvalUseTtlMs(org?.policies);
+  return ttl === null ? null : now - ttl;
+}
+
+/** SQL: the approved grant is still inside its use-by window. */
+const usable = (cutoff: number | null): SQL => (cutoff === null ? sql`1 = 1` : sql`(${approvals.decidedAt} is null or ${approvals.decidedAt} > ${cutoff})`);
+
 /**
- * Scheduler hook: mark every pending approval past its `expiresAt` as expired
- * (all orgs) and audit each. Returns the approvals that were expired.
+ * Scheduler hook (all orgs): expire every pending approval past its
+ * `expiresAt`, and every approved single-use grant (one carrying a
+ * `matchKey`) that was not consumed within the org's use-by window. Each is
+ * audited and announced with `approval.expired`. Returns the expired approvals.
  */
 export function expireApprovals(k: Kernel, now: number = k.clock.now()): Approval[] {
+  const expired: Approval[] = [];
   const due = k.db
     .select()
     .from(approvals)
     .where(and(eq(approvals.status, 'pending'), isNotNull(approvals.expiresAt), lte(approvals.expiresAt, now)))
     .all();
-  const expired: Approval[] = [];
   for (const a of due) {
-    if (markExpired(k, a)) expired.push({ ...a, status: 'expired' });
+    if (markExpired(k, a, 'pending')) expired.push({ ...a, status: 'expired' });
+  }
+
+  const unused = k.db
+    .select()
+    .from(approvals)
+    .where(and(eq(approvals.status, 'approved'), isNull(approvals.consumedAt), isNotNull(approvals.decidedAt), sql`json_extract(${approvals.payload}, '$.matchKey') is not null`))
+    .all();
+  const cutoffs = new Map<string, number | null>();
+  for (const a of unused) {
+    if (!cutoffs.has(a.orgId)) cutoffs.set(a.orgId, useCutoff(k, a.orgId, now));
+    const cutoff = cutoffs.get(a.orgId) ?? null;
+    if (cutoff === null || a.decidedAt === null || a.decidedAt > cutoff) continue;
+    if (markExpired(k, a, 'unused')) expired.push({ ...a, status: 'expired' });
   }
   return expired;
 }
@@ -145,7 +178,7 @@ export class Approvals implements ApprovalService {
     const current = this.get(orgId, approvalId);
     const now = this.k.clock.now();
     if (current.status === 'pending' && current.expiresAt !== null && current.expiresAt <= now) {
-      markExpired(this.k, current);
+      markExpired(this.k, current, 'pending');
       throw conflict('approval has expired', { status: 'expired' });
     }
     if (current.status !== 'pending') {
@@ -222,6 +255,8 @@ export class Approvals implements ApprovalService {
           eq(approvals.status, 'approved'),
           isNull(approvals.consumedAt),
           matchKeyIs(m.matchKey),
+          // An approved grant is only good inside its use-by window; the sweep marks older ones expired.
+          usable(useCutoff(this.k, m.orgId, now)),
         ),
       )
       .orderBy(approvals.decidedAt, approvals.id)
@@ -260,7 +295,7 @@ export class Approvals implements ApprovalService {
           matchKeyIs(m.matchKey),
           or(
             and(eq(approvals.status, 'pending'), or(isNull(approvals.expiresAt), sql`${approvals.expiresAt} > ${now}`)),
-            and(eq(approvals.status, 'approved'), isNull(approvals.consumedAt)),
+            and(eq(approvals.status, 'approved'), isNull(approvals.consumedAt), usable(useCutoff(this.k, m.orgId, now))),
           ),
         ),
       )

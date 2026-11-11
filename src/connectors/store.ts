@@ -84,13 +84,14 @@ export class ConnectorStore {
     return this.k.db.select().from(connectorGrants).where(and(...where)).orderBy(connectorGrants.createdAt).all();
   }
 
-  upsertGrant(orgId: string, connectorId: string, agentId: string, values: Pick<ConnectorGrant, 'toolAllowlist' | 'toolPolicies' | 'defaultPolicy' | 'authRef'>): ConnectorGrant {
+  /** `id` names the row when a new grant is inserted (rollback restores a revoked grant under its old id). */
+  upsertGrant(orgId: string, connectorId: string, agentId: string, values: Pick<ConnectorGrant, 'toolAllowlist' | 'toolPolicies' | 'defaultPolicy' | 'authRef'>, id?: string): ConnectorGrant {
     const now = this.k.clock.now();
     const existing = this.findGrant(orgId, connectorId, agentId);
     if (existing) {
       this.k.db.update(connectorGrants).set({ ...values, updatedAt: now }).where(and(eq(connectorGrants.orgId, orgId), eq(connectorGrants.id, existing.id))).run();
     } else {
-      this.k.db.insert(connectorGrants).values({ id: newId('grant'), orgId, connectorId, agentId, ...values, createdAt: now, updatedAt: now }).run();
+      this.k.db.insert(connectorGrants).values({ id: id ?? newId('grant'), orgId, connectorId, agentId, ...values, createdAt: now, updatedAt: now }).run();
     }
     return this.findGrant(orgId, connectorId, agentId)!;
   }
@@ -117,21 +118,20 @@ export class ConnectorStore {
     this.k.db.update(toolPins).set({ ...patch, updatedAt: this.k.clock.now() }).where(and(eq(toolPins.orgId, orgId), eq(toolPins.id, pinId))).run();
   }
 
-  /** Append a config revision (connectors and grants are revisioned for rollback/audit). */
-  revision(orgId: string, entityKind: 'connector' | 'connector_grant', entityId: string, snapshot: Record<string, unknown>, actor: Actor, note?: string): void {
+  /** Append a config revision (connectors and grants are revisioned for rollback/audit). Returns the new revision number. */
+  revision(orgId: string, entityKind: 'connector' | 'connector_grant', entityId: string, snapshot: Record<string, unknown>, actor: Actor, note?: string): number {
     const last = this.k.db
       .select({ revision: configRevisions.revision })
       .from(configRevisions)
       .where(and(eq(configRevisions.entityKind, entityKind), eq(configRevisions.entityId, entityId)))
       .orderBy(desc(configRevisions.revision))
       .get();
+    const revision = (last?.revision ?? 0) + 1;
     this.k.db
       .insert(configRevisions)
-      .values({
-        id: newId('revision'), orgId, entityKind, entityId, revision: (last?.revision ?? 0) + 1,
-        snapshot, author: actorLabel(actor), note: note ?? null, ts: this.k.clock.now(),
-      })
+      .values({ id: newId('revision'), orgId, entityKind, entityId, revision, snapshot, author: actorLabel(actor), note: note ?? null, ts: this.k.clock.now() })
       .run();
+    return revision;
   }
 
   runIngestedUntrusted(orgId: string, runId: string): boolean {

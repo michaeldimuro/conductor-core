@@ -184,7 +184,7 @@ export class Scheduler {
       const summary = await this.executor.execute({
         orgId, agentId, trigger: request.trigger,
         issueId: request.issueId ?? null, prompt: request.prompt, triggerNote: request.triggerNote,
-        resumeSessionId: request.resumeSessionId, goalId: request.goalId ?? null,
+        resumeSessionId: request.resumeSessionId, goalId: request.goalId ?? null, approvalIds: request.approvalIds,
       });
       if (summary.skipped) {
         leftoverAt = this.onSkipped(job, request, summary);

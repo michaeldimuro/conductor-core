@@ -196,28 +196,53 @@ export function registerSystemJobs(k: Kernel, d: RuntimeDeps, scheduler: Schedul
   // `applyReview` is idempotent and ignores issues without a verdict.
   unsubs.push(k.bus.on('issue.updated', (e) => void ((e.status === 'done' || e.status === 'todo') && onReview(e.orgId, e.issueId))));
 
-  // A new draft skill goes through the eval gate; winners are activated.
+  // The eval gate: a new draft skill, and a patch to a live skill (a pending candidate version),
+  // are evaluated; winners are activated, everything undecided goes to the owner.
+  /** Version of the patch waiting behind a live skill, if any (the newest version is ahead of the live one). */
+  const pendingCandidate = (skill: { id: string; status: string; version: number }): number | null => {
+    if (skill.status !== 'active' || typeof d.skills.history !== 'function') return null;
+    const newest = d.skills.history(skill.id)[0];
+    return newest && newest.version > skill.version && !newest.eval ? newest.version : null;
+  };
   scheduler.registerHandler('skill_eval', async (job) => {
     const skillId = job.payload.skillId as string;
     const skill = d.skills.get(skillId);
-    if (skill.status !== 'draft') return;
-    const result = await d.skills.evaluate(skillId);
+    const candidate = pendingCandidate(skill);
+    if (skill.status !== 'draft' && candidate === null) return;
+    const what = candidate === null ? `Skill "${skill.name}"` : `The patch (v${candidate}) to skill "${skill.name}"`;
+    const stays = candidate === null ? 'it stays a draft' : `v${skill.version} stays live`;
+    let result: Awaited<ReturnType<typeof d.skills.evaluate>>;
+    try {
+      result = await d.skills.evaluate(skillId);
+    } catch (err) {
+      // A patch that cannot be evaluated (no eval case, no runner) must not wait unseen behind the live version.
+      if (candidate !== null) {
+        k.bus.emit('notification', {
+          orgId: skill.orgId, kind: 'skill_review', title: `${what} needs your review`,
+          body: `It could not be evaluated (${err instanceof Error ? err.message : String(err)}), so ${stays} until you review it.`,
+          data: { skillId, candidateVersion: candidate },
+        });
+      }
+      throw err;
+    }
     if (result.passed) await d.skills.activate(skillId, SYSTEM);
     else if (result.needsReview) {
       k.bus.emit('notification', {
-        orgId: skill.orgId, kind: 'skill_review', title: `Skill "${skill.name}" needs your review`,
-        body: `Its evaluation could not be decided automatically, so it stays a draft until you review it.\n${result.notes ?? ''}`.trim(),
-        data: { skillId, score: result.score },
+        orgId: skill.orgId, kind: 'skill_review', title: `${what} needs your review`,
+        body: `Its evaluation could not be decided automatically, so ${stays} until you review it.\n${result.notes ?? ''}`.trim(),
+        data: { skillId, score: result.score, ...(candidate !== null ? { candidateVersion: candidate } : {}) },
       });
     }
   });
   unsubs.push(k.bus.on('skill.changed', (e) => {
-    if (e.status !== 'draft') return;
+    if (e.status !== 'draft' && e.status !== 'active') return;
     try {
       const skill = d.skills.get(e.skillId);
-      // Only agent-authored drafts with something to replay are auto-evaluated.
-      if (skill.author.startsWith('agent:')) {
-        scheduler.queue.enqueue({ kind: 'skill_eval', orgId: e.orgId, payload: { skillId: e.skillId }, dedupeKey: `skilleval:${e.skillId}`, runAt: k.clock.now() + 5_000, maxAttempts: 1 });
+      const candidate = pendingCandidate(skill);
+      // Agent-authored drafts with something to replay are auto-evaluated; so is every pending patch of a live skill.
+      if (candidate !== null || (skill.status === 'draft' && skill.author.startsWith('agent:'))) {
+        const dedupeKey = candidate === null ? `skilleval:${e.skillId}` : `skilleval:${e.skillId}:v${candidate}`;
+        scheduler.queue.enqueue({ kind: 'skill_eval', orgId: e.orgId, payload: { skillId: e.skillId }, dedupeKey, runAt: k.clock.now() + 5_000, maxAttempts: 1 });
       }
     } catch {
       /* skill vanished */

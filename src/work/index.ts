@@ -6,6 +6,7 @@ import * as issues from './issues.js';
 import * as checkout from './checkout.js';
 import * as inbox from './inbox.js';
 import * as comments from './comments.js';
+import { listIssueArtifacts } from './artifacts.js';
 import * as flows from './flows.js';
 import * as playbooks from './playbooks.js';
 import * as projects from './projects.js';
@@ -23,7 +24,7 @@ export interface WorkDeps {
  */
 /** The Work context's full surface: every optional `WorkService` method is implemented. */
 export type WorkContext = WorkService &
-  Required<Pick<WorkService, 'deleteGoal' | 'updateProject' | 'updatePlaybook' | 'deletePlaybook'>>;
+  Required<Pick<WorkService, 'deleteGoal' | 'updateProject' | 'updatePlaybook' | 'deletePlaybook' | 'listIssueArtifacts'>>;
 
 export function createWorkService(kernel: Kernel, deps: WorkDeps): WorkContext {
   const ctx = createWorkCtx(kernel, deps.org);
@@ -60,6 +61,10 @@ export function createWorkService(kernel: Kernel, deps: WorkDeps): WorkContext {
     addComment: (orgId, issueId, input, actor) => comments.addComment(ctx, orgId, issueId, input, actor),
     listComments: (orgId, issueId, opts) => comments.listComments(ctx, orgId, issueId, opts),
     timeline: (orgId, issueId) => comments.timeline(ctx, orgId, issueId),
+    listIssueArtifacts(orgId, issueId) {
+      const issue = issues.getIssue(ctx, orgId, issueId);
+      return listIssueArtifacts(ctx, deps.org.getOrg(orgId), issue.id);
+    },
 
     createPlaybook: (orgId, input, actor) => playbooks.createPlaybook(ctx, orgId, input, actor),
     listPlaybooks: (orgId) => playbooks.listPlaybooks(ctx, orgId),

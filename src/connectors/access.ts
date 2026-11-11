@@ -10,7 +10,7 @@ import { findTemplate } from './catalog.js';
 import { syncPins } from './pins.js';
 import { classifyRisk, intersectAllowlists, resolvePolicy } from './risk.js';
 import type { ConnectorStore } from './store.js';
-import { AuthRequiredError, type CredentialContext, type ToolEntry } from './types.js';
+import { AuthRequiredError, type CredentialContext, type ToolEntry, type UpstreamTool } from './types.js';
 import { credentialKey } from './upstream/factory.js';
 import type { UpstreamPool } from './upstream/pool.js';
 
@@ -127,6 +127,7 @@ export class AccessResolver {
     const allow = intersectAllowlists(server.connector?.toolAllowlist, server.grant?.toolAllowlist);
     const suggested = findTemplate(server.connector?.templateId)?.suggestedPolicies;
     let defs: ToolDef[];
+    const annotations = new Map<string, UpstreamTool['annotations']>();
     if (server.builtin) {
       defs = await server.builtin.tools(ctx);
     } else {
@@ -136,7 +137,8 @@ export class AccessResolver {
       const quarantined = syncPins(this.k, this.store, scope.orgId, connector, upstream);
       defs = upstream
         .filter((t) => !quarantined.has(t.name))
-        .map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, risk: classifyRisk(t.name, t.annotations) }));
+        .map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, risk: classifyRisk(t.name, t.annotations, t.description) }));
+      for (const t of upstream) if (t.annotations) annotations.set(t.name, t.annotations);
     }
     const out: ToolEntry[] = [];
     for (const def of defs) {
@@ -149,6 +151,7 @@ export class AccessResolver {
       out.push({
         qualified: qualifyTool(server.name, def.name), serverName: server.name, connectorId: server.connectorId,
         def, policy, builtin: server.builtin, connector: server.connector, grant: server.grant,
+        ...(annotations.has(def.name) ? { annotations: annotations.get(def.name) } : {}),
       });
     }
     return out;
@@ -232,7 +235,7 @@ export class AccessResolver {
     const upstream = await this.pool.tools(cred, { refresh: true });
     const quarantined = syncPins(this.k, this.store, orgId, connector, upstream);
     return upstream.map((t) => ({
-      name: t.name, description: t.description, inputSchema: t.inputSchema, risk: classifyRisk(t.name, t.annotations), quarantined: quarantined.has(t.name),
+      name: t.name, description: t.description, inputSchema: t.inputSchema, risk: classifyRisk(t.name, t.annotations, t.description), quarantined: quarantined.has(t.name),
     }));
   }
 

@@ -18,7 +18,7 @@ import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER } from './types.j
 type CallStatus = 'ok' | 'error' | 'denied' | 'approval_pending';
 
 const TITLES: Record<string, string> = {
-  payment: 'Payment', spend_threshold: 'Spend over threshold', new_recipient: 'First send to a new recipient', publish: 'Publish',
+  payment: 'Payment', spend_threshold: 'Spend over threshold', new_recipient: 'First send to a new recipient', unknown_recipient: 'Send to an unidentified recipient', publish: 'Publish',
   credential_new_origin: 'Credential on a new site',
 };
 
@@ -127,7 +127,7 @@ export class ToolCalls {
     const entry = resolution.entry;
     const log = { ...base, connectorId: entry.connectorId };
     const untrustedBefore = this.ingestedUntrusted(ctx);
-    const category = classifyAction(entry.def.name, { builtin: !!entry.builtin });
+    const category = classifyAction(entry.def.name, { builtin: !!entry.builtin, description: entry.def.description, annotations: entry.annotations, args });
     const escalated = escalate(entry.policy, entry.def.risk, ctx.autonomyLevel, untrustedBefore, category);
     // Default approval gates (payment, spend threshold, first send, publish, org extras) come before the tool policy.
     const gate = this.gates.evaluate(ctx, entry, args, category, untrustedBefore);

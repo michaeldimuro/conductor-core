@@ -1,10 +1,13 @@
 import type { Kernel } from '../contracts/kernel.js';
 import type { OrgService } from '../contracts/org-work.js';
+import type { RevisionedConfig } from '../contracts/revisions.js';
 import type { ApprovalService, BrowserService, RunControl } from '../contracts/services.js';
 import type { BuiltinToolProvider } from '../contracts/tools.js';
+import { invalid } from '../shared/errors.js';
 import { BrowserEngine } from './engine.js';
 import type { OnePasswordOptions } from './onepassword.js';
 import { ProfileStore, type CreateProfileInput, type UpdateProfileInput } from './profiles.js';
+import { BROWSER_PROFILE_KIND } from './revisions.js';
 import { ActionGate } from './sensitive.js';
 import { TakeoverManager } from './takeover.js';
 import { createToolProvider } from './tools.js';
@@ -26,7 +29,7 @@ export interface BrowserServiceDeps {
  * profiles leased to one run at a time, the `conductor-browser` tool server,
  * and human takeover over one-time signed share links.
  */
-export function createBrowserService(kernel: Kernel, deps: BrowserServiceDeps): BrowserService {
+export function createBrowserService(kernel: Kernel, deps: BrowserServiceDeps): BrowserService & RevisionedConfig {
   const profiles = new ProfileStore(kernel, deps.org);
   const engine = new BrowserEngine(kernel, profiles, { headless: deps.headless ?? true });
   const takeover = new TakeoverManager(kernel, engine, { runControl: deps.runControl, org: deps.org, shareBaseUrl: deps.shareBaseUrl });
@@ -47,6 +50,12 @@ export function createBrowserService(kernel: Kernel, deps: BrowserServiceDeps): 
     listProfiles: (orgId) => profiles.list(orgId),
     profileSettings: (orgId, profileId) => profiles.settings(profiles.get(orgId, profileId)),
     toolProvider: () => provider,
+
+    revisionKinds: [BROWSER_PROFILE_KIND],
+    async rollbackRevision(orgId, entityKind, entityId, revision, actor) {
+      if (entityKind !== BROWSER_PROFILE_KIND) throw invalid(`unsupported entity kind "${entityKind}" (expected ${BROWSER_PROFILE_KIND})`);
+      profiles.rollback(orgId, entityId, revision, actor);
+    },
 
     listSessions: (orgId, filter) => takeover.list(orgId, filter),
     createTakeover: (input) => takeover.create(input),

@@ -9,7 +9,7 @@ import {
 } from './support.js';
 
 type OrgTools =
-  | 'list_goals' | 'create_goal' | 'list_team' | 'propose_hire' | 'propose_termination' | 'propose_budget_change'
+  | 'list_goals' | 'create_goal' | 'list_team' | 'propose_hire' | 'propose_termination' | 'propose_budget_change' | 'propose_skill_grant'
   | 'request_approval' | 'list_playbooks' | 'run_playbook';
 
 const approvalView = (a: Approval) => ({ id: a.id, kind: a.kind, title: a.title, status: a.status });
@@ -112,6 +112,24 @@ export const orgHandlers: Handlers<OrgTools> = {
     return {
       agent: result.agent ? { ...agentView(result.agent), budgetUsd: result.agent.budgetUsd } : undefined,
       department: result.department ? { id: result.department.id, name: result.department.name, budgetUsd: result.department.budgetUsd } : undefined,
+    };
+  },
+
+  propose_skill_grant(env, ctx, args) {
+    if (!env.org.proposeSkillGrant) {
+      throw new ConductorError('unavailable', 'skill grant proposals are not available in this installation');
+    }
+    const id = args.scope === 'agent' ? (args.target ? resolveAgent(env, ctx, args.target).id : ctx.agentId) : args.scope === 'dept' ? (args.target ?? ctx.deptId) : undefined;
+    // As an agent actor the Org context raises a `grant_skill` approval (while that gate is on) instead of granting.
+    const result = env.org.proposeSkillGrant(ctx.orgId, { scope: args.scope, id, skill: args.skill, reason: redact(args.reason) }, actorOf(ctx));
+    if (result.approval) {
+      return { approval: approvalView(result.approval), note: 'The skill is granted only if the owner approves.' };
+    }
+    return {
+      granted: true,
+      agent: result.agent ? { ...agentView(result.agent), skills: result.agent.skills } : undefined,
+      department: result.department ? { id: result.department.id, name: result.department.name, sharedSkills: result.department.sharedSkills } : undefined,
+      organization: result.organization ? { id: result.organization.id, defaultSkills: result.organization.defaultSkills } : undefined,
     };
   },
 

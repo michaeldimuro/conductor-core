@@ -5,9 +5,9 @@ import { OWNER } from '../../contracts/types.js';
 import { body, orgOf, param, query, resolveAgent, supported } from '../http.js';
 import * as q from '../schemas/org-work.js';
 import { optionalBody } from '../schemas/common.js';
-import type { AgentActionResponse, ChatResponse, DocResponse, KillSwitchResponse, Ok, RunNowResponse } from '../types.js';
+import type { AgentActionResponse, ChatResponse, DocResponse, KillSwitchResponse, RunNowResponse } from '../types.js';
 
-/** Organizations, departments, agents, org chart, config revisions. Human callers act as OWNER. */
+/** Organizations, departments, agents, org chart. Human callers act as OWNER. (Config revisions: `routes/revisions.ts`.) */
 export function orgRoutes(app: FastifyInstance, s: Services): void {
   const { org } = s;
 
@@ -45,17 +45,6 @@ export function orgRoutes(app: FastifyInstance, s: Services): void {
     const o = orgOf(s, req);
     s.governance.killSwitch.release(o.id, OWNER);
     return { engaged: s.governance.killSwitch.isEngaged(o.id) };
-  });
-
-  app.get('/orgs/:orgId/revisions', async (req) => {
-    const { entityKind, entityId } = query(req, q.revisionsQ);
-    return org.listRevisions(orgOf(s, req).id, entityKind, entityId);
-  });
-  app.post('/orgs/:orgId/revisions/rollback', async (req): Promise<Ok> => {
-    const { entityKind, entityId, revision } = body(req, q.rollbackRevision);
-    org.rollback(orgOf(s, req).id, entityKind, entityId, revision, OWNER);
-    s.runtime.syncSchedules();
-    return { ok: true };
   });
 
   /* ── Departments ── */

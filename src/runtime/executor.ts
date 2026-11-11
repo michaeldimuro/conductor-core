@@ -7,10 +7,11 @@ import type { ToolCallContext } from '../contracts/tools.js';
 import type { BudgetStatus, WorkerJob, RecallBundle, RunSkip } from '../contracts/services.js';
 import type { CapabilitySnapshot } from '../contracts/types.js';
 import { errorMessage } from '../shared/errors.js';
-import { RunJournal } from './journal.js';
+import { RESUMED_FROM, RunJournal } from './journal.js';
 import { buildSystemPrompt, buildTaskPrompt, type TaskPromptInput } from './prompt.js';
 import { effectiveBinding, resolveChain, NATIVE_SKILL_ADAPTERS } from './binding.js';
 import { settleIssue } from './settle.js';
+import { approvalBrief, unparkForApproval } from './approval-wake.js';
 import { EvalGateway } from './eval-gateway.js';
 import { runTokenTtl } from './pause.js';
 import { budgetBlock, overCap, preflight, skipOf } from './preflight.js';
@@ -63,7 +64,7 @@ export class RunExecutor {
     readonly journal: RunJournal,
     private readonly supervisor: Supervisor,
   ) {
-    this.evalGateway = new EvalGateway(d.governance.tokens, k.log);
+    this.evalGateway = new EvalGateway(d.governance.tokens, k.log, k);
   }
 
   /** Agents currently mid-run (per-agent concurrency is 1). */
@@ -103,6 +104,10 @@ export class RunExecutor {
       if (!planGoal || this.d.work.listIssues(org.id, { goalId: planGoal.id, limit: 1 }).length > 0) return noWork('goal already planned');
     }
 
+    // Woken because approvals it asked for were decided or expired: say which and how, and put the parked issue back in play.
+    const approvalNote = mode === 'loop' && req.approvalIds?.length ? approvalBrief(this.k, this.d, org.id, agent.id, req.approvalIds, pinned) : null;
+    if (approvalNote && pinned) unparkForApproval(this.d, org.id, agent.id, pinned);
+
     // ── 3–4. Inbox and atomic checkout ─────────────────────────────────────
     // (Done before the run row exists so an idle heartbeat costs nothing.)
     const inbox = mode === 'loop' ? this.d.work.inbox(org.id, agent.id) : null;
@@ -114,7 +119,7 @@ export class RunExecutor {
     const goals = mode === 'loop' ? this.d.work.listGoals(org.id, { ownerAgentId: agent.id, status: 'active' }) : [];
     const hasReplies = !planGoal && !!inbox && (inbox.mentions.length > 0 || inbox.newComments.length > 0);
     const proactive = agent.autonomyLevel >= 2 && goals.length > 0 && req.trigger === 'heartbeat';
-    const hasOtherWork = hasReplies || proactive || !!req.prompt || !!planGoal;
+    const hasOtherWork = hasReplies || proactive || !!req.prompt || !!planGoal || !!approvalNote;
     if (mode === 'loop' && candidates.length === 0 && !hasOtherWork) return noWork();
 
     // Checkout first (it only needs a run id) so losing every race leaves no trace.
@@ -215,9 +220,9 @@ export class RunExecutor {
       if (planGoal) {
         task.mode = 'plan';
         task.planGoal = planGoal;
-      } else if (mode !== 'loop' || (req.prompt && !issue)) {
+      } else if (mode !== 'loop' || ((req.prompt || approvalNote) && !issue)) {
         task.mode = mode === 'chat' ? 'chat' : 'custom';
-        task.customPrompt = req.prompt ?? '';
+        task.customPrompt = [approvalNote, req.prompt].filter(Boolean).join('\n\n');
         task.issue = issue;
       } else if (issue) {
         task.mode = 'issue';
@@ -226,6 +231,7 @@ export class RunExecutor {
         task.parent = issue.parentIssueId ? this.d.work.findIssue(org.id, issue.parentIssueId) : null;
         task.children = this.d.work.listIssues(org.id, { parentIssueId: issue.id });
         task.comments = this.d.work.listComments(org.id, issue.id);
+        task.approvalNote = approvalNote;
         if (req.prompt) task.triggerNote = [req.triggerNote, req.prompt].filter(Boolean).join(' — ');
       } else if (hasReplies && inbox) {
         task.mode = 'inbox';
@@ -234,9 +240,12 @@ export class RunExecutor {
 
       const runToken = this.d.governance.tokens.issueRunToken(org.id, agent.id, run.id, runTokenTtl(this.d.governance.tokens, agent.maxWallMs));
       entry.secrets.push(runToken);
-      // Eval runs get a read-only gateway that serves only the skills under evaluation, so every
-      // adapter can load the skill body without the run reaching connectors, tasks or memory.
-      const evalGate = mode === 'eval' ? await this.evalGateway.open(run.id, skills, runToken) : null;
+      // Eval runs get their own gateway: the skills under evaluation (read-only) plus file tools confined
+      // to the throwaway eval workspace — never connectors, the browser, tasks or memory.
+      const evalGate =
+        mode === 'eval'
+          ? await this.evalGateway.open(run.id, skills, runToken, { workspacePath: entry.workspacePath, orgId: org.id, agentId: agent.id, deptId: dept.id })
+          : null;
       const baseUrl = evalGate?.baseUrl ?? this.d.baseUrl();
       const mainEndpoint = { name: 'conductor', url: `${baseUrl}/mcp`, headers: { Authorization: `Bearer ${runToken}` } };
 
@@ -248,6 +257,9 @@ export class RunExecutor {
       if (req.resumeSessionId && !resumeSessionId) {
         this.journal.append(run, { type: 'status', status: 'previous provider session not resumed: it belongs to a different issue' });
       }
+      // Journal-backed sessions (API adapters) chain: a later resume of THIS run replays the earlier runs too.
+      const journalSession = resumeSessionId?.startsWith('conductor-run:') ? resumeSessionId.slice('conductor-run:'.length) : null;
+      if (journalSession) this.journal.append(run, { type: 'status', status: `${RESUMED_FROM}${journalSession}` });
 
       const ctx: RunContext = {
         runId: run.id, orgId: org.id, agentId: agent.id, issueId: issue?.id ?? null,
@@ -269,7 +281,7 @@ export class RunExecutor {
         resumeSessionId,
         sandbox: { conductorHome: this.k.paths.home },
         // API adapters have no provider-side session: the journal of the interrupted run is the session.
-        ...(resumeSessionId?.startsWith('conductor-run:') ? { priorEvents: this.priorEvents(org.id, resumeSessionId.slice('conductor-run:'.length)) } : {}),
+        ...(journalSession ? { priorEvents: this.priorEvents(org.id, journalSession) } : {}),
       };
       const job: WorkerJob = { adapterId: primary.adapterId, ctx, chain };
 
@@ -354,7 +366,7 @@ export class RunExecutor {
 
   private priorEvents(orgId: string, runId: string): RunEvent[] {
     try {
-      return this.journal.events(orgId, runId).map((e) => e.event);
+      return this.journal.sessionEvents(orgId, runId);
     } catch {
       return [];
     }

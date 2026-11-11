@@ -61,7 +61,8 @@ describe('wake queue (scheduler)', () => {
   it('loses none of: a webhook prompt, an approval note and a pinned issue arriving in one burst', async () => {
     const issue = h.work.createIssue(h.acme.id, { title: 'Pinned work', assigneeAgentId: h.ada.id }, OWNER);
     h.k.bus.emit('webhook.received', { orgId: h.acme.id, webhookId: 'wh_1', agentId: h.ada.id, payload: { order: 4711 } });
-    h.k.bus.emit('approval.decided', { orgId: h.acme.id, approvalId: 'apr_77', status: 'approved', requesterAgentId: h.ada.id });
+    const approval = h.governance.approvals.request({ orgId: h.acme.id, kind: 'other', title: 'Use the staging database', requesterAgentId: h.ada.id });
+    h.governance.approvals.decide(h.acme.id, approval.id, 'approved', OWNER);
     h.k.bus.emit('webhook.received', { orgId: h.acme.id, webhookId: 'wh_2', agentId: h.ada.id, payload: { order: 4712 } });
     expect(wakeJobs(h.ada.id).filter((j) => j.status === 'pending')).toHaveLength(1); // still one pending job per agent
 
@@ -69,7 +70,8 @@ describe('wake queue (scheduler)', () => {
     const prompts = h.calls.map((c) => c.prompt);
     expect(prompts).toHaveLength(3);
     expect(prompts[0]).toContain('Pinned work');
-    expect(prompts[0]).toContain('apr_77 was approved'); // approval note folded into the issue run
+    expect(prompts[0]).toContain(approval.id); // the decision is folded into the issue run
+    expect(prompts[0]).toMatch(/was APPROVED/);
     expect(h.calls[0]!.issueId).toBe(issue.id);
     expect(prompts.some((p) => p.includes('4711'))).toBe(true);
     expect(prompts.some((p) => p.includes('4712'))).toBe(true);

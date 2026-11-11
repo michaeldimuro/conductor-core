@@ -55,6 +55,16 @@ export interface OrgPolicies {
    * 0 disables the default expiry; a requester's explicit `expiresAt` always wins.
    */
   approvalExpiryHours?: number;
+  /**
+   * Hours an APPROVED single-use grant (an approval carrying a `matchKey`) stays usable before it
+   * lapses unused (default 72). 0 = an approved grant never lapses.
+   */
+  approvalUseWithinHours?: number;
+  /**
+   * Replays per arm and case in the skill eval gate (default 2, capped at 5). More samples make
+   * the verdict steadier and the evaluation proportionally more expensive.
+   */
+  skillEvalSamples?: number;
 }
 
 /** Effective capabilities resolved at run start and snapshotted onto the Run for audit. */
@@ -90,6 +100,12 @@ export interface SkillEvalResult {
    * usable verdict). `passed` is false, but this is "needs human review", not a failed skill.
    */
   needsReview?: boolean;
+  /** Replays per arm and case; the metrics are sums over cases of the per-case medians. */
+  samples?: number;
+  /** Share of samples that succeeded in each arm (0..1). */
+  successRate?: { baseline: number; withSkill: number };
+  /** True when this evaluated a pending candidate version against the live version (not against "no skill"). */
+  candidate?: boolean;
 }
 
 /** Deterministic expectations of an eval case, checked without a model. */

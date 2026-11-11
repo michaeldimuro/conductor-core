@@ -6,6 +6,7 @@ import type { AdapterCapabilities, AgentAdapter, AdapterErrorKind, Health, RunCo
 import type { PricedUsage } from '../pricing.js';
 import { AdapterError, kindFromMessage, kindFromStatus } from '../shared/errors.js';
 import { ActiveRuns, withRun, type RunEnv } from '../shared/guard.js';
+import { CLI_MCP_STARTUP_TIMEOUT_MS, cliToolTimeoutMs } from '../shared/mcp-tools.js';
 import { minimalEnv, probeCommand, runJsonLines } from '../shared/proc.js';
 import { agentSandbox, RUN_TMP_PREFIX, sandboxConfigJsonSchema } from '../shared/sandbox.js';
 import { installClaudeSkills } from '../shared/skills.js';
@@ -67,6 +68,16 @@ export function buildClaudeMcpConfig(ctx: Pick<RunContext, 'mcpEndpoints'>): { m
   const mcpServers: Record<string, { type: 'http'; url: string; headers: Record<string, string> }> = {};
   for (const ep of ctx.mcpEndpoints) mcpServers[serverName(ep.name)] = { type: 'http', url: ep.url, headers: { ...ep.headers } };
   return { mcpServers };
+}
+
+/**
+ * Claude Code's MCP timeouts are environment variables (milliseconds): `MCP_TIMEOUT` for server
+ * startup, `MCP_TOOL_TIMEOUT` for one tool call. A gateway call can wait on a human (request_human,
+ * takeover) far longer than the CLI's default, so the tool timeout covers the run's wall time plus
+ * a takeover allowance. Adapter `env` config can override both.
+ */
+export function claudeMcpEnv(ctx: Pick<RunContext, 'maxWallMs'>): Record<string, string> {
+  return { MCP_TIMEOUT: String(CLI_MCP_STARTUP_TIMEOUT_MS), MCP_TOOL_TIMEOUT: String(cliToolTimeoutMs(ctx.maxWallMs)) };
 }
 
 export function buildClaudeArgs(ctx: RunContext, cfg: Config, mcpConfigPath: string, metered: boolean): string[] {
@@ -244,7 +255,7 @@ export class ClaudeLocalAdapter implements AgentAdapter {
       const st: StreamState = { model: ctx.model, finalText: '', lastText: '', turns: 0, toolNames: new Map(), perMessage: new Map() };
       try {
         writeFileSync(mcpConfigPath, JSON.stringify(buildClaudeMcpConfig(ctx)), { mode: 0o600 });
-        const childEnv = minimalEnv({ ...cfg.env, ...(metered ? { ANTHROPIC_API_KEY: ctx.secrets.apiKey } : {}) }, ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
+        const childEnv = minimalEnv({ ...claudeMcpEnv(ctx), ...cfg.env, ...(metered ? { ANTHROPIC_API_KEY: ctx.secrets.apiKey } : {}) }, ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
         const exit = await runJsonLines({
           command: cfg.command,
           args: buildClaudeArgs(ctx, cfg, mcpConfigPath, metered),

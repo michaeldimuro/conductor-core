@@ -11,6 +11,7 @@ import { importOrg } from './import.js';
 import * as orgOps from './orgs.js';
 import { listAgentRows, listDeptRows, requireAgent, requireDept, requireOrg } from './repo.js';
 import { listRevisions, rollback } from './revisions.js';
+import { proposeSkillGrant } from './skill-grants.js';
 import { createFromTemplate, listTemplates } from './templates.js';
 
 export type { OrgImportDeps } from './context.js';
@@ -29,7 +30,7 @@ export interface OrgContextHooks {
  * implemented) plus wiring hooks for the composition root.
  */
 export type OrgContext = OrgService &
-  Required<Pick<OrgService, 'unarchiveOrg' | 'archiveDept' | 'unarchiveDept' | 'proposeBudgetChange'>> &
+  Required<Pick<OrgService, 'unarchiveOrg' | 'archiveDept' | 'unarchiveDept' | 'proposeBudgetChange' | 'proposeSkillGrant'>> &
   OrgContextHooks;
 
 export function createOrgService(
@@ -39,7 +40,7 @@ export function createOrgService(
   const ctx = createCtx(kernel, { ...deps });
   const background = new Set<Promise<void>>();
 
-  // Approved hires/terminations/budget changes filed by this context execute here, exactly once.
+  // Approved hires/terminations/budget changes/skill grants filed by this context execute here, exactly once.
   const unsubscribe = kernel.bus.on('approval.decided', (event) => onApprovalDecided(ctx, event));
 
   return {
@@ -67,6 +68,7 @@ export function createOrgService(
     resumeAgent: (orgId, agentId, actor) => agentOps.resumeAgent(ctx, orgId, agentId, actor),
     terminateAgent: (orgId, agentId, actor, opts) => terminateAgent(ctx, orgId, agentId, actor, opts),
     proposeBudgetChange: (orgId, input, actor) => proposeBudgetChange(ctx, orgId, input, actor),
+    proposeSkillGrant: (orgId, input, actor) => proposeSkillGrant(ctx, orgId, input, actor),
     getAgent: (orgId, agentId) => requireAgent(kernel, orgId, agentId),
     findAgent: (orgId, idOrSlug) => agentOps.findAgent(ctx, orgId, idOrSlug),
     listAgents: (orgId, filter) => {

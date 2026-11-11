@@ -13,7 +13,8 @@ import { createMemoryToolProvider } from './tools.js';
 
 export interface MemoryOptionalDeps {
   skills?: Pick<SkillService, 'manage' | 'list'>;
-  work?: Pick<WorkService, 'createIssue' | 'getIssue'>;
+  /** `updateIssue` lets reflection store the task type it classified on an untyped issue. */
+  work?: Pick<WorkService, 'createIssue' | 'getIssue'> & Partial<Pick<WorkService, 'updateIssue'>>;
   org?: Pick<OrgService, 'listAgents' | 'listDepts' | 'leadOf'>;
 }
 
@@ -40,7 +41,7 @@ export function createMemoryService(kernel: Kernel, deps: MemoryDeps): BindableM
   const index = new MemoryIndex(kernel, deps.embedder);
   const store = new MemoryStore(kernel, index, deps.utility);
   const recall = new Recall(kernel, store);
-  const reflector = new Reflector(kernel, store, deps.utility, () => optional.skills);
+  const reflector = new Reflector(kernel, store, deps.utility, () => optional.skills, () => optional.work);
   const consolidator = new Consolidator(kernel, store, recall, deps.utility, () => optional.skills);
   const cards = new Scorecards(kernel, store, deps.utility, () => optional);
 
@@ -77,7 +78,10 @@ export function createMemoryService(kernel: Kernel, deps: MemoryDeps): BindableM
   return service;
 }
 
-export { createUtilityModel } from './utility-model.js';
+export {
+  createUtilityModel, UTILITY_BACKEND_SETTING, UTILITY_LOCAL_SETTING, DEFAULT_LOCAL_DAILY_CALLS, type UtilityModelDeps, type LocalCliOptions,
+} from './utility-model.js';
+export { heuristicTaskType, normalizeTaskType, sameTaskType } from './tasktype.js';
 export { createEmbedder, embedderStatusOf, LocalHashEmbedder, OpenAIEmbedder, cosine } from './embedder.js';
 export { ensureMemoryIndexes } from './indexes.js';
 export { createExternalBackend, backendSettingKey, backendConfigSchema, type ExternalMemoryBackend, type ExternalHit, type BackendConfig } from './external.js';

@@ -1,0 +1,17 @@
+export const REPO_ROOT: string;
+export const PKG_LIB_DIR: string;
+export const PKG_BIN_DIR: string;
+export const PKG_IDENTIFIER: string;
+export const COMMANDS: string[];
+export const REQUIRED_BUILD_FILES: string[];
+export const REQUIRED_PACKED_FILES: string[];
+export function readPackage(root?: string): { name: string; version: string; description: string; files: string[]; bin: Record<string, string>; scripts: Record<string, string>; engines: { node: string } };
+export function missingFiles(root: string, required?: string[]): string[];
+export function fill(template: string, values: Record<string, string | number>): string;
+export function sha256File(file: string): string;
+export function isSelfContained(otoolOutput: string): boolean;
+export function installerArch(arch: string): string;
+export function pkgFileName(version: string, arch: string): string;
+export function parseArgs(argv: string[], spec: Record<string, 'boolean' | 'string'>): Record<string, string | true>;
+export function run(cmd: string, args: string[], opts?: Record<string, unknown>): string;
+export function packTarball(outDir: string, root?: string): { file: string; filename: string; version: string; sha256: string; entryCount: number };

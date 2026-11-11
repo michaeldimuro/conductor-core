@@ -28,6 +28,12 @@ export interface DomainEvents {
   'comment.created': { orgId: string; issueId: string; commentId: string; mentions: string[] };
   'approval.requested': { orgId: string; approvalId: string; kind: string };
   'approval.decided': { orgId: string; approvalId: string; status: 'approved' | 'denied'; requesterAgentId: string | null };
+  /**
+   * An approval lapsed without being used. `phase: 'pending'` — nobody decided it before `expiresAt`
+   * (the requester is woken and told); `phase: 'unused'` — it was approved but the grant was not
+   * consumed within its use-by window.
+   */
+  'approval.expired': { orgId: string; approvalId: string; requesterAgentId: string | null; phase: 'pending' | 'unused' };
   'run.started': { orgId: string; runId: string; agentId: string; issueId: string | null };
   'run.event': { orgId: string; runId: string; seq: number; event: unknown };
   'run.paused': { orgId: string; runId: string; reason: string };

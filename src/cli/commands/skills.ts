@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 import type { Skill } from '../../api/types.js';
 import type { CliDeps } from '../deps.js';
 import type { Ctx } from '../context.js';
-import { action, arg, choice, compact, flag, num, parseNumber, str, type Opts } from '../command.js';
+import { action, arg, choice, compact, flag, list as listOpt, num, parseNumber, str, type Opts } from '../command.js';
 import { UsageError } from '../errors.js';
 import { ago, clip, percent } from '../output.js';
 import { resolveAgent, resolveDept, resolveSkill } from '../resolve.js';
@@ -30,6 +30,8 @@ function colourDiff(ctx: Ctx, diff: string): string[] {
   const s = ctx.style;
   return diff.replace(/\n$/, '').split('\n').map((l) => (l.startsWith('+++') || l.startsWith('---') ? s.bold(l) : l.startsWith('+') ? s.green(l) : l.startsWith('-') ? s.red(l) : l.startsWith('@@') ? s.cyan(l) : l));
 }
+
+const collect = (value: string, previous: string[]): string[] => [...previous, value];
 
 export function skillCommands(program: Command, deps: CliDeps): void {
   const skills = program.command('skills').alias('skill').description('skills: versioned procedures agents load on demand (and write themselves)');
@@ -122,6 +124,56 @@ export function skillCommands(program: Command, deps: CliDeps): void {
           ['with skill', r.withSkill.success, r.withSkill.steps, r.withSkill.tokens, `$${r.withSkill.costUsd.toFixed(4)}`, `${Math.round(r.withSkill.wallMs / 1000)}s`],
         ]);
       });
+    }));
+
+  const cases = skills.command('eval-cases').alias('eval-case').description('the cases a skill is evaluated on');
+
+  cases
+    .command('list <skill>')
+    .description('list the eval cases of a skill')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.org();
+      const sk = await resolveSkill(ctx, o, arg(args, 0, 'skill'));
+      const rows = await ctx.client().listSkillEvalCases(o, sk.id);
+      ctx.emit(rows, () => ctx.table(
+        ['id', 'source', 'prompt', 'criteria', 'checks'],
+        rows.map((c) => [c.id, c.issueId ? `${c.source} ${c.issueId}` : c.source, clip(c.prompt, 50), clip(c.criteria, 40), Object.entries(c.expect).map(([k, v]) => `${k}:${(v as string[]).length}`).join(' ') || '-']),
+        `no eval cases — add one: conductor skills eval-cases add ${sk.name} "<prompt>" --criteria "<what success looks like>"`,
+      ));
+    }));
+
+  cases
+    .command('add <skill> <prompt...>')
+    .description('add a manual eval case ("-" reads the prompt from stdin)')
+    .option('--criteria <text>', 'what a successful answer looks like (judged by the utility model)')
+    .option('--contains <text,...>', 'strings the answer must contain', collect, [])
+    .option('--not-contains <text,...>', 'strings the answer must not contain', collect, [])
+    .option('--regex <pattern>', 'regular expression the answer must match (repeatable)', collect, [])
+    .option('--file <path,...>', 'files the run must leave in its workspace', collect, [])
+    .action(action(deps, async (ctx, args, opts) => {
+      const o = await ctx.org();
+      const sk = await resolveSkill(ctx, o, arg(args, 0, 'skill'));
+      const text = arg(args, 1, 'prompt');
+      const prompt = text === '-' ? await ctx.deps.readStdin() : text;
+      if (!prompt.trim()) throw new UsageError('the prompt is empty');
+      // A regular expression may itself contain commas, so `--regex` is repeat-only.
+      const regex = Array.isArray(opts.regex) ? opts.regex.map(String).filter(Boolean) : [];
+      const pick = (key: string) => (listOpt(opts, key).length ? listOpt(opts, key) : undefined);
+      const expect = compact({ contains: pick('contains'), notContains: pick('notContains'), regex: regex.length ? regex : undefined, files: pick('file') });
+      const criteria = str(opts, 'criteria');
+      if (!criteria && Object.keys(expect).length === 0) throw new UsageError('give --criteria or at least one check (--contains, --not-contains, --regex, --file)');
+      const created = await ctx.client().addSkillEvalCase(o, sk.id, compact({ prompt, criteria, expect: Object.keys(expect).length ? expect : undefined }));
+      ctx.emit(created, () => ctx.ok(`added eval case ${created.id} to ${sk.name}`));
+    }));
+
+  cases
+    .command('remove <skill> <caseId>')
+    .description('remove an eval case')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.org();
+      const sk = await resolveSkill(ctx, o, arg(args, 0, 'skill'));
+      const r = await ctx.client().removeSkillEvalCase(o, sk.id, arg(args, 1, 'caseId'));
+      ctx.emit(r, () => ctx.ok(`removed eval case ${arg(args, 1, 'caseId')} from ${sk.name}`));
     }));
 
   skills

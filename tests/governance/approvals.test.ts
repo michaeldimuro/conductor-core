@@ -322,7 +322,7 @@ describe('governance / approvals', () => {
       expect(gov.approvals.get(other.id, never.id).status).toBe('pending');
     });
 
-    it('marks only overdue pending approvals expired, audits, emits nothing', () => {
+    it('marks only overdue pending approvals expired, audits, and announces each expiry', () => {
       const soon = gov.approvals.request({ orgId: org.id, kind: 'publish', title: 'soon', expiresAt: k.clock.now() + 100 });
       const later = gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'later', expiresAt: k.clock.now() + 10_000 });
       const never = gov.approvals.request({ orgId: org.id, kind: 'publish', title: 'never' });
@@ -338,7 +338,9 @@ describe('governance / approvals', () => {
       expect(gov.approvals.get(org.id, never.id).status).toBe('pending');
       expect(gov.approvals.get(org.id, decided.id).status).toBe('approved');
       expect(k.audit.query({ action: 'approval.expired' }).map((r) => r.entityId)).toEqual([soon.id]);
-      expect(events.all).toHaveLength(0);
+      // The waiting agent is woken by this event (and nothing else is emitted).
+      expect(events.all.map((e) => e.name)).toEqual(['approval.expired']);
+      expect(events.of('approval.expired')).toEqual([{ orgId: org.id, approvalId: soon.id, requesterAgentId: null, phase: 'pending' }]);
 
       // explicit `now` and the standalone export
       expect(expireApprovals(k, k.clock.now() + 10_000).map((a) => a.id)).toEqual([later.id]);

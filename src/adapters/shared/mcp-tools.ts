@@ -33,6 +33,24 @@ export interface ToolOutcome {
 
 const NAME_MAX = 64;
 
+/**
+ * "No deadline of its own" for a gateway tool call (the largest delay a timer
+ * accepts, ~24.8 days): the caller's AbortSignal — the run guard, whose wall
+ * clock stops while the run is paused for a human — decides when it ends.
+ */
+export const GUARD_BOUND_TIMEOUT_MS = 2 ** 31 - 1;
+
+/**
+ * How long the local CLIs (Claude Code, Codex) may wait on one gateway tool
+ * call. They cannot stop their own timer while a run is paused, so the limit
+ * is the run's wall time plus a generous allowance for a human takeover; the
+ * run guard still ends the run when its (pause-aware) wall time is spent.
+ */
+export const HUMAN_WAIT_ALLOWANCE_MS = 24 * 3_600_000;
+export const cliToolTimeoutMs = (maxWallMs: number): number => Math.min(Math.max(60_000, maxWallMs) + HUMAN_WAIT_ALLOWANCE_MS, GUARD_BOUND_TIMEOUT_MS);
+/** Time a local CLI gets to connect to the gateway and list its tools. */
+export const CLI_MCP_STARTUP_TIMEOUT_MS = 30_000;
+
 /** Map an arbitrary MCP tool name onto the charset every provider accepts. */
 export function sanitizeToolName(name: string, taken: ReadonlySet<string> = new Set()): string {
   let safe = name.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -143,7 +161,7 @@ export class McpToolset {
     try {
       const res = await entry.conn.client.callTool({ name: entry.tool.originalName, arguments: args }, undefined, {
         signal: opts.signal,
-        timeout: Math.max(1000, opts.timeoutMs ?? 600_000),
+        timeout: Math.min(Math.max(1000, opts.timeoutMs ?? 600_000), GUARD_BOUND_TIMEOUT_MS),
         resetTimeoutOnProgress: true,
       });
       let text = describeContent(res.content, images);

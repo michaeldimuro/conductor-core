@@ -117,6 +117,16 @@ export interface BudgetChangeInput {
   reason?: string;
 }
 
+/** A lead's (or the owner's) request to give a skill to an agent, a department (shared skills) or the whole org (default skills). */
+export interface SkillGrantInput {
+  scope: 'agent' | 'dept' | 'org';
+  /** Agent id or department id; not used for the org scope. */
+  id?: string;
+  /** Skill name, as agents reference it. */
+  skill: string;
+  reason?: string;
+}
+
 export interface OrgService {
   createOrg(input: CreateOrgInput, actor: Actor): Organization;
   updateOrg(orgId: string, patch: Partial<CreateOrgInput> & { maxConcurrentRuns?: number; defaultSkills?: string[]; defaultConnectors?: string[] }, actor: Actor): Organization;
@@ -153,6 +163,14 @@ export interface OrgService {
    * get a `budget_raise` Approval back; the change executes when the board approves.
    */
   proposeBudgetChange?(orgId: string, input: BudgetChangeInput, actor: Actor): { agent?: Agent; department?: Department; approval?: Approval };
+  /**
+   * Grant a skill to an agent, a department's shared skills or the org's
+   * default skills. Direct for the owner. Agent actors must be Leads
+   * (autonomy 3) acting inside their reporting line; while the org's
+   * `grant_skill` gate is on they get a `grant_skill` Approval back and the
+   * grant executes when the board approves.
+   */
+  proposeSkillGrant?(orgId: string, input: SkillGrantInput, actor: Actor): { agent?: Agent; department?: Department; organization?: Organization; approval?: Approval };
   getAgent(orgId: string, agentId: string): Agent;
   /** Lookup by id or slug within an org; null if absent. */
   findAgent(orgId: string, idOrSlug: string): Agent | null;
@@ -247,6 +265,22 @@ export type TimelineEntry =
   | { kind: 'comment'; ts: number; comment: Comment }
   | { kind: 'activity'; ts: number; activity: AuditRecord };
 
+/** One file under `orgs/<org>/artifacts/<issue>/`. */
+export interface IssueArtifact {
+  /** File name. */
+  name: string;
+  /** Path relative to the issue's artifact folder, `/`-separated (e.g. `run_01…/screenshot.png`). */
+  path: string;
+  /** Absolute path on this machine. */
+  file: string;
+  bytes: number;
+  modifiedAt: number;
+  /** `run`: saved by a run's tools; `comment`: copied in as a comment attachment. */
+  origin: 'run' | 'comment' | 'other';
+  /** The run id or comment id the file belongs to, when the folder name says so. */
+  originId: string | null;
+}
+
 export interface WorkService {
   createGoal(orgId: string, input: CreateGoalInput, actor: Actor): Goal;
   updateGoal(orgId: string, goalId: string, patch: Partial<CreateGoalInput> & { status?: Goal['status'] }, actor: Actor): Goal;
@@ -307,6 +341,12 @@ export interface WorkService {
   addComment(orgId: string, issueId: string, input: { body: string; parentCommentId?: string | null; attachments?: Comment['attachments']; runId?: string }, actor: Actor): Comment;
   listComments(orgId: string, issueId: string, opts?: { since?: number }): Comment[];
   timeline(orgId: string, issueId: string): TimelineEntry[];
+  /**
+   * Files in the org's `artifacts/<issue>/` folder: comment attachments and
+   * what runs saved while working the issue (browser screenshots, downloads).
+   * Newest first. An issue of another org behaves as not found.
+   */
+  listIssueArtifacts?(orgId: string, issueId: string): IssueArtifact[];
 
   createPlaybook(orgId: string, input: { name: string; description?: string; process?: 'sequential' | 'hierarchical'; managerAgentId?: string | null; steps: Playbook['steps'] }, actor: Actor): Playbook;
   listPlaybooks(orgId: string): Playbook[];

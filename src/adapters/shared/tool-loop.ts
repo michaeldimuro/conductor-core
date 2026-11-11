@@ -2,7 +2,7 @@ import type { RunResult } from '../../contracts/adapter.js';
 import type { PricedUsage } from '../pricing.js';
 import { AdapterError } from './errors.js';
 import type { RunEnv } from './guard.js';
-import { McpToolset, outcomeToEventText, type McpTool, type ToolOutcome } from './mcp-tools.js';
+import { GUARD_BOUND_TIMEOUT_MS, McpToolset, outcomeToEventText, type McpTool, type ToolOutcome } from './mcp-tools.js';
 
 /** A tool call requested by the model, using the provider-safe tool name. */
 export interface ModelToolCall {
@@ -117,7 +117,9 @@ export async function runMcpToolLoop(env: RunEnv, driver: ToolLoopDriver): Promi
         } else if (call.invalid) {
           outcome = { name: displayName, text: `Tool call was not executed: ${call.invalid}`, images: [], isError: true };
         } else {
-          outcome = await toolset.call(call.name, call.input, { signal: guard.signal, timeoutMs: guard.remainingMs() });
+          // No per-call deadline: a call can sit behind a human (takeover, login) for far longer than the wall time
+          // left when it started. The guard's signal ends it — and that clock stops while the run is paused.
+          outcome = await toolset.call(call.name, call.input, { signal: guard.signal, timeoutMs: GUARD_BOUND_TIMEOUT_MS });
         }
         emit({ type: 'tool_result', id: call.id, name: displayName, output: outcomeToEventText(outcome), isError: outcome.isError });
         results.push({ ...outcome, callId: call.id, toolName: call.name });

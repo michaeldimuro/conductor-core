@@ -70,6 +70,23 @@ export interface UtilityModel {
     /** What this call is for; drives the offline heuristic fallback and ledger category. */
     purpose: 'reflect' | 'summarize' | 'extract' | 'judge' | 'consolidate' | 'review' | 'plan' | 'chat';
   }): Promise<{ text: string; json: unknown | null; tokensIn: number; tokensOut: number; costUsd: number; offline: boolean }>;
+  /** Which backend answers for this org right now, and why (settings / UI surface). Never spends anything. */
+  status?(orgId: string): Promise<UtilityModelStatus>;
+}
+
+/**
+ * The backend the utility model resolved to. Selection order: explicit setting → a stored API key →
+ * a local agent CLI that is installed and logged in → the offline heuristics.
+ */
+export interface UtilityModelStatus {
+  backend: 'claude_api' | 'openai_api' | 'claude_local' | 'codex_local' | 'offline';
+  model: string | null;
+  /** True when calls run on the owner's CLI login (subscription seat time, no metered cost). */
+  subscription: boolean;
+  /** Why this backend was chosen, including why preferred ones were skipped. */
+  reason: string;
+  /** Local-CLI usage against the per-day call cap (present when a local CLI is the backend or the cap is why it is not). */
+  localCalls?: { today: number; dailyCap: number };
 }
 
 export interface Embedder {

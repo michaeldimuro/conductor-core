@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AdapterCapabilities, AgentAdapter, Health, RunContext, RunEvent, RunResult } from '../../contracts/adapter.js';
 import { AdapterError, kindFromMessage } from '../shared/errors.js';
 import { ActiveRuns, withRun, type RunEnv } from '../shared/guard.js';
+import { CLI_MCP_STARTUP_TIMEOUT_MS, cliToolTimeoutMs } from '../shared/mcp-tools.js';
 import { minimalEnv, probeCommand, runJsonLines } from '../shared/proc.js';
 import { codexSandbox } from '../shared/sandbox-codex.js';
 import { writeAgentsSkills } from '../shared/skills.js';
@@ -60,7 +61,15 @@ const serverName = (name: string): string => name.replace(/[^A-Za-z0-9_-]/g, '_'
  * argv or on disk: each header value travels in the child's environment and
  * the override only names the variable.
  */
-export function buildCodexMcpOverrides(ctx: Pick<RunContext, 'mcpEndpoints'>, approval: Config['mcpToolApproval']): { args: string[]; env: Record<string, string> } {
+export function buildCodexMcpOverrides(
+  ctx: Pick<RunContext, 'mcpEndpoints'> & Partial<Pick<RunContext, 'maxWallMs'>>,
+  approval: Config['mcpToolApproval'],
+): { args: string[]; env: Record<string, string> } {
+  // `startup_timeout_sec` / `tool_timeout_sec`: per-server keys of Codex's `mcp_servers.<name>` table (confirmed
+  // against codex-cli 0.163 with `codex mcp get --json`). Without them a gateway call that waits on a human
+  // (request_human, takeover) dies at Codex's default tool timeout.
+  const toolTimeoutSec = Math.ceil(cliToolTimeoutMs(ctx.maxWallMs ?? 0) / 1000);
+  const startupTimeoutSec = Math.ceil(CLI_MCP_STARTUP_TIMEOUT_MS / 1000);
   const args: string[] = [];
   const env: Record<string, string> = {};
   ctx.mcpEndpoints.forEach((ep, i) => {
@@ -82,6 +91,7 @@ export function buildCodexMcpOverrides(ctx: Pick<RunContext, 'mcpEndpoints'>, ap
     }
     if (envHeaders.length > 0) args.push('-c', `${key}.env_http_headers={${envHeaders.join(',')}}`);
     args.push('-c', `${key}.default_tools_approval_mode=${toml(approval)}`);
+    args.push('-c', `${key}.startup_timeout_sec=${startupTimeoutSec}`, '-c', `${key}.tool_timeout_sec=${toolTimeoutSec}`);
   });
   return { args, env };
 }

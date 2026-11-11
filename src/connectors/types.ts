@@ -4,6 +4,8 @@ import type { ToolPolicy } from '../contracts/types.js';
 
 /** MCP tool annotations the gateway uses to classify risk. */
 export interface UpstreamAnnotations {
+  /** Human-readable name of the tool, when the upstream gives one. */
+  title?: string;
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
   openWorldHint?: boolean;
@@ -74,6 +76,8 @@ export interface ToolEntry {
   /** connectors.id, or the provider id for a builtin without a connector row. */
   connectorId: string;
   def: ToolDef;
+  /** Upstream annotations of the tool (untrusted; used as extra evidence when classifying a call). */
+  annotations?: UpstreamAnnotations;
   policy: ToolPolicy;
   builtin: BuiltinToolProvider | null;
   connector: Connector | null;

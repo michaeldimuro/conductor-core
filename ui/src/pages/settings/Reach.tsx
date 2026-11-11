@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Chip, ConfirmButton, Empty, Field, FormShell, JsonField, Load, Modal, Panel, Segmented, Status, TagInput } from '../../components/ui.js';
 import { api } from '../../lib/api.js';
-import type { CreateWebhookRequest, Gateway, GatewayStatusDto, WebhookDto, WebhookSource } from '../../lib/api.js';
+import type { CreateWebhookRequest, Gateway, GatewayDto, GatewayStatusDto, WebhookDto, WebhookSource } from '../../lib/api.js';
 import { humanize } from '../../lib/format.js';
 import { k, useDirectory, useOrg } from '../../lib/org.js';
 import { useAction, useQuery } from '../../lib/query.js';
@@ -89,6 +89,11 @@ const LIVE: Record<string, { tone: 'go' | 'warn' | 'stop' | 'idle'; label: strin
   active: { tone: 'go', label: 'Connected' }, stopped: { tone: 'warn', label: 'Not connected' }, error: { tone: 'stop', label: 'Error' }, disabled: { tone: 'idle', label: 'Disabled' },
 };
 const liveLabel = (status: string) => LIVE[status] ?? { tone: 'idle' as const, label: humanize(status) };
+/** Whether a pairing code is waiting on the daemon, and until when. The code's hash itself never leaves the daemon. */
+const pairingOf = (g: Gateway): { pending: boolean; expiresAt: number | null } => {
+  const dto = g as Gateway & Partial<Pick<GatewayDto, 'pairingPending' | 'pairingExpiresAt'>>;
+  return { pending: dto.pairingPending ?? typeof g.config.pairingCodeHash === 'string', expiresAt: dto.pairingExpiresAt ?? null };
+};
 
 /**
  * Pairing: mint a one-time code, show it, and watch the gateway's allow-list
@@ -114,9 +119,11 @@ function PairGateway({ gateway, live, onClose }: { gateway: Gateway; live: Gatew
     // Mint once when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const left = Math.max(0, Math.ceil((mintedAt + PAIRING_TTL_MS - now) / 1000));
-  // The daemon keeps only a hash of the code and drops it once the code is redeemed (or guessed wrong too often).
-  const pendingOnServer = typeof gateway.config.pairingCodeHash === 'string';
+  // The daemon drops the pending code once it is redeemed (or guessed wrong too often).
+  const { pending: pendingOnServer, expiresAt } = pairingOf(gateway);
+  // Count down to the daemon's own expiry once the poll has it; never show more than the full ten minutes.
+  const deadline = Math.min(pendingOnServer && expiresAt !== null && expiresAt > mintedAt ? expiresAt : Infinity, mintedAt + PAIRING_TTL_MS);
+  const left = Math.max(0, Math.ceil((deadline - Math.max(now, mintedAt)) / 1000));
   const [sawPending, setSawPending] = useState(false);
   useEffect(() => {
     if (code !== null && pendingOnServer) setSawPending(true);
@@ -126,15 +133,15 @@ function PairGateway({ gateway, live, onClose }: { gateway: Gateway; live: Gatew
   const notRunning = !live || live.status !== 'active';
   return (
     <div className="stack">
-      {notRunning ? <p className="note note-warn">This gateway is {live ? liveLabel(live.status).label.toLowerCase() : 'not running'}{live?.lastError ? `: ${live.lastError}` : ''}. It has to be connected before it can receive the code.</p> : null}
+      {notRunning ? <p className="note note-warn">This gateway {!live ? 'is not running' : live.status === 'error' ? 'has an error' : `is ${liveLabel(live.status).label.toLowerCase()}`}{live?.lastError ? `: ${live.lastError}` : ''}. It has to be connected before it can receive the code.</p> : null}
       {paired ? (
         <p className="note" role="status"><strong>Paired.</strong> That chat can now talk to your agents and receive approvals and takeover links.</p>
       ) : code === null ? (
         mint.error ? <p className="note note-stop">Could not create a pairing code. Close this dialog and try again.</p> : <p className="muted">Creating a pairing code</p>
-      ) : consumed ? (
-        <p className="note note-warn">This code is no longer valid. Either a chat that was already paired used it (nothing changed), or it was cancelled after too many wrong attempts. Create a new code to try again.</p>
       ) : left === 0 ? (
         <p className="note note-warn">This code has expired.</p>
+      ) : consumed ? (
+        <p className="note note-warn">This code is no longer valid. It was cancelled after too many wrong attempts. Create a new code to try again.</p>
       ) : (
         <>
           <p>From the chat you want to connect, send this message to the {gateway.kind === 'imessage' ? 'iMessage address' : 'bot'}:</p>

@@ -6,6 +6,7 @@ import { OWNER } from '../contracts/types.js';
 import { gateways, gatewayChats } from '../db/schema/reach.js';
 import { invalid, notFound } from '../shared/errors.js';
 import { safeEqual, sha256 } from '../shared/util.js';
+import { recordGatewayRevision } from './revisions.js';
 import { parseGatewayConfig, type GatewayConfig } from './types.js';
 
 export type GatewayChat = typeof gatewayChats.$inferSelect;
@@ -142,6 +143,9 @@ export class GatewayStore {
       if (isGroup && userId) config.approverUserIds = [...new Set([...current.approverUserIds, userId])];
       result = 'paired';
     });
+    // Pairing changed who may talk to (and decide through) this gateway: that is config, so it is revisioned.
+    const paired = (result as string) === 'paired' ? this.get(gatewayId) : null;
+    if (paired) recordGatewayRevision(this.k, paired, OWNER, `paired chat ${chatId}`.slice(0, 200));
     return result;
   }
 }

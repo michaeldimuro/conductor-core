@@ -123,4 +123,28 @@ describe('work: comment attachments are stored under the org artifacts directory
     expect(comment.attachments[0]!.path.startsWith(k.paths.artifacts(other.org.slug) + sep)).toBe(true);
     expect(existsSync(artifactsDir)).toBe(false);
   });
+  it('lists everything stored for an issue: what its runs saved and comment attachments, never symlinks or other issues', () => {
+    const issue = issueFor();
+    const otherIssue = issueFor('Another');
+    expect(work.listIssueArtifacts!(f.org.id, issue.id)).toEqual([]);
+
+    // What the browser tools save for a run working the issue.
+    const shot = k.paths.artifactFile(f.org.slug, issue.id, join('run_01ABC', 'screenshot.png'));
+    mkdirSync(join(shot, '..'), { recursive: true });
+    writeFileSync(shot, 'png-bytes');
+    mkdirSync(k.paths.artifactDir(f.org.slug, otherIssue.id), { recursive: true });
+    writeFileSync(k.paths.artifactFile(f.org.slug, otherIssue.id, 'elsewhere.txt'), 'x', { flag: 'w' });
+    symlinkSync(join(k.paths.home, 'owner.token'), k.paths.artifactFile(f.org.slug, issue.id, join('run_01ABC', 'link.txt')));
+
+    // The agent attaches the saved artifact to its result comment: it is already stored for the issue, so it is referenced, not copied again.
+    const comment = work.addComment(f.org.id, issue.id, { body: 'Screenshot attached', attachments: [{ name: 'screenshot.png', path: shot }] }, as(f.dev));
+    expect(comment.attachments[0]!.path).toBe(shot);
+    expect(readFileSync(comment.attachments[0]!.path, 'utf8')).toBe('png-bytes');
+
+    const list = work.listIssueArtifacts!(f.org.id, issue.id);
+    expect(list.map((a) => [a.origin, a.originId, a.path])).toEqual([['run', 'run_01ABC', 'run_01ABC/screenshot.png']]);
+    expect(list.every((a) => a.bytes === 9 && a.file.startsWith(k.paths.artifactDir(f.org.slug, issue.id) + sep))).toBe(true);
+    // Org isolation: the issue id of one org lists nothing through another org.
+    expect(codeOf(() => work.listIssueArtifacts!('org_other', issue.id))).toBe('not_found');
+  });
 });

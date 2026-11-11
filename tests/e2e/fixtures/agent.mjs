@@ -3,7 +3,7 @@
 // worker (process adapter), reaches every tool through the Conductor gateway
 // (MCP over Streamable HTTP + the agent-facing HTTP API) using only its
 // run-scoped token, then reports its result.
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -43,10 +43,21 @@ if (mode === 'work') {
   });
   out.report = viaHttp;
 } else if (mode === 'ask') {
-  // A gated external action: must come back "approval pending", then succeed once approved.
-  out.gated = await call('conductor-tasks__request_approval', { kind: 'external_send', title: 'Email the launch announcement', payload: { to: 'press@example.com' } });
+  // A genuinely gated tool call (high-risk tool, supervised agent): the gateway answers "awaiting board
+  // approval" without running it; once the board approves, the very same call goes through.
+  out.gated = await call('conductor-files__run_command', { command: 'echo launch-announcement-sent' });
+  out.pending = /awaiting board approval/.test(out.gated.text);
+  // Each run of this mode is kept, so the test can compare the run before and after the decision.
+  let history = [];
+  try {
+    const prev = JSON.parse(readFileSync(trace, 'utf8'));
+    if (prev.mode === 'ask' && Array.isArray(prev.history)) history = prev.history;
+  } catch {
+    /* first run */
+  }
+  out.history = [...history, { prompt, issueId: out.me?.issue?.id ?? null, gated: out.gated, pending: out.pending }];
 }
 
 await client.close();
 if (trace) writeFileSync(trace, JSON.stringify(out, null, 2));
-process.stdout.write(mode === 'work' ? 'Finished: report written.' : 'Requested approval and stopped.');
+process.stdout.write(mode === 'work' ? 'Finished: report written.' : out.pending ? 'Requested approval and stopped.' : 'Announcement sent.');

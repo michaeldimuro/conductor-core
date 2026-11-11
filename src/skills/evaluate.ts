@@ -1,16 +1,21 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { agents, evalCases, issues, skillVersions, skills } from '../db/schema/index.js';
 import type { ResolvedSkillRef } from '../contracts/adapter.js';
 import type { EvalRunner } from '../contracts/services.js';
-import type { Skill } from '../contracts/rows.js';
+import type { Skill, SkillVersion } from '../contracts/rows.js';
 import type { EvalExpectations, EvalMetrics, SkillEvalResult } from '../contracts/types.js';
 import { SYSTEM } from '../contracts/types.js';
 import { ConductorError, conflict, invalid } from '../shared/errors.js';
 import { truncate } from '../shared/util.js';
+import { compare, median, samplesFor, type ArmSummary } from './eval-compare.js';
 import { decodeCriteria } from './eval-cases.js';
 import { deterministicChecks, type Verdict } from './eval-checks.js';
+import { readSkillMd } from './format.js';
 import { resolveForAgent, toRef } from './resolve.js';
+import { scanSkillDir } from './scan.js';
 import { authorAgentId, type SkillCtx } from './store.js';
 
 interface Case {
@@ -92,9 +97,10 @@ async function judge(ctx: SkillCtx, orgId: string, c: Case, answer: string): Pro
 
 /**
  * One replay. The verdict comes from, in order: exit status, the case's deterministic
- * expectations, then the judge. Without a utility model the deterministic evidence decides
- * (the comparison against the baseline's cost/steps still has to be won); a check that cannot
- * be evaluated yields `unknown`, which is "needs human review" — never a silent fail or pass.
+ * expectations, then the utility-model judge (an API model or the local CLI, whichever the org
+ * resolves to). With no model at all the deterministic evidence decides and the comparison of the
+ * medians against the baseline still has to be won; a check that cannot be evaluated yields
+ * `unknown`, which is "needs human review" — never a silent fail or pass.
  */
 async function runArm(
   ctx: SkillCtx,
@@ -123,39 +129,94 @@ async function runArm(
   return done('pass', checks.checked > 0 ? checks.reasons.join('; ') : `run completed; criteria not judged (${judged.reason}) — decided on exit status and cost/steps against the baseline`);
 }
 
-const LABEL: Record<Verdict, string> = { pass: 'ok', fail: 'fail', unknown: 'undecided' };
-const metricsOf = (a: ArmResult, success: boolean): EvalMetrics => ({ success, steps: a.steps, tokens: a.tokens, costUsd: a.costUsd, wallMs: a.wallMs });
+type CaseStatus = 'pass' | 'fail' | 'undecided';
 
-function aggregate(arms: EvalMetrics[]): EvalMetrics & { rate: number } {
-  const ok = arms.filter((a) => a.success).length;
+interface CaseOutcome {
+  status: CaseStatus;
+  baseline: EvalMetrics & { ok: number };
+  withSkill: EvalMetrics & { ok: number };
+  note: string;
+}
+
+/** Medians over the samples of one arm; `ok` = how many samples count as a success. */
+function summarize(samples: ArmResult[], counts: (a: ArmResult) => boolean): EvalMetrics & { ok: number } {
+  const ok = samples.filter(counts).length;
   return {
-    success: arms.length > 0 && ok === arms.length,
-    rate: arms.length ? ok / arms.length : 0,
-    steps: arms.reduce((n, a) => n + a.steps, 0),
-    tokens: arms.reduce((n, a) => n + a.tokens, 0),
-    costUsd: arms.reduce((n, a) => n + a.costUsd, 0),
-    wallMs: arms.reduce((n, a) => n + a.wallMs, 0),
+    ok,
+    success: ok * 2 > samples.length,
+    steps: median(samples.map((a) => a.steps)),
+    tokens: median(samples.map((a) => a.tokens)),
+    costUsd: median(samples.map((a) => a.costUsd)),
+    wallMs: median(samples.map((a) => a.wallMs)),
   };
 }
 
-const saving = (base: number, withSkill: number): number => (base > 0 ? Math.max(-1, Math.min(1, (base - withSkill) / base)) : withSkill > 0 ? -1 : 0);
+const reasons = (samples: ArmResult[]): string => [...new Set(samples.map((a) => a.reason).filter(Boolean))].join(' | ');
 
 /**
- * passed = with-skill succeeds AND beats baseline: strictly better success,
- * or equal success at lower cost (ties broken by steps, then tokens).
+ * One case, `n` interleaved replays per arm. The with-skill arm passes the case on a majority of
+ * passing samples, fails it on a majority of failing ones, and is undecided in between (mixed
+ * results, or a check that could not be evaluated).
  */
-export function compare(baseline: EvalMetrics & { rate: number }, withSkill: EvalMetrics & { rate: number }): { passed: boolean; score: number } {
-  const cheaper =
-    withSkill.costUsd < baseline.costUsd ||
-    (withSkill.costUsd === baseline.costUsd && (withSkill.steps < baseline.steps || (withSkill.steps === baseline.steps && withSkill.tokens < baseline.tokens)));
-  const passed = withSkill.success && (withSkill.rate > baseline.rate || (withSkill.rate === baseline.rate && cheaper));
-  const efficiency = (saving(baseline.costUsd > 0 ? baseline.costUsd : baseline.tokens, baseline.costUsd > 0 ? withSkill.costUsd : withSkill.tokens) + saving(baseline.steps, withSkill.steps)) / 2;
-  // 0..1: success dominates, the gain over baseline and the efficiency saving refine it.
-  const score = Math.max(0, Math.min(1, 0.6 * withSkill.rate + 0.2 * Math.max(0, withSkill.rate - baseline.rate) + 0.2 * (0.5 + efficiency / 2)));
-  return { passed, score: Math.round(score * 1000) / 1000 };
+async function runCase(ctx: SkillCtx, runner: EvalRunner, who: { orgId: string; agentId: string }, c: Case, arms: { baseline: ResolvedSkillRef[]; withSkill: ResolvedSkillRef[] }, name: string, n: number): Promise<CaseOutcome> {
+  const base: ArmResult[] = [];
+  const skill: ArmResult[] = [];
+  for (let i = 0; i < n; i++) {
+    base.push(await runArm(ctx, runner, who, c, arms.baseline, `skill-eval:${name}:baseline`));
+    skill.push(await runArm(ctx, runner, who, c, arms.withSkill, `skill-eval:${name}:with-skill`));
+  }
+  // An unverifiable baseline gets the benefit of the doubt: the skill then has to win on cost/steps.
+  const baseline = summarize(base, (a) => a.verdict !== 'fail');
+  const withSkill = summarize(skill, (a) => a.verdict === 'pass');
+  const failed = skill.filter((a) => a.verdict === 'fail').length;
+  const status: CaseStatus = withSkill.success ? 'pass' : failed * 2 > n ? 'fail' : 'undecided';
+  return {
+    status,
+    baseline,
+    withSkill,
+    note: `${c.id}: baseline ${baseline.ok}/${n} ok (${reasons(base)}); with skill ${withSkill.ok}/${n} ok${status === 'undecided' ? ', undecided' : ''} (${reasons(skill)})`,
+  };
 }
 
-/** Replay each case without and with the skill in the runtime's sandbox; store the result on the version. */
+function aggregate(cases: Array<EvalMetrics & { ok: number }>, samples: number): ArmSummary {
+  const sum = (pick: (m: EvalMetrics) => number): number => cases.reduce((n, m) => n + pick(m), 0);
+  const total = cases.length * samples;
+  return {
+    success: cases.length > 0 && cases.every((m) => m.success),
+    rate: total > 0 ? cases.reduce((n, m) => n + m.ok, 0) / total : 0,
+    steps: sum((m) => m.steps),
+    tokens: sum((m) => m.tokens),
+    costUsd: sum((m) => m.costUsd),
+    wallMs: sum((m) => m.wallMs),
+  };
+}
+
+/** The candidate's tree, written to a throwaway folder the eval sandbox can read it from. */
+async function materializeCandidate(ctx: SkillCtx, skill: Skill, candidate: SkillVersion): Promise<{ ref: ResolvedSkillRef; cleanup: () => void }> {
+  if (!candidate.commitSha) throw conflict('the candidate version has no recorded commit');
+  const sha = candidate.commitSha;
+  const root = mkdtempSync(join(ctx.kernel.paths.ensure(join(ctx.kernel.paths.runDir, 'skill-candidates')), 'cand-'));
+  const cleanup = (): void => rmSync(root, { recursive: true, force: true });
+  try {
+    const dir = join(root, skill.name);
+    await ctx.git.exclusive(async () => {
+      await ctx.git.ensureRepo();
+      await ctx.git.exportTree(sha, skill.path, dir);
+    });
+    const md = readSkillMd(dir);
+    return { ref: { ...toRef(skill), path: dir, version: candidate.version, description: md.description ?? skill.description, hasScripts: scanSkillDir(dir).hasScripts }, cleanup };
+  } catch (e) {
+    cleanup();
+    throw e;
+  }
+}
+
+/**
+ * The eval gate. Each case is replayed `samples` times per arm in the runtime's sandbox (default 2,
+ * org policy `skillEvalSamples`, capped); the arms are compared on per-case medians with a noise
+ * margin (`compare`). A draft is measured against "no skill"; a pending candidate of a live skill is
+ * measured against the live version. The result is stored on the version that was evaluated.
+ */
 export async function evaluate(ctx: SkillCtx, skillId: string): Promise<SkillEvalResult> {
   const runner = ctx.deps.evalRunner;
   if (!runner) throw new ConductorError('unavailable', 'no eval runner is configured; skill evaluation is unavailable');
@@ -164,37 +225,39 @@ export async function evaluate(ctx: SkillCtx, skillId: string): Promise<SkillEva
   const cases = casesFor(ctx, skill);
   if (cases.length === 0) throw invalid('skill has no eval case and no originating issue to replay');
   const who = evalAgent(ctx, skill);
+  const samples = samplesFor(ctx.deps.org.getOrg(who.orgId).policies);
 
-  const others = resolveForAgent(ctx, who.orgId, who.agentId).filter((r) => r.id !== skill.id);
-  const withRefs = [...others.filter((r) => r.name !== skill.name), toRef(skill)];
-  const evaluatedVersion = skill.version;
+  const candidate = ctx.store.pendingCandidate(skill);
+  const others = resolveForAgent(ctx, who.orgId, who.agentId).filter((r) => r.id !== skill.id && r.name !== skill.name);
+  const staged = candidate ? await materializeCandidate(ctx, skill, candidate) : null;
+  const arms = staged ? { baseline: [...others, toRef(skill)], withSkill: [...others, staged.ref] } : { baseline: resolveForAgent(ctx, who.orgId, who.agentId).filter((r) => r.id !== skill.id), withSkill: [...others, toRef(skill)] };
+  const evaluatedVersion = candidate?.version ?? skill.version;
 
-  const baselineArms: EvalMetrics[] = [];
-  const skillArms: EvalMetrics[] = [];
-  const notes: string[] = [];
-  let skillFailed = false;
-  let undecided = false;
-  for (const c of cases) {
-    const base = await runArm(ctx, runner, who, c, others, `skill-eval:${skill.name}:baseline`);
-    const withSkill = await runArm(ctx, runner, who, c, withRefs, `skill-eval:${skill.name}:with-skill`);
-    // An unverifiable baseline gets the benefit of the doubt: the skill then has to win on cost/steps.
-    baselineArms.push(metricsOf(base, base.verdict !== 'fail'));
-    skillArms.push(metricsOf(withSkill, withSkill.verdict === 'pass'));
-    if (withSkill.verdict === 'fail') skillFailed = true;
-    if (withSkill.verdict === 'unknown') undecided = true;
-    notes.push(`${c.id}: baseline ${LABEL[base.verdict]} (${base.reason}); with skill ${LABEL[withSkill.verdict]} (${withSkill.reason})`);
+  const outcomes: CaseOutcome[] = [];
+  try {
+    for (const c of cases) outcomes.push(await runCase(ctx, runner, who, c, arms, skill.name, samples));
+  } finally {
+    staged?.cleanup();
   }
-  const baseline = aggregate(baselineArms);
-  const withSkill = aggregate(skillArms);
-  // Undecidable (and not already failed outright): a human decides, the gate neither passes nor "fails" the skill.
-  const needsReview = undecided && !skillFailed;
-  const compared = compare(baseline, withSkill);
-  const passed = compared.passed && !needsReview;
+  const baseline = aggregate(outcomes.map((o) => o.baseline), samples);
+  const withSkill = aggregate(outcomes.map((o) => o.withSkill), samples);
+  const skillFailed = outcomes.some((o) => o.status === 'fail');
+  const undecided = outcomes.some((o) => o.status === 'undecided');
+  const compared = compare(baseline, withSkill, { mode: candidate ? 'patch' : 'new' });
+  // An outright failure of the skill arm is a failed skill; everything else short of a pass is a human's call.
+  const needsReview = !skillFailed && (undecided || compared.needsReview);
+  const passed = !skillFailed && !undecided && compared.passed;
   const score = compared.score;
-  if (needsReview) notes.unshift('NEEDS HUMAN REVIEW: at least one check could not be decided; the owner can review and force-activate.');
-  const { rate: _b, ...baselineMetrics } = baseline;
-  const { rate: _w, ...withMetrics } = withSkill;
-  const result: SkillEvalResult = { ranAt: ctx.kernel.clock.now(), baseline: baselineMetrics, withSkill: withMetrics, passed, score, notes: truncate(notes.join('\n'), 4000), ...(needsReview ? { needsReview: true } : {}) };
+  const notes = outcomes.map((o) => o.note);
+  notes.unshift(`${samples} sample(s) per arm, medians compared${candidate ? `; candidate v${candidate.version} against live v${skill.version}` : ''}: ${skillFailed ? 'the with-skill arm failed a case' : undecided ? 'at least one case could not be decided' : compared.reason}`);
+  if (needsReview) notes.unshift('NEEDS HUMAN REVIEW: the evaluation did not produce a clear pass; the owner can review and force-activate.');
+  const { rate: baseRate, ...baselineMetrics } = baseline;
+  const { rate: withRate, ...withMetrics } = withSkill;
+  const result: SkillEvalResult = {
+    ranAt: ctx.kernel.clock.now(), baseline: baselineMetrics, withSkill: withMetrics, passed, score, notes: truncate(notes.join('\n'), 4000),
+    samples, successRate: { baseline: baseRate, withSkill: withRate },
+    ...(needsReview ? { needsReview: true } : {}), ...(candidate ? { candidate: true } : {}),
+  };
 
   const db = ctx.kernel.db;
   const current = ctx.store.get(skillId);
@@ -210,7 +273,7 @@ export async function evaluate(ctx: SkillCtx, skillId: string): Promise<SkillEva
     action: 'skill.evaluated',
     entityKind: 'skill',
     entityId: skill.id,
-    data: { name: skill.name, version: evaluatedVersion, passed, needsReview, score, cases: cases.length, baseline: baselineMetrics, withSkill: withMetrics },
+    data: { name: skill.name, version: evaluatedVersion, candidate: candidate !== null, samples, passed, needsReview, score, cases: cases.length, baseline: baselineMetrics, withSkill: withMetrics, successRate: result.successRate },
   });
   return result;
 }

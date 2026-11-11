@@ -12,12 +12,56 @@ const LIVE_GUARDS = new Map<string, Set<RunGuard>>();
 /** Runs whose clock is currently paused: a guard created meanwhile (fallback chain) starts paused. */
 const PAUSED_RUNS = new Set<string>();
 
+
+/**
+ * Paused time of a run across ALL its adapter attempts. A guard only knows its
+ * own attempt; whoever budgets wall time over several attempts (the fallback
+ * chain) tracks the run with one of these.
+ */
+export class RunPauseClock {
+  private pausedAt: number | null;
+  private total = 0;
+
+  constructor(readonly runId: string) {
+    this.pausedAt = PAUSED_RUNS.has(runId) ? Date.now() : null;
+    let set = RUN_CLOCKS.get(runId);
+    if (!set) {
+      set = new Set();
+      RUN_CLOCKS.set(runId, set);
+    }
+    set.add(this);
+  }
+  pause(): void {
+    if (this.pausedAt === null) this.pausedAt = Date.now();
+  }
+  resume(): void {
+    if (this.pausedAt === null) return;
+    this.total += Date.now() - this.pausedAt;
+    this.pausedAt = null;
+  }
+  get paused(): boolean {
+    return this.pausedAt !== null;
+  }
+  /** Time the run has spent paused since this clock was created (an ongoing pause included). */
+  pausedMs(): number {
+    return this.total + (this.pausedAt !== null ? Date.now() - this.pausedAt : 0);
+  }
+  dispose(): void {
+    const set = RUN_CLOCKS.get(this.runId);
+    if (!set) return;
+    set.delete(this);
+    if (set.size === 0) RUN_CLOCKS.delete(this.runId);
+  }
+}
+const RUN_CLOCKS = new Map<string, Set<RunPauseClock>>();
+
 /**
  * Stop the wall clock of a run (human takeover): paused time does not count
  * against `maxWallMs` or seat time. Returns the number of guards reached.
  */
 export function pauseRunClock(runId: string): number {
   PAUSED_RUNS.add(runId);
+  for (const c of RUN_CLOCKS.get(runId) ?? []) c.pause();
   const guards = LIVE_GUARDS.get(runId);
   for (const g of guards ?? []) g.pause();
   return guards?.size ?? 0;
@@ -26,6 +70,7 @@ export function pauseRunClock(runId: string): number {
 /** Restart the wall clock of a run with the time it had left when it was paused. */
 export function resumeRunClock(runId: string): number {
   PAUSED_RUNS.delete(runId);
+  for (const c of RUN_CLOCKS.get(runId) ?? []) c.resume();
   const guards = LIVE_GUARDS.get(runId);
   for (const g of guards ?? []) g.resume();
   return guards?.size ?? 0;

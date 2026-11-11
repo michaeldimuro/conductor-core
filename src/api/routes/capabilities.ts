@@ -2,12 +2,15 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Services } from '../../daemon/container.js';
 import type { BrowserProfile, Skill } from '../../contracts/rows.js';
 import { OWNER } from '../../contracts/types.js';
-import { invalid, isConductorError } from '../../shared/errors.js';
-import { assertOrg, body, orgOf, param, query, resolveAgent } from '../http.js';
+import { invalid, isConductorError, notFound } from '../../shared/errors.js';
+import { assertOrg, body, orgOf, param, query, resolveAgent, resolveIssue, supported } from '../http.js';
 import * as q from '../schemas/capabilities.js';
 import { optionalBody } from '../schemas/common.js';
 import { memoryBackendRoutes } from './memory-backend.js';
-import type { BrowserProfileDto, BrowserSessionDto, DocResponse, GrantResponse, Ok, PromoteSkillResponse, SkillDiffResponse, TakeoverLinkResponse } from '../types.js';
+import type {
+  BrowserProfileDto, BrowserSessionDto, DocResponse, EmbedderStatus, GrantResponse, Ok, PromoteSkillResponse, SkillDiffResponse, SkillEvalCase, TakeoverLinkResponse,
+  UtilityModelStatus,
+} from '../types.js';
 
 /** Skills, memory, connectors + grants, browser profiles and takeover sessions. */
 export function capabilityRoutes(app: FastifyInstance, s: Services): void {
@@ -61,7 +64,30 @@ export function capabilityRoutes(app: FastifyInstance, s: Services): void {
   app.post('/orgs/:orgId/skills/:skillId/promote', async (req): Promise<PromoteSkillResponse> => skills.promote(skillOf(req).id, body(req, q.skillPromote).toScope, OWNER));
   app.put('/orgs/:orgId/skills/:skillId/status', async (req) => skills.setStatus(skillOf(req).id, body(req, q.skillStatusBody).status, OWNER));
 
+  /* Eval cases: what `evaluate` replays with and without the skill. */
+  app.get('/orgs/:orgId/skills/:skillId/eval-cases', async (req): Promise<SkillEvalCase[]> =>
+    supported(skills.evalCases, 'skill eval cases').call(skills, skillOf(req).id));
+  app.post('/orgs/:orgId/skills/:skillId/eval-cases', async (req): Promise<SkillEvalCase> => {
+    const skill = skillOf(req);
+    const input = body(req, q.addEvalCase);
+    const issueId = input.issueId ? resolveIssue(s, oid(req), input.issueId).id : null;
+    return supported(skills.addEvalCase, 'skill eval cases').call(skills, skill.id, { ...input, issueId }, OWNER);
+  });
+  app.delete('/orgs/:orgId/skills/:skillId/eval-cases/:caseId', async (req): Promise<Ok> => {
+    const skill = skillOf(req);
+    const caseId = param(req, 'caseId');
+    // A case id of another skill (or org) behaves as not found.
+    if (!supported(skills.evalCases, 'skill eval cases').call(skills, skill.id).some((c) => c.id === caseId)) throw notFound('eval case', caseId);
+    supported(skills.removeEvalCase, 'skill eval cases').call(skills, skill.id, caseId, OWNER);
+    return { ok: true };
+  });
+
   /* ── Memory ── */
+  /** Which embedder backs semantic search right now, and why (install-wide). */
+  app.get('/memory/embedder', async (): Promise<EmbedderStatus> => supported(memory.embedderStatus, 'embedder status').call(memory));
+  /** Which backend answers utility-model calls (reflection, summaries, judging) for this org, and why. Spends nothing. */
+  app.get('/orgs/:orgId/utility-model', async (req): Promise<UtilityModelStatus> =>
+    supported(s.utility.status, 'utility model status').call(s.utility, oid(req)));
   app.get('/orgs/:orgId/memory', async (req) => memory.list(oid(req), query(req, q.listMemoryQ)));
   app.get('/orgs/:orgId/memory/search', async (req) => {
     const orgId = oid(req);

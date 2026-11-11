@@ -1,9 +1,11 @@
 import { createReadStream, realpathSync, statSync } from 'node:fs';
 import { basename, extname, sep } from 'node:path';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Services } from '../../daemon/container.js';
+import type { Organization } from '../../contracts/rows.js';
 import { forbidden, invalid, notFound } from '../../shared/errors.js';
-import { orgOf, param, resolveIssue } from '../http.js';
+import { orgOf, param, resolveIssue, supported } from '../http.js';
+import { API_PREFIX, type IssueArtifactDto } from '../types.js';
 
 const MIME_BY_EXT: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.log': 'text/plain; charset=utf-8',
@@ -34,10 +36,43 @@ export function contentDisposition(name: string): string {
 }
 
 /**
- * Download a comment attachment. The stored path is honoured only when, after
- * resolving symlinks, it is a regular file inside the organization's own
- * directory; anything else (another org, the rest of the disk, browser
- * profiles) is refused. Always served as a download, never rendered inline.
+ * Send one file of an organization as a download. The path is honoured only
+ * when, after resolving symlinks, it is a regular file inside `root` (itself
+ * inside the organization's own directory); anything else (another org, the
+ * rest of the disk, browser profiles) is refused. Never rendered inline.
+ */
+function sendConfined(
+  s: Services, reply: FastifyReply, org: Organization,
+  target: { path: string; name: string; mime?: string; root?: string; log: Record<string, unknown> },
+): FastifyReply {
+  let root: string;
+  let file: string;
+  try {
+    root = realpathSync(target.root ?? s.kernel.paths.org(org.slug));
+    file = realpathSync(target.path);
+  } catch {
+    throw notFound('attachment file');
+  }
+  const orgRoot = realpathSync(s.kernel.paths.org(org.slug));
+  const inside = file.startsWith(root + sep) && file.startsWith(orgRoot + sep);
+  if (!inside || file.slice(orgRoot.length + 1).split(sep).some((seg) => PRIVATE_SEGMENTS.has(seg))) {
+    s.kernel.log.warn({ orgId: org.id, ...target.log }, 'refused an attachment outside the organization directory');
+    throw forbidden('this attachment is stored outside the organization\'s directory and cannot be downloaded');
+  }
+  const stat = statSync(file, { throwIfNoEntry: false });
+  if (!stat?.isFile()) throw notFound('attachment file');
+
+  reply.header('content-type', attachmentContentType(target.name, file, target.mime));
+  reply.header('content-disposition', contentDisposition(target.name));
+  reply.header('content-length', stat.size);
+  reply.header('cache-control', 'private, no-store');
+  return reply.send(createReadStream(file));
+}
+
+/**
+ * Downloads of comment attachments and of an issue's run artifacts (browser
+ * screenshots and downloads kept under `orgs/<org>/artifacts/<issue>/`), plus
+ * the artifact listing. Every file goes through `sendConfined`.
  */
 export function attachmentRoutes(app: FastifyInstance, s: Services): void {
   app.get('/orgs/:orgId/issues/:issueId/comments/:commentId/attachments/:index', async (req, reply) => {
@@ -50,27 +85,27 @@ export function attachmentRoutes(app: FastifyInstance, s: Services): void {
     if (!comment || comment.orgId !== org.id) throw notFound('comment', commentId);
     const attachment = comment.attachments[Number(rawIndex)];
     if (!attachment) throw notFound('attachment', rawIndex);
+    return sendConfined(s, reply, org, { path: attachment.path, name: attachment.name, mime: attachment.mime, log: { commentId, index: Number(rawIndex) } });
+  });
 
-    let root: string;
-    let file: string;
-    try {
-      root = realpathSync(s.kernel.paths.org(org.slug));
-      file = realpathSync(attachment.path);
-    } catch {
-      throw notFound('attachment file');
-    }
-    const inside = file.startsWith(root + sep);
-    if (!inside || file.slice(root.length + 1).split(sep).some((seg) => PRIVATE_SEGMENTS.has(seg))) {
-      s.kernel.log.warn({ orgId: org.id, commentId, index: Number(rawIndex) }, 'refused an attachment outside the organization directory');
-      throw forbidden('this attachment is stored outside the organization\'s directory and cannot be downloaded');
-    }
-    const stat = statSync(file, { throwIfNoEntry: false });
-    if (!stat?.isFile()) throw notFound('attachment file');
+  /** Everything stored for the issue: comment attachments and what its runs saved. Newest first. */
+  app.get('/orgs/:orgId/issues/:issueId/artifacts', async (req): Promise<IssueArtifactDto[]> => {
+    const org = orgOf(s, req);
+    const issue = resolveIssue(s, org.id, param(req, 'issueId'));
+    const list = supported(s.work.listIssueArtifacts, 'listing issue artifacts').call(s.work, org.id, issue.id);
+    const base = `${API_PREFIX}/orgs/${encodeURIComponent(org.id)}/issues/${encodeURIComponent(issue.id)}/artifacts/`;
+    return list.map((a) => ({
+      ...a, contentType: attachmentContentType(a.name, a.file, undefined), downloadPath: base + a.path.split('/').map(encodeURIComponent).join('/'),
+    }));
+  });
 
-    reply.header('content-type', attachmentContentType(attachment.name, file, attachment.mime));
-    reply.header('content-disposition', contentDisposition(attachment.name));
-    reply.header('content-length', stat.size);
-    reply.header('cache-control', 'private, no-store');
-    return reply.send(createReadStream(file));
+  /** Download one artifact by its path relative to the issue's artifact folder. */
+  app.get('/orgs/:orgId/issues/:issueId/artifacts/*', async (req, reply) => {
+    const org = orgOf(s, req);
+    const issue = resolveIssue(s, org.id, param(req, 'issueId'));
+    const rel = param(req, '*');
+    if (rel.includes('\0') || rel.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) throw invalid('invalid artifact path');
+    const root = s.kernel.paths.artifactDir(org.slug, issue.id);
+    return sendConfined(s, reply, org, { path: s.kernel.paths.artifactFile(org.slug, issue.id, rel), name: basename(rel), root, log: { issueId: issue.id, artifact: rel } });
   });
 }

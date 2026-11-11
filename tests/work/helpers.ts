@@ -5,7 +5,7 @@ import type { ApprovalService } from '../../src/contracts/services.js';
 import type { ToolCallContext, ToolResult } from '../../src/contracts/tools.js';
 import type { Actor } from '../../src/contracts/types.js';
 import type { Agent, Approval, Department, Organization } from '../../src/contracts/rows.js';
-import { agents, departments } from '../../src/db/schema/index.js';
+import { agents, departments, organizations } from '../../src/db/schema/index.js';
 import type { DomainEvents, EventName } from '../../src/shared/events.js';
 import { ConductorError, notFound } from '../../src/shared/errors.js';
 import { createWorkService } from '../../src/work/index.js';
@@ -39,6 +39,11 @@ export function createFakeOrg(k: TestKernel): OrgService {
   };
 
   const impl: Partial<OrgService> = {
+    getOrg(idOrSlug) {
+      const o = k.db.select().from(organizations).all().find((x) => x.id === idOrSlug || x.slug === idOrSlug);
+      if (!o) throw notFound('organization', idOrSlug);
+      return o;
+    },
     getAgent(orgId, agentId) {
       const a = all(orgId).find((x) => x.id === agentId);
       if (!a) throw notFound('agent', agentId);

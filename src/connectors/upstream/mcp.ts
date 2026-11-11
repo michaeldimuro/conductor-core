@@ -138,7 +138,7 @@ class McpUpstream implements UpstreamClient {
             description: t.description ?? '',
             inputSchema: (t.inputSchema ?? { type: 'object' }) as Record<string, unknown>,
             annotations: t.annotations
-              ? { readOnlyHint: t.annotations.readOnlyHint, destructiveHint: t.annotations.destructiveHint, openWorldHint: t.annotations.openWorldHint }
+              ? { title: t.annotations.title, readOnlyHint: t.annotations.readOnlyHint, destructiveHint: t.annotations.destructiveHint, openWorldHint: t.annotations.openWorldHint }
               : undefined,
           });
         }
