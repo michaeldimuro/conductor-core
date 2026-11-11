@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ConnectorSecrets, ConnectorTools, InstallConnector, useCatalog, useConnectors } from '../components/connectors.js';
+import { ConnectorSecrets, ConnectorSettings, ConnectorTools, InstallConnector, useCatalog, useConnectors } from '../components/connectors.js';
 import { Button, Chip, ConfirmButton, Empty, Load, PageHead, Panel, Status } from '../components/ui.js';
 import { api } from '../lib/api.js';
 import type { Connector, ConnectorTemplate } from '../lib/api.js';
@@ -29,6 +29,7 @@ function ConnectorRow({ connector, template, expanded, onToggle }: { connector: 
           <ConfirmButton small variant="quiet" danger label="Remove" title={`Remove ${connector.name}`} confirmLabel="Remove connector" message="Every agent loses access to this connector and its grants are deleted." onConfirm={() => remove.run()} />
         </div>
       </div>
+      {template ? <ConnectorSettings connector={connector} template={template} /> : null}
       {template ? <ConnectorSecrets connector={connector} template={template} /> : null}
       {expanded ? <ConnectorTools connector={connector} /> : null}
     </li>

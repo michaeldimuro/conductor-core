@@ -42,7 +42,11 @@ describe('connector kinds and catalog', () => {
       expect(t.docsUrl, t.id).toMatch(/^https:\/\//);
       expect(Object.values(t.suggestedPolicies ?? {}), t.id).toContain('ask');
       const secrets = Object.fromEntries(t.requiredSecrets.map((s) => [s, `value-of-${t.id}-${s}`]));
-      const row = await gw.installFromTemplate(org.id, t.id, { secrets }, OWNER);
+      // Account-specific settings are never defaulted: a template asks for them and refuses to install without.
+      const required = (t.configFields ?? []).filter((f) => f.required);
+      if (required.length) await expect(gw.installFromTemplate(org.id, t.id, { name: `${t.id}-incomplete`, secrets }, OWNER)).rejects.toThrow(required[0]!.label);
+      const config = Object.fromEntries(required.map((f) => [f.key, `my-${f.key}`]));
+      const row = await gw.installFromTemplate(org.id, t.id, { secrets, ...(required.length ? { config } : {}) }, OWNER);
       expect(row).toMatchObject({ orgId: org.id, name: t.id, kind: t.kind, templateId: t.id, status: 'active', authRef: `org/acme/connector/${t.id}` });
       for (const s of t.requiredSecrets) {
         expect(await k.secrets.get(`org/acme/connector/${t.id}/${s}`)).toBe(`value-of-${t.id}-${s}`);

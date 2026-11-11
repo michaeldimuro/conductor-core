@@ -1,13 +1,12 @@
 import type { Kernel } from '../../contracts/kernel.js';
 import { ConductorError, invalid } from '../../shared/errors.js';
-import { parseConfig, type ArcadeConfig, type ComposioConfig, type HttpConfig, type OpenApiConfig } from '../config.js';
+import { parseConfig, type HttpConfig, type OpenApiConfig } from '../config.js';
 import { SecretResolver } from '../secrets.js';
 import { AuthRequiredError, type CredentialContext, type UpstreamClient } from '../types.js';
 import { connectHttp, connectStdio, discoverAuthUrl } from './mcp.js';
+import { arcadeUpstream, composioUpstream } from './hosted.js';
 import { loadSpec, OpenApiUpstream } from './openapi.js';
 
-const COMPOSIO_BASE = 'https://backend.composio.dev/v3/mcp';
-const ARCADE_BASE = 'https://api.arcade.dev/mcp';
 
 export interface Connected {
   client: UpstreamClient;
@@ -71,33 +70,6 @@ async function httpUpstream(k: Kernel, config: HttpConfig, resolver: SecretResol
     if (direct) headers.Authorization = `Bearer ${direct}`;
   }
   return connectHttp({ url, headers, mode: config.transport ?? 'auto' }, { timeoutMs, authUrl });
-}
-
-async function composioUpstream(config: ComposioConfig, cred: CredentialContext, resolver: SecretResolver, timeoutMs: number): Promise<UpstreamClient> {
-  const raw = config.mcpUrl !== undefined
-    ? await resolver.value(config.mcpUrl, 'config.mcpUrl')
-    : `${(config.baseUrl ?? COMPOSIO_BASE).replace(/\/+$/, '')}/${encodeURIComponent(config.serverId ?? config.toolkit ?? '')}`;
-  const url = parseUrl(raw, 'composio MCP url');
-  // One Composio entity per org or per agent; a grant-bound `entity_id` secret picks a different connected account.
-  const entity = (await resolver.lookup('entity_id')) ?? config.entityId ?? (config.entityMode === 'agent' ? cred.agentId : cred.orgId);
-  if (!url.searchParams.has('user_id')) url.searchParams.set('user_id', entity);
-  const headers = await resolver.map(config.headers, 'config.headers');
-  const apiKey = (await resolver.lookup(config.apiKeyRef ?? 'COMPOSIO_API_KEY')) ?? (await resolver.direct());
-  if (apiKey) headers['x-api-key'] = apiKey;
-  return connectHttp({ url, headers, mode: 'auto' }, { timeoutMs, jitAuth: true });
-}
-
-async function arcadeUpstream(config: ArcadeConfig, cred: CredentialContext, resolver: SecretResolver, timeoutMs: number): Promise<UpstreamClient> {
-  const raw = config.mcpUrl !== undefined
-    ? await resolver.value(config.mcpUrl, 'config.mcpUrl')
-    : `${(config.baseUrl ?? ARCADE_BASE).replace(/\/+$/, '')}/${encodeURIComponent(config.gateway ?? config.toolkit ?? '')}`;
-  const url = parseUrl(raw, 'arcade MCP url');
-  const headers = await resolver.map(config.headers, 'config.headers');
-  const apiKey = (await resolver.lookup(config.apiKeyRef ?? 'ARCADE_API_KEY')) ?? (await resolver.direct());
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  // Per-user authorization: tools act as this Arcade user.
-  headers['Arcade-User-ID'] = (await resolver.lookup('user_id')) ?? config.userId ?? (config.userMode === 'agent' ? cred.agentId : cred.orgId);
-  return connectHttp({ url, headers, mode: 'auto' }, { timeoutMs, jitAuth: true });
 }
 
 async function openapiUpstream(k: Kernel, config: OpenApiConfig, resolver: SecretResolver, timeoutMs: number): Promise<UpstreamClient> {

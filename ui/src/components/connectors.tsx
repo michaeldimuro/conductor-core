@@ -75,12 +75,85 @@ function InstallBody({ onClose, template }: { onClose: () => void; template: Con
           </div>
         </fieldset>
       ) : null}
+      {template?.configFields?.length ? (
+        <fieldset>
+          <legend>Settings</legend>
+          <div className="stack">
+            {template.configFields.map((f) => (
+              <Field key={f.key} label={f.label} hint={f.help}>
+                <input value={typeof config[f.key] === 'string' ? (config[f.key] as string) : ''} onChange={(e) => setConfig(withField(config, f.key, e.target.value))}
+                  required={f.required && !(f.unless && config[f.unless] !== undefined)} placeholder={f.placeholder} autoCapitalize="none" spellCheck={false} />
+              </Field>
+            ))}
+          </div>
+        </fieldset>
+      ) : null}
       {!template ? <Field label="Credential secret (optional)" hint="Name of a stored secret holding the API key or token."><input value={authRef} onChange={(e) => setAuthRef(e.target.value)} placeholder={`org/${org.slug}/connector/my-server`} autoCapitalize="none" spellCheck={false} /></Field> : null}
-      <JsonField label="Configuration (non-secret)" value={config} onChange={setConfig} hint={template ? 'The template defaults are usually right.' : 'For example {"url": "https://mcp.example.com/mcp"} or {"command": "npx", "args": ["-y", "some-mcp-server"]}.'} />
+      {template ? (
+        <details>
+          <summary>Advanced configuration (JSON)</summary>
+          <JsonField label="Configuration (non-secret)" value={config} onChange={setConfig} hint="The template defaults are usually right." />
+        </details>
+      ) : <JsonField label="Configuration (non-secret)" value={config} onChange={setConfig} hint={'For example {"url": "https://mcp.example.com/mcp"} or {"command": "npx", "args": ["-y", "some-mcp-server"]}.'} />}
       {template?.suggestedPolicies && Object.keys(template.suggestedPolicies).length ? (
         <p className="muted">Suggested tool policies when you grant it to an agent: {Object.entries(template.suggestedPolicies).map(([tool, p]) => `${tool} ${p === 'ask' ? 'asks first' : p}`).join(', ')}.</p>
       ) : null}
     </FormShell>
+  );
+}
+
+/** Set or clear one config key (an emptied field is removed, so the connector falls back to its default). */
+function withField(config: Record<string, unknown>, key: string, value: string): Record<string, unknown> {
+  const next = { ...config };
+  if (value.trim()) next[key] = value.trim();
+  else delete next[key];
+  return next;
+}
+
+/** Account-specific settings of a template connector (an Arcade gateway slug…), editable after install. */
+export function ConnectorSettings({ connector, template }: { connector: Connector; template: ConnectorTemplate }) {
+  const { org } = useOrg();
+  const fields = template.configFields ?? [];
+  const current = (key: string): string => {
+    const v = connector.config[key];
+    // The old Arcade template filled in a placeholder gateway; show it as unset.
+    return typeof v === 'string' && !(connector.kind === 'arcade' && key === 'gateway' && v === 'default') ? v : '';
+  };
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const save = useAction(async () => {
+    let config = { ...connector.config };
+    for (const f of fields) config = withField(config, f.key, draft[f.key] ?? current(f.key));
+    await api.updateConnector(org.id, connector.id, { config });
+    setEditing(false);
+  }, { invalidate: [k(org.id, 'connector')], success: 'Settings saved' });
+  if (!fields.length) return null;
+  const missing = fields.some((f) => f.required && !current(f.key) && !(f.unless && connector.config[f.unless] !== undefined));
+  if (!editing) {
+    return (
+      <ul className="tool-list">
+        <li>
+          <div className="grow">
+            {fields.map((f) => <span key={f.key} className="row row-tight"><span className="muted">{f.label}:</span> {current(f.key) ? <code>{current(f.key)}</code> : <Chip tone={f.required ? 'stop' : undefined}>{f.required ? 'Not set' : 'Not set (default)'}</Chip>}</span>)}
+          </div>
+          <Button small variant={missing ? 'primary' : undefined} onClick={() => { setDraft(Object.fromEntries(fields.map((f) => [f.key, current(f.key)]))); setEditing(true); }}>{missing ? 'Set up' : 'Edit settings'}</Button>
+        </li>
+      </ul>
+    );
+  }
+  return (
+    <form className="stack connector-settings" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); void save.run(); }}>
+      {fields.map((f) => (
+        <Field key={f.key} label={f.label} hint={f.help}>
+          <input value={draft[f.key] ?? ''} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} placeholder={f.placeholder}
+            required={f.required && !(f.unless && connector.config[f.unless] !== undefined)} autoCapitalize="none" spellCheck={false} autoFocus={f === fields[0]} />
+        </Field>
+      ))}
+      <div className="row">
+        <Button small type="submit" variant="primary" busy={save.busy}>Save</Button>
+        <Button small onClick={() => setEditing(false)}>Cancel</Button>
+      </div>
+    </form>
   );
 }
 

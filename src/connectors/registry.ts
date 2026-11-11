@@ -98,11 +98,19 @@ export class ConnectorRegistry {
     const org = this.store.org(orgId);
     const input = parseWith(templateInstallSchema, rawInput ?? {}, 'template install');
     const name = input.name ?? template.id;
+    const config = { ...template.config, ...(input.config ?? {}) };
+    // Account-specific settings (an Arcade gateway slug…) cannot be defaulted: ask instead of guessing.
+    for (const f of template.configFields ?? []) {
+      const v = config[f.key];
+      if (typeof v === 'string' && !v.trim()) delete config[f.key];
+      const alternative = f.unless !== undefined && config[f.unless] !== undefined;
+      if (f.required && !alternative && (typeof v !== 'string' || !v.trim())) throw invalid(`${template.name} needs "${f.label}": ${f.help}`);
+    }
     // Secrets live only in the secret store, namespaced per org + connector; the row keeps the ref.
     const authRef = `org/${org.slug}/connector/${slugify(name)}`;
     const row = this.install(
       orgId,
-      { name, kind: template.kind, scope: input.scope, scopeId: input.scopeId, config: { ...template.config, ...(input.config ?? {}) }, authRef, templateId: template.id },
+      { name, kind: template.kind, scope: input.scope, scopeId: input.scopeId, config, authRef, templateId: template.id },
       actor,
     );
     try {
@@ -135,7 +143,8 @@ export class ConnectorRegistry {
     if (patch.toolAllowlist !== undefined) set.toolAllowlist = patch.toolAllowlist;
     if (patch.templateId !== undefined) set.templateId = patch.templateId;
     if (patch.status !== undefined) set.status = patch.status;
-    if (patch.status === 'active') set.lastError = null;
+    // New settings deserve a fresh attempt: the old failure no longer describes this connector.
+    if (patch.status === 'active' || patch.config !== undefined) set.lastError = null;
     const row = this.store.patch(orgId, connectorId, set);
     this.dropOutOfScopeGrants(orgId, row, actor);
     this.store.revision(orgId, 'connector', row.id, snapshotOf(row), actor, 'updated');

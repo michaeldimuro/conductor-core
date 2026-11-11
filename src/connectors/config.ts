@@ -49,10 +49,8 @@ const composioConfig = z
     entityMode: z.enum(['org', 'agent']).optional(),
     apiKeyRef: z.string().min(1).optional(),
     headers: headerMap.optional(),
-  })
-  .refine((c) => c.mcpUrl !== undefined || c.toolkit !== undefined || c.serverId !== undefined, {
-    message: 'composio config needs mcpUrl, serverId or toolkit',
   });
+// No server or URL is fine for Composio: Conductor then opens a session covering every connected toolkit.
 
 const arcadeConfig = z
   .looseObject({
@@ -67,7 +65,7 @@ const arcadeConfig = z
     headers: headerMap.optional(),
   })
   .refine((c) => c.mcpUrl !== undefined || c.gateway !== undefined || c.toolkit !== undefined, {
-    message: 'arcade config needs mcpUrl, gateway or toolkit',
+    message: 'arcade config needs a gateway slug (or mcpUrl)',
   });
 
 const openapiAuth = z.object({

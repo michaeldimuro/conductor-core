@@ -322,6 +322,19 @@ export interface ConnectorTemplate {
   /** Suggested per-tool policies (e.g. send → ask). */
   suggestedPolicies?: Record<string, ToolPolicy>;
   docsUrl?: string;
+  /** Account-specific, non-secret settings the user supplies at install (and can edit later), e.g. an Arcade gateway slug. */
+  configFields?: ConnectorConfigField[];
+}
+
+export interface ConnectorConfigField {
+  /** Key in the connector's `config`. */
+  key: string;
+  label: string;
+  help: string;
+  required: boolean;
+  /** Not required when this other config key is set (e.g. a full `mcpUrl` instead of a gateway slug). */
+  unless?: string;
+  placeholder?: string;
 }
 
 export interface InstallConnectorInput {

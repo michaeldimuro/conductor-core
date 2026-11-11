@@ -28,10 +28,16 @@ const TEMPLATES: ConnectorTemplate[] = [
     description: 'Hundreds of SaaS toolkits through Composio\'s MCP endpoint, one Composio entity per org or per agent.',
     kind: 'composio',
     category: 'toolkit',
-    config: { toolkit: 'composio', entityMode: 'org', apiKeyRef: 'COMPOSIO_API_KEY' },
+    config: { entityMode: 'org', apiKeyRef: 'COMPOSIO_API_KEY' },
     requiredSecrets: ['COMPOSIO_API_KEY'],
+    configFields: [
+      {
+        key: 'serverId', label: 'MCP server ID (optional)', required: false, placeholder: 'leave empty to use all your connected toolkits',
+        help: 'An MCP server you created in Composio limits agents to its toolkits and tools. Leave empty and Conductor opens a Composio session with every toolkit you have connected.',
+      },
+    ],
     suggestedPolicies: guarded({ '*reply*': 'ask', '*create*': 'ask' }),
-    docsUrl: 'https://docs.composio.dev/docs/mcp-overview',
+    docsUrl: 'https://docs.composio.dev/docs/single-toolkit-mcp',
   },
   {
     id: 'arcade',
@@ -39,10 +45,16 @@ const TEMPLATES: ConnectorTemplate[] = [
     description: 'Arcade.dev tools with per-user, just-in-time OAuth; authorization prompts surface as Approvals.',
     kind: 'arcade',
     category: 'toolkit',
-    config: { gateway: 'default', userMode: 'org', apiKeyRef: 'ARCADE_API_KEY' },
+    config: { userMode: 'org', apiKeyRef: 'ARCADE_API_KEY' },
     requiredSecrets: ['ARCADE_API_KEY'],
+    configFields: [
+      {
+        key: 'gateway', label: 'MCP gateway slug', required: true, unless: 'mcpUrl', placeholder: 'my-gateway',
+        help: 'Create an MCP gateway in the Arcade dashboard with user mode "Arcade Headers" and the tools you want, then enter its slug: the last part of https://api.arcade.dev/mcp/<slug>.',
+      },
+    ],
     suggestedPolicies: guarded({ '*reply*': 'ask' }),
-    docsUrl: 'https://docs.arcade.dev/home/mcp-gateways',
+    docsUrl: 'https://docs.arcade.dev/en/operate/governance/mcp-gateways',
   },
   {
     id: 'zapier',
