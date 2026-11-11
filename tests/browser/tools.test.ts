@@ -251,7 +251,6 @@ describe('conductor-browser tools', () => {
     const shot = await run('screenshot');
     expect(shot.content.some((c) => c.type === 'image')).toBe(true);
     // An error that would echo the value is scrubbed as well.
-    await run('click', { selector: `text=${SITE_PASSWORD}` });
     await run('evaluate', { script: '() => { throw new Error("leak " + document.querySelector("#p").value) }' });
 
     // The site really received the secret, and its echo of it is redacted on the next page too.

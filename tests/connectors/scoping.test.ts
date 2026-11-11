@@ -108,6 +108,17 @@ describe('connector gateway — per-agent scoping over a real stdio MCP server (
     }
   });
 
+  it('reconnects a pooled upstream after it died, without replaying the failed call', async () => {
+    gw.grant(org.id, notes.id, a.id, { toolPolicies: { '*': 'allowed' } }, OWNER);
+    const ctx = runCtx(k, a);
+    expect(textOf(await gw.callTool(ctx, 'notes__get_note', { id: '1' }))).toContain('note 1');
+    const crashed = await gw.callTool(ctx, 'notes__crash', {});
+    expect(crashed.isError).toBe(true);
+    expect(textOf(await gw.callTool(ctx, 'notes__get_note', { id: '2' }))).toContain('note 2');
+    const statuses = k.db.select().from(toolCalls).where(eq(toolCalls.runId, ctx.runId)).all().map((r) => r.status);
+    expect(statuses).toEqual(['ok', 'error', 'ok']);
+  });
+
   it('refuses secret refs that point into another org\'s namespace', async () => {
     await k.secrets.set('org/other/notes/FIXTURE_TOKEN', 'tok-other-org');
     const leaky = await gw.install(org.id, {

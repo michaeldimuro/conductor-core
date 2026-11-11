@@ -1,6 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createTestKernel, seedAgent, seedDept, seedOrg, type TestKernel } from '../helpers/kernel.js';
 import { createConnectorGateway } from '../../src/connectors/index.js';
 import type { ConnectorGateway } from '../../src/contracts/services.js';
@@ -103,6 +106,33 @@ describe('connector kinds and catalog', () => {
     await k.secrets.set('org/acme/vault/access_token', JSON.stringify({ access_token: 'fresh-access-token', expires_at: k.clock.now() + 3_600_000 }));
     approvals.decide(org.id, approval!.id, 'approved', OWNER);
     expect(textOf(await gw.callTool(ctx, 'vault__list_items', {}))).toContain('list_items ok');
+  });
+
+  it('mcp_http falls back to the legacy HTTP+SSE transport when Streamable HTTP is not offered', async () => {
+    const transports = new Map<string, SSEServerTransport>();
+    const seenAuth: Array<string | undefined> = [];
+    const legacy = await listen((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      seenAuth.push(req.headers.authorization);
+      if (req.method === 'GET' && url.pathname === '/sse') {
+        const server = new Server({ name: 'legacy-sse', version: '1.0.0' }, { capabilities: { tools: {} } });
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'ping', description: 'Ping', inputSchema: { type: 'object' as const } }] }));
+        server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: 'text' as const, text: 'pong over sse' }] }));
+        const transport = new SSEServerTransport('/messages', res);
+        transports.set(transport.sessionId, transport);
+        void server.connect(transport);
+      } else if (req.method === 'POST' && url.pathname === '/messages') {
+        void transports.get(url.searchParams.get('sessionId') ?? '')?.handlePostMessage(req, res);
+      } else {
+        res.writeHead(405).end();
+      }
+    });
+    closers.push(legacy.close);
+    await k.secrets.set('org/acme/legacy/token', 'legacy-bearer-token');
+    const row = await gw.install(org.id, { name: 'legacy', kind: 'mcp_http', config: { url: `${legacy.origin}/sse`, auth: { type: 'bearer' } }, authRef: 'org/acme/legacy' }, OWNER);
+    gw.grant(org.id, row.id, agent.id, {}, OWNER);
+    expect(textOf(await gw.callTool(runCtx(k, agent), 'legacy__ping', {}))).toContain('pong over sse');
+    expect(new Set(seenAuth)).toEqual(new Set(['Bearer legacy-bearer-token']));
   });
 
   it('composio: one entity per org by default, a different connected account per grant', async () => {

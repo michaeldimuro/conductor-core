@@ -18,5 +18,7 @@ server.registerTool('send_message', { description: 'Send a message to a recipien
   text(`sent to ${to}`),
 );
 server.registerTool('delete_note', { description: 'Delete a note', inputSchema: { id: z.string() } }, async ({ id }) => text(`deleted ${id}`));
+// Simulates an upstream that dies mid-session.
+server.registerTool('crash', { description: 'Exit the server process', inputSchema: {} }, async () => process.exit(1));
 
 await server.connect(new StdioServerTransport());

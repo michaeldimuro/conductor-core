@@ -55,6 +55,11 @@ function findTool(tools: unknown, wanted: string): string {
 
 /* ───────────── Anthropic Messages (SSE) ───────────── */
 
+/** SDK 1.x sends the key as a bearer token; older clients and raw HTTP use x-api-key. */
+function anthropicAuthed(req: IncomingMessage): boolean {
+  return req.headers['x-api-key'] === ANTHROPIC_TEST_KEY || req.headers.authorization === `Bearer ${ANTHROPIC_TEST_KEY}`;
+}
+
 function lastToolResultText(body: Record<string, unknown>): string | null {
   const messages = (body.messages ?? []) as Array<{ role: string; content: unknown }>;
   const last = messages.at(-1);
@@ -69,7 +74,7 @@ function lastToolResultText(body: Record<string, unknown>): string | null {
 async function anthropicMessages(state: ProviderState, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson(req);
   state.requests.push(body);
-  if (req.headers['x-api-key'] !== ANTHROPIC_TEST_KEY) {
+  if (!anthropicAuthed(req)) {
     json(res, 401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
     return;
   }
@@ -209,7 +214,7 @@ export async function startMockProviders(): Promise<MockProviders> {
       if (req.method === 'POST' && path === '/anthropic/v1/messages') return anthropicMessages(anthropic, req, res);
       if (req.method === 'POST' && path === '/openai/v1/responses') return openaiResponses(openai, req, res);
       if (req.method === 'GET' && path.startsWith('/anthropic/v1/models/')) {
-        if (req.headers['x-api-key'] !== ANTHROPIC_TEST_KEY) return json(res, 401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
+        if (!anthropicAuthed(req)) return json(res, 401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
         return json(res, 200, { id: path.split('/').pop(), type: 'model', display_name: 'Mock Model', created_at: '2026-01-01T00:00:00Z' });
       }
       if (req.method === 'GET' && path.startsWith('/openai/v1/models/')) {

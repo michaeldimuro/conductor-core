@@ -47,7 +47,8 @@ export class ProcessSupervisor implements Supervisor {
     const isTs = self.endsWith('.ts');
     this.workerPath = self.replace(/supervisor\.(ts|js)$/, isTs ? 'worker.ts' : 'worker.js');
     // Under tsx/vitest the worker is TypeScript and needs the tsx loader.
-    this.execArgv = isTs ? ['--import', 'tsx'] : [];
+    // Resolved to an absolute URL because the worker's cwd is the run workspace, not the repo.
+    this.execArgv = isTs ? ['--import', import.meta.resolve('tsx')] : [];
   }
 
   start(job: WorkerJob, onEvent: (e: RunEvent) => void): RunHandle {

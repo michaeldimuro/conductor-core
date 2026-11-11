@@ -1,3 +1,4 @@
+/* global process, console */
 // Stand-in for `codex exec --json`: emits the JSONL thread/turn/item events of codex-cli 0.16x.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { callTool, readStdin, sleep } from './mcp-call.mjs';

@@ -1,3 +1,4 @@
+/* global process, console */
 // Stand-in for `claude -p --output-format stream-json --verbose`: emits the same line shapes as Claude Code 2.1.x.
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';

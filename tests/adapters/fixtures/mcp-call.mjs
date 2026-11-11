@@ -1,3 +1,4 @@
+/* global process, URL, setTimeout */
 // Minimal MCP client used by the fake agents: one tool call over Streamable HTTP.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';

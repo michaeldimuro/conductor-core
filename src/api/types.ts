@@ -107,6 +107,8 @@ export interface LoginCodeResponse {
   code: string;
   /** Open this in a browser to exchange the code for a session cookie. */
   url: string;
+  /** Same exchange through the public (tunnel) URL, for pairing a remote device. */
+  remoteUrl: string;
   expiresAt: number;
 }
 export interface MeResponse {

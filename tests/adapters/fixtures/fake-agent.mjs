@@ -1,3 +1,4 @@
+/* global process, console */
 // A generic CLI agent for the `process` adapter: prompt on stdin, CONDUCTOR_* env, RunEvents (or plain text) on stdout.
 import { writeFileSync } from 'node:fs';
 import { callTool, readStdin, sleep } from './mcp-call.mjs';
