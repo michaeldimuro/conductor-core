@@ -272,6 +272,8 @@ export interface CallToolRequest {
 export interface ClaimResponse {
   sessionId: string;
   reason: string;
+  /** When the takeover session ends on its own (epoch ms). */
+  expiresAt: number;
 }
 export type TakeoverServerMessage =
   | { type: 'frame'; data: string; meta: { width: number; height: number; url: string; title: string } }

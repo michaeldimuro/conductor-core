@@ -142,7 +142,10 @@ export function systemRoutes(app: FastifyInstance, s: Services): void {
     const schema = settingSchema(key);
     const raw = body(req, q.settingValue).value;
     if (raw === undefined) throw invalid('value is required');
-    const value = parse(schema, raw);
+    // Validated directly: `parse()` maps null to {} and null is how a setting is cleared.
+    const checked = schema.safeParse(raw);
+    if (!checked.success) throw invalid(checked.error.issues.map((i) => `${i.path.join('.') || 'value'}: ${i.message}`).join('; '));
+    const value = checked.data;
     const now = k.clock.now();
     k.db.insert(settings).values({ key, value, updatedAt: now }).onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } }).run();
     k.audit.record({ orgId: null, actor: OWNER, action: 'config.changed', entityKind: 'setting', entityId: key, data: { value } });

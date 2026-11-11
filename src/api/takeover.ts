@@ -48,7 +48,7 @@ export function takeoverRoutes(app: FastifyInstance, s: Services, guard: OriginG
     const session = s.browser.claimShare(token, viewerId);
     appendCookie(reply, serializeCookie(VIEWER_COOKIE, viewerId, { path: TAKEOVER_COOKIE_PATH, maxAgeSec: VIEWER_COOKIE_MAX_AGE_SEC, secure: guard.isSecure(req) }));
     reply.header('cache-control', 'no-store');
-    return { sessionId: session.id, reason: session.reason };
+    return { sessionId: session.id, reason: session.reason, expiresAt: session.expiresAt };
   });
 
   app.post('/takeover/:sessionId/hand-back', { config: { auth: 'public' } }, async (req): Promise<Ok> => {

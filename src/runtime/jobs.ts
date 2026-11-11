@@ -131,11 +131,13 @@ export class JobQueue {
       .run().changes;
   }
 
+  /** `pending` counts only jobs that are due now (future heartbeats are schedule, not backlog). */
   counts(): { pending: number; running: number } {
+    const now = this.k.clock.now();
     const rows = this.k.db
       .select({ status: jobs.status, n: sql<number>`count(*)` })
       .from(jobs)
-      .where(inArray(jobs.status, ['pending', 'running']))
+      .where(sql`${jobs.status} = 'running' or (${jobs.status} = 'pending' and ${jobs.runAt} <= ${now})`)
       .groupBy(jobs.status)
       .all();
     return {

@@ -24,6 +24,8 @@ async function serve(): Promise<void> {
   const services = await createServices({ browserHeadless: true });
   const { kernel, config } = services;
   const log = kernel.log;
+  // PRD on-disk layout: present from first start, not created lazily by whichever feature runs first.
+  for (const dir of [kernel.paths.adapters, kernel.paths.globalSkills, join(kernel.paths.home, 'orgs'), kernel.paths.backups, kernel.paths.logs]) kernel.paths.ensure(dir);
   // The CLI and first-run UI pairing authenticate with the owner token on disk (0600).
   services.governance.tokens.ownerTokenFile();
   const pidFile = join(kernel.paths.ensure(kernel.paths.runDir), 'conductord.pid');

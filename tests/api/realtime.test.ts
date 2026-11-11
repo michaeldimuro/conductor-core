@@ -216,7 +216,7 @@ describe('remote takeover', () => {
 
     const res = await claim('share-token-1');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sessionId: t.session.id, reason: 'Enter the MFA code' });
+    expect(await res.json()).toEqual({ sessionId: t.session.id, reason: 'Enter the MFA code', expiresAt: t.session.expiresAt });
     const raw = res.headers.getSetCookie().find((c) => c.startsWith(VIEWER_COOKIE))!;
     expect(raw).toMatch(/HttpOnly/);
     expect(raw).toMatch(/SameSite=Strict/);
