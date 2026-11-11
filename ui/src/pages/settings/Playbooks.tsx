@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Button, Chip, Empty, Field, FormShell, Load, Modal, Panel, Segmented } from '../../components/ui.js';
+import { Button, Chip, ConfirmButton, Empty, Field, FormShell, Load, Modal, Panel, Segmented } from '../../components/ui.js';
 import { api } from '../../lib/api.js';
 import type { CreatePlaybookRequest, Playbook } from '../../lib/api.js';
 import { k, useDirectory, useOrg, type Directory } from '../../lib/org.js';
@@ -10,23 +10,25 @@ import { toast } from '../../lib/toast.js';
 type Step = CreatePlaybookRequest['steps'][number];
 const blankStep = (): Step => ({ title: '', description: '', expectedOutput: '' });
 
-function PlaybookForm({ onClose, dir }: { onClose: () => void; dir: Directory }) {
+function PlaybookForm({ onClose, dir, playbook }: { onClose: () => void; dir: Directory; playbook?: Playbook }) {
   const { org } = useOrg();
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [process, setProcess] = useState<'sequential' | 'hierarchical'>('sequential');
-  const [manager, setManager] = useState('');
-  const [steps, setSteps] = useState<Step[]>([blankStep()]);
+  const [name, setName] = useState(playbook?.name ?? '');
+  const [description, setDescription] = useState(playbook?.description ?? '');
+  const [process, setProcess] = useState<'sequential' | 'hierarchical'>(playbook?.process ?? 'sequential');
+  const [manager, setManager] = useState(playbook?.managerAgentId ?? '');
+  const [steps, setSteps] = useState<Step[]>(playbook?.steps.length ? playbook.steps.map((s) => ({ ...blankStep(), ...s })) : [blankStep()]);
   const setStep = (i: number, patch: Partial<Step>) => setSteps(steps.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const save = useAction(async () => {
-    await api.createPlaybook(org.id, {
+    const input = {
       name: name.trim(), description, process, managerAgentId: process === 'hierarchical' ? manager || null : null,
       steps: steps.map(({ agentId, agentRole, ...s }) => ({ ...s, title: s.title.trim(), ...(agentId ? { agentId } : {}), ...(agentRole?.trim() ? { agentRole: agentRole.trim() } : {}) })),
-    });
+    };
+    if (playbook) await api.updatePlaybook(org.id, playbook.id, input);
+    else await api.createPlaybook(org.id, input);
     onClose();
-  }, { invalidate: [k(org.id, 'playbooks')], success: 'Playbook created' });
+  }, { invalidate: [k(org.id, 'playbooks')], success: playbook ? 'Playbook saved' : 'Playbook created' });
   return (
-    <FormShell onSubmit={() => void save.run()} onCancel={onClose} busy={save.busy} error={save.error} submitLabel="Create playbook">
+    <FormShell onSubmit={() => void save.run()} onCancel={onClose} busy={save.busy} error={save.error} submitLabel={playbook ? 'Save playbook' : 'Create playbook'}>
       <div className="form-grid">
         <Field label="Name"><input value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} placeholder="Weekly newsletter" /></Field>
         <Field label="Process">
@@ -85,17 +87,24 @@ export function Playbooks() {
   const { org } = useOrg();
   const dir = useDirectory(org.id);
   const playbooks = useQuery(k(org.id, 'playbooks'), () => api.listPlaybooks(org.id));
-  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState<{ playbook?: Playbook } | null>(null);
+  const remove = useAction((p: Playbook) => api.deletePlaybook(org.id, p.id), { invalidate: [k(org.id, 'playbooks')], success: 'Playbook deleted' });
   return (
     <div className="stack-lg">
-      <Panel title="Playbooks" flush actions={<Button small variant="primary" onClick={() => setCreating(true)}>New playbook</Button>}>
+      <Panel title="Playbooks" flush actions={<Button small variant="primary" onClick={() => setForm({})}>New playbook</Button>}>
         <Load q={playbooks} empty={<Empty title="No playbooks yet"><p>A playbook is a reusable process. Running it inside an issue creates one sub-issue per step.</p></Empty>}>
           {(list) => (
             <ul className="connectors">
               {list.map((p) => (
                 <li key={p.id} className="connector">
                   <div className="stack">
-                    <div className="row"><strong>{p.name}</strong><Chip>{p.process === 'sequential' ? 'One step after another' : `Managed by ${dir.agentName(p.managerAgentId, 'nobody')}`}</Chip></div>
+                    <div className="spread">
+                      <div className="row"><strong>{p.name}</strong><Chip>{p.process === 'sequential' ? 'One step after another' : `Managed by ${dir.agentName(p.managerAgentId, 'nobody')}`}</Chip></div>
+                      <div className="row row-tight">
+                        <Button small onClick={() => setForm({ playbook: p })}>Edit</Button>
+                        <ConfirmButton small variant="quiet" danger label="Delete" title={`Delete ${p.name}`} confirmLabel="Delete playbook" message="Issues this playbook already created are kept. It can no longer be run." onConfirm={() => remove.run(p)} />
+                      </div>
+                    </div>
                     {p.description ? <p className="dim">{p.description}</p> : null}
                     <ol className="playbook-steps">
                       {p.steps.map((s, i) => <li key={i}><strong>{s.title}</strong> <span className="muted">{s.agentId ? dir.agentName(s.agentId) : (s.agentRole ?? 'Any agent')}</span></li>)}
@@ -108,7 +117,9 @@ export function Playbooks() {
           )}
         </Load>
       </Panel>
-      <Modal open={creating} onClose={() => setCreating(false)} title="New playbook" wide>{creating ? <PlaybookForm onClose={() => setCreating(false)} dir={dir} /> : null}</Modal>
+      <Modal open={form !== null} onClose={() => setForm(null)} title={form?.playbook ? `Edit ${form.playbook.name}` : 'New playbook'} wide>
+        {form ? <PlaybookForm key={form.playbook?.id ?? 'new'} onClose={() => setForm(null)} dir={dir} playbook={form.playbook} /> : null}
+      </Modal>
     </div>
   );
 }

@@ -5,7 +5,7 @@
  * `conductor-adapter.json` manifest (`AdapterManifest`) whose `entry` is an ES
  * module that default-exports an `AgentAdapter` (or a function returning one):
  *
- *   import { defineAdapter } from 'conductor/adapters/sdk';
+ *   import { defineAdapter } from 'conductor/adapters/sdk';   // resolvable from the plugin folder, no install step
  *   export default defineAdapter({ id: 'my_agent', capabilities() {...}, ... });
  *
  * Adapters receive a serializable `RunContext`, reach tools only through
@@ -18,6 +18,7 @@ export type {
   AdapterErrorKind,
   AdapterManifest,
   AdapterRegistry,
+  AdapterRescanResult,
   AgentAdapter,
   Health,
   McpEndpoint,
@@ -26,7 +27,9 @@ export type {
   RunEvent,
   RunOutcome,
   RunResult,
+  RunSandboxPolicy,
   RunUsage,
+  SandboxReport,
 } from '../contracts/adapter.js';
 
 /** Identity helper that gives adapter objects full type checking. */
@@ -39,6 +42,10 @@ export { createScrubber, parseRunEvent, runEventSchema, secretValuesOf, type Scr
 export { ActiveRuns, RunGuard, UsageMeter, withRun, type FinishInput, type RunEnv, type StopReason, type WithRunOptions } from './shared/guard.js';
 export { McpToolset, outcomeToEventText, sanitizeToolName, type McpTool, type ToolImage, type ToolOutcome } from './shared/mcp-tools.js';
 export { runMcpToolLoop, type ModelToolCall, type ModelTurn, type ToolLoopDriver, type ToolReturn } from './shared/tool-loop.js';
+export {
+  agentSandbox, buildAgentSandboxProfile, planSandbox, sandboxAvailability, sandboxConfigJsonSchema,
+  type SandboxNetwork, type SandboxPlan, type SandboxProfileInput, type SandboxRequest, type SandboxSpec,
+} from './shared/sandbox.js';
 export { findExecutable, minimalEnv, probeCommand, runJsonLines, runProcess, type ProcessExit, type ProcessOptions } from './shared/proc.js';
 export { AGENTS_BLOCK_BEGIN, AGENTS_BLOCK_END, installClaudeSkills, renderAgentsSkillsBlock, writeAgentsSkills } from './shared/skills.js';
 export { PRICE_TABLE, findPrice, parsePricingOverrides, priceFor, type ModelPrice, type PricedUsage, type PricingOverrides } from './pricing.js';

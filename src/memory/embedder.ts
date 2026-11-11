@@ -1,8 +1,9 @@
 import OpenAI from 'openai';
 import { eq } from 'drizzle-orm';
 import type { Embedder, Kernel } from '../contracts/kernel.js';
-import { settings } from '../db/schema/index.js';
-import { ConductorError } from '../shared/errors.js';
+import type { EmbedderStatus } from '../contracts/services.js';
+import { organizations, settings } from '../db/schema/index.js';
+import { ConductorError, errorMessage } from '../shared/errors.js';
 import { contentTokens } from './text.js';
 
 export const LOCAL_EMBED_DIMS = 384;
@@ -69,7 +70,7 @@ export interface OpenAIEmbedderOptions {
   dims?: number;
 }
 
-/** `text-embedding-3-small` through the official SDK. Never used unless explicitly configured. */
+/** `text-embedding-3-small` through the official SDK. Used when an OpenAI key is available (see `createEmbedder`). */
 export class OpenAIEmbedder implements Embedder {
   readonly id: string;
   readonly dims: number;
@@ -106,53 +107,96 @@ export class OpenAIEmbedder implements Embedder {
 export interface ResolvableEmbedder extends Embedder {
   /** Re-read settings + secret and settle on a concrete embedder. Cheap; cached briefly. */
   resolve(force?: boolean): Promise<void>;
+  /** The embedder in use right now and why (settles first). */
+  status(): Promise<EmbedderStatus>;
 }
 
 export function isResolvable(e: Embedder): e is ResolvableEmbedder {
   return typeof (e as Partial<ResolvableEmbedder>).resolve === 'function';
 }
 
+/** Status of any embedder: resolvable ones explain themselves, fixed ones are described by their id. */
+export async function embedderStatusOf(e: Embedder): Promise<EmbedderStatus> {
+  if (isResolvable(e) && typeof e.status === 'function') return e.status();
+  const provider: EmbedderStatus['provider'] = e.id.startsWith('local-hash') ? 'local' : e.id.startsWith('openai:') ? 'openai' : 'custom';
+  return { provider, id: e.id, dims: e.dims, semantic: provider !== 'local', mode: 'fixed', authRef: null, reason: 'embedder fixed by the host process' };
+}
+
 const RESOLVE_TTL_MS = 60_000;
+/** How long `auto` mode stays on the local embedder after the provider failed. */
+const DEGRADED_MS = 15 * 60_000;
 export const DEFAULT_OPENAI_EMBED_AUTH_REF = 'openai_api_key';
+/** Install-level secret refs tried (in order, after `embeddings.authRef`) when looking for an OpenAI key. */
+export const OPENAI_EMBED_AUTH_REFS = [DEFAULT_OPENAI_EMBED_AUTH_REF, 'conductor/openai-api-key'] as const;
 
 /**
- * Default: LocalHashEmbedder. OpenAI is selected only when the `settings` key
- * `embeddings.provider` = "openai" AND the secret (`embeddings.authRef`,
- * default "openai_api_key") exists. `embeddings.baseUrl` overrides the endpoint.
+ * Settings (table `settings`):
+ *   `embeddings.provider` — unset = auto, "openai" = require OpenAI, "local" = never leave the machine.
+ *   `embeddings.authRef`  — secret ref of the OpenAI key (default: "openai_api_key", then "conductor/openai-api-key").
+ *   `embeddings.baseUrl`  — endpoint override.
+ *
+ * Auto mode uses real embeddings (`text-embedding-3-small`) whenever an OpenAI key is available:
+ * the refs above, or — on a single-org install — that org's `org/<slug>/openai-api-key` and the
+ * key of an `openai_api` provider binding. Without a key, or with provider "local", the
+ * deterministic LocalHashEmbedder is the offline fallback. In auto mode a provider failure
+ * degrades to the local embedder for a while instead of failing memory writes.
  */
 export function createEmbedder(kernel: Kernel): ResolvableEmbedder {
   const local = new LocalHashEmbedder();
   let current: Embedder = local;
   let currentKey = 'local';
   let resolvedAt: number | null = null;
+  let degradedUntil = 0;
+  let info: Pick<EmbedderStatus, 'mode' | 'authRef' | 'reason'> = { mode: 'auto', authRef: null, reason: 'not resolved yet' };
 
   const setting = (key: string): unknown =>
     kernel.db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).get()?.value ?? null;
+  const text = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+
+  /** Candidate secret refs for an OpenAI key, most specific first. */
+  const candidateRefs = (): string[] => {
+    const refs: string[] = [];
+    const explicit = text(setting('embeddings.authRef'));
+    if (explicit) refs.push(explicit);
+    refs.push(...OPENAI_EMBED_AUTH_REFS);
+    // Only when the install has ONE org is that org's own key used: a shared index must never bill org A for org B.
+    const orgs = kernel.db.select({ slug: organizations.slug, defaultProvider: organizations.defaultProvider, utilityModel: organizations.utilityModel }).from(organizations).limit(2).all();
+    const only = orgs.length === 1 ? orgs[0] : undefined;
+    if (only) {
+      refs.push(`org/${only.slug}/openai-api-key`);
+      for (const b of [only.defaultProvider, only.utilityModel]) if (b?.adapter === 'openai_api' && b.authRef) refs.push(b.authRef);
+    }
+    return [...new Set(refs)];
+  };
+
+  const useLocal = (mode: EmbedderStatus['mode'], reason: string): void => {
+    current = local;
+    currentKey = 'local';
+    info = { mode, authRef: null, reason };
+  };
 
   const resolve = async (force = false): Promise<void> => {
     const now = kernel.clock.now();
     if (!force && resolvedAt !== null && now - resolvedAt < RESOLVE_TTL_MS) return;
     resolvedAt = now;
-    if (setting('embeddings.provider') !== 'openai') {
-      current = local;
-      currentKey = 'local';
+    const provider = setting('embeddings.provider');
+    const mode: EmbedderStatus['mode'] = provider === 'openai' ? 'openai' : provider === 'local' ? 'local' : 'auto';
+    if (mode === 'local') return useLocal(mode, 'embeddings.provider is "local"');
+    if (mode === 'auto' && now < degradedUntil) return useLocal(mode, 'embedding provider failed recently; using the offline fallback for now');
+
+    const baseURL = text(setting('embeddings.baseUrl')) ?? undefined;
+    for (const authRef of candidateRefs()) {
+      const apiKey = await kernel.secrets.get(authRef).catch(() => null);
+      if (!apiKey) continue;
+      const key = `openai|${authRef}|${baseURL ?? ''}`;
+      if (key !== currentKey) {
+        current = new OpenAIEmbedder({ apiKey, baseURL });
+        currentKey = key;
+      }
+      info = { mode, authRef, reason: mode === 'auto' ? `OpenAI key found at secret ref "${authRef}"` : 'embeddings.provider is "openai"' };
       return;
     }
-    const authRefRaw = setting('embeddings.authRef');
-    const authRef = typeof authRefRaw === 'string' && authRefRaw ? authRefRaw : DEFAULT_OPENAI_EMBED_AUTH_REF;
-    const baseRaw = setting('embeddings.baseUrl');
-    const baseURL = typeof baseRaw === 'string' && baseRaw ? baseRaw : undefined;
-    const apiKey = await kernel.secrets.get(authRef);
-    if (!apiKey) {
-      current = local;
-      currentKey = 'local';
-      return;
-    }
-    const key = `openai|${authRef}|${baseURL ?? ''}`;
-    if (key !== currentKey) {
-      current = new OpenAIEmbedder({ apiKey, baseURL });
-      currentKey = key;
-    }
+    useLocal(mode, mode === 'openai' ? 'embeddings.provider is "openai" but no API key secret was found; using the offline fallback' : 'no embedding provider key configured; using the offline fallback');
   };
 
   return {
@@ -163,9 +207,23 @@ export function createEmbedder(kernel: Kernel): ResolvableEmbedder {
       return current.dims;
     },
     resolve,
+    async status() {
+      await resolve();
+      const isLocal = current === local;
+      return { provider: isLocal ? 'local' : 'openai', id: current.id, dims: current.dims, semantic: !isLocal, ...info };
+    },
     async embed(texts: string[]) {
       await resolve();
-      return current.embed(texts);
+      if (current === local || info.mode !== 'auto') return current.embed(texts);
+      try {
+        return await current.embed(texts);
+      } catch (e) {
+        // Auto mode is best effort: memory must keep working offline. The index re-syncs to the local embedder.
+        kernel.log.warn({ err: errorMessage(e) }, 'embedding provider failed; falling back to the local embedder');
+        degradedUntil = kernel.clock.now() + DEGRADED_MS;
+        useLocal('auto', `embedding provider failed (${errorMessage(e)}); using the offline fallback for now`);
+        return local.embed(texts);
+      }
     },
   };
 }

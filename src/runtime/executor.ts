@@ -1,20 +1,23 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import type { Kernel } from '../contracts/kernel.js';
-import type { Agent, Department, Issue, Organization, Run } from '../contracts/rows.js';
+import type { Agent, Department, Goal, Issue, Organization, Run } from '../contracts/rows.js';
 import type { RunContext, RunEvent } from '../contracts/adapter.js';
 import type { ToolCallContext } from '../contracts/tools.js';
-import type { WorkerJob, RecallBundle } from '../contracts/services.js';
+import type { BudgetStatus, WorkerJob, RecallBundle, RunSkip } from '../contracts/services.js';
 import type { CapabilitySnapshot } from '../contracts/types.js';
 import { errorMessage } from '../shared/errors.js';
 import { RunJournal } from './journal.js';
 import { buildSystemPrompt, buildTaskPrompt, type TaskPromptInput } from './prompt.js';
 import { effectiveBinding, resolveChain, NATIVE_SKILL_ADAPTERS } from './binding.js';
 import { settleIssue } from './settle.js';
+import { EvalGateway } from './eval-gateway.js';
+import { runTokenTtl } from './pause.js';
+import { budgetBlock, overCap, preflight, skipOf } from './preflight.js';
+import { skillContentHash } from './snapshot.js';
+import { SpendMeter, type SpendDelta } from './spend.js';
 import type { RunHandle, SupervisedResult, Supervisor } from './supervisor.js';
 import type { RunRequest, RunSummary, RuntimeDeps } from './types.js';
-
-const RUN_TOKEN_GRACE_MS = 10 * 60_000;
 
 export interface ActiveRun {
   run: Run;
@@ -30,6 +33,16 @@ export interface ActiveRun {
   cancelReason: string | null;
   paused: boolean;
   mode: NonNullable<RunRequest['mode']>;
+  /** Real time the adapter started; with `pausedAt` / `pausedMs` it gives the wall time actually used. */
+  execStartedAt: number | null;
+  pausedAt: number | null;
+  pausedMs: number;
+  /** Project the run's spend is booked to (the checked-out issue's project). */
+  projectId: string | null;
+  /** Records metered spend while the run is in flight. */
+  spend: SpendMeter | null;
+  /** Set when in-run spend hit a cap shared with other runs. */
+  budgetStop: boolean;
 }
 
 const EMPTY_RECALL: RecallBundle = { profile: '', ownerModel: '', memories: [] };
@@ -42,13 +55,16 @@ export class RunExecutor {
   readonly active = new Map<string, ActiveRun>();
   /** Hook the scheduler sets to queue the post-run reflection. */
   onFinished: (run: Run, mode: ActiveRun['mode']) => void = () => {};
+  readonly evalGateway: EvalGateway;
 
   constructor(
     private readonly k: Kernel,
     private readonly d: RuntimeDeps,
     readonly journal: RunJournal,
     private readonly supervisor: Supervisor,
-  ) {}
+  ) {
+    this.evalGateway = new EvalGateway(d.governance.tokens, k.log);
+  }
 
   /** Agents currently mid-run (per-agent concurrency is 1). */
   busyAgents(): Set<string> {
@@ -57,7 +73,8 @@ export class RunExecutor {
 
   toolContext(runId: string): ToolCallContext | null {
     const a = this.active.get(runId);
-    if (!a) return null;
+    // Eval runs are sandboxed: their token must not open the real gateway (connectors, tasks, memory).
+    if (!a || a.mode === 'eval') return null;
     return {
       orgId: a.org.id, agentId: a.agent.id, deptId: a.dept.id, runId, issueId: a.issueId,
       workspacePath: a.workspacePath, autonomyLevel: a.agent.autonomyLevel,
@@ -67,61 +84,63 @@ export class RunExecutor {
   async execute(req: RunRequest): Promise<RunSummary> {
     const mode = req.mode ?? 'loop';
     const started = this.k.clock.now();
-    const skip = (reason: string): RunSummary => ({
-      runId: null, outcome: 'skipped', finalText: '', provider: null, costUsd: 0, steps: 0, tokens: 0, wallMs: 0, skipped: reason,
+    const skip = (s: RunSkip): RunSummary => ({
+      runId: null, outcome: 'skipped', finalText: '', provider: null, costUsd: 0, steps: 0, tokens: 0, wallMs: 0, skipped: s.reason, skip: s,
     });
+    const noWork = (reason = 'no work'): RunSummary => skip(skipOf('no_work', reason, false));
 
     // ── 1. Wake and resolve ────────────────────────────────────────────────
-    const org = this.d.org.getOrg(req.orgId);
-    const agent = this.d.org.getAgent(req.orgId, req.agentId);
-    const dept = this.d.org.getDept(req.orgId, agent.deptId);
-    if (org.status !== 'active') return skip('organization archived');
-    if (this.d.governance.killSwitch.isEngaged(org.id)) return skip('kill switch engaged');
-    if (agent.status !== 'active') return skip(`agent ${agent.status}${agent.pausedReason ? ` (${agent.pausedReason})` : ''}`);
+    const pinned = req.issueId ? this.d.work.findIssue(req.orgId, req.issueId) : null;
+    const pre = preflight(this.k, this.d, this.journal, { orgId: req.orgId, agentId: req.agentId, mode, projectId: pinned?.projectId ?? null });
+    if (!pre.ok) return skip(pre.skip);
+    const { org, agent, dept } = pre;
+    let budget: BudgetStatus = pre.budget;
 
-    const pinned = req.issueId ? this.d.work.findIssue(org.id, req.issueId) : null;
-    const budget = this.d.governance.budgets.check(org.id, agent.id, pinned?.projectId ?? null);
-    // Dollar caps stop everyone; the seat-time quota only applies to subscription (local CLI) runs.
-    const overCap = budget.lines.some((l) => l.capUsd !== null && l.spentUsd >= l.capUsd);
-    const seatBlocked = !budget.seat.allowed && NATIVE_SKILL_ADAPTERS.has(effectiveBinding(agent, org).adapter);
-    if (overCap || seatBlocked) return skip(`over budget: ${budget.reason ?? (overCap ? 'cap reached' : 'seat-time quota exhausted')}`);
-
-    if (mode === 'loop') {
-      const lastHour = this.journal.countSince(agent.id, this.k.clock.now() - 3_600_000);
-      if (lastHour >= agent.maxRunsPerHour) {
-        this.k.audit.record({ orgId: org.id, actor: { kind: 'system', id: 'runtime' }, action: 'run.rate_limited', entityKind: 'agent', entityId: agent.id, data: { lastHour } });
-        return skip(`max runs per hour reached (${agent.maxRunsPerHour})`);
-      }
+    // A planning wake decomposes one goal; it is void once the goal is gone or already has issues.
+    let planGoal: Goal | null = null;
+    if (mode === 'loop' && req.goalId) {
+      planGoal = this.d.work.listGoals(org.id, { status: 'active' }).find((g) => g.id === req.goalId) ?? null;
+      if (!planGoal || this.d.work.listIssues(org.id, { goalId: planGoal.id, limit: 1 }).length > 0) return noWork('goal already planned');
     }
 
     // ── 3–4. Inbox and atomic checkout ─────────────────────────────────────
     // (Done before the run row exists so an idle heartbeat costs nothing.)
     const inbox = mode === 'loop' ? this.d.work.inbox(org.id, agent.id) : null;
     const candidates: Issue[] = [];
-    if (mode === 'loop') {
+    if (mode === 'loop' && !planGoal) {
       if (pinned && pinned.assigneeAgentId === agent.id) candidates.push(pinned);
       for (const i of inbox?.issues ?? []) if (i.id !== pinned?.id) candidates.push(i);
     }
     const goals = mode === 'loop' ? this.d.work.listGoals(org.id, { ownerAgentId: agent.id, status: 'active' }) : [];
-    const hasReplies = !!inbox && (inbox.mentions.length > 0 || inbox.newComments.length > 0);
+    const hasReplies = !planGoal && !!inbox && (inbox.mentions.length > 0 || inbox.newComments.length > 0);
     const proactive = agent.autonomyLevel >= 2 && goals.length > 0 && req.trigger === 'heartbeat';
-    if (mode === 'loop' && candidates.length === 0 && !hasReplies && !proactive && !req.prompt) {
-      return skip('no work');
-    }
+    const hasOtherWork = hasReplies || proactive || !!req.prompt || !!planGoal;
+    if (mode === 'loop' && candidates.length === 0 && !hasOtherWork) return noWork();
 
     // Checkout first (it only needs a run id) so losing every race leaves no trace.
     const runId = this.journal.newRunId();
     let issue: Issue | null = null;
     let checkedOut = false;
     if (mode === 'loop') {
+      let overProject: RunSkip | null = null;
       for (const c of candidates) {
-        if (this.d.work.checkout(org.id, c.id, runId)) {
-          issue = this.d.work.getIssue(org.id, c.id);
-          checkedOut = true;
-          break;
+        if (!this.d.work.checkout(org.id, c.id, runId)) continue;
+        // The wake-time budget check only knew the pinned issue's project: re-check for the issue actually taken.
+        if (c.projectId && c.projectId !== (pinned?.projectId ?? null)) {
+          const projectBudget = this.d.governance.budgets.check(org.id, agent.id, c.projectId);
+          const blocked = budgetBlock(projectBudget, agent, org);
+          if (blocked) {
+            this.d.work.release(org.id, c.id, runId, { status: 'todo' });
+            overProject = blocked;
+            continue;
+          }
+          budget = projectBudget;
         }
+        issue = this.d.work.getIssue(org.id, c.id);
+        checkedOut = true;
+        break;
       }
-      if (!issue && !hasReplies && !proactive && !req.prompt) return skip('no work (nothing could be checked out)');
+      if (!issue && !hasOtherWork) return overProject ? skip(overProject) : noWork('no work (nothing could be checked out)');
     } else if (pinned) {
       issue = pinned;
     }
@@ -130,6 +149,7 @@ export class RunExecutor {
     const entry: ActiveRun = {
       run, org, agent, dept, issueId: issue?.id ?? null, checkedOut, workspacePath: '', provider: '',
       handle: null, secrets: [], cancelReason: null, paused: false, mode,
+      execStartedAt: null, pausedAt: null, pausedMs: 0, projectId: issue?.projectId ?? null, spend: null, budgetStop: false,
     };
     this.active.set(run.id, entry);
 
@@ -158,7 +178,7 @@ export class RunExecutor {
       const connectors = mode === 'eval' ? [] : await this.d.connectors.snapshot(org.id, agent.id);
       const snapshot: CapabilitySnapshot = {
         resolvedAt: this.k.clock.now(),
-        skills: skills.map((s) => ({ id: s.id, name: s.name, scope: s.scope, version: s.version, contentHash: '' })),
+        skills: skills.map((s) => ({ id: s.id, name: s.name, scope: s.scope, version: s.version, contentHash: skillContentHash(this.d.skills, s) })),
         connectors,
         budget: { remainingUsd: budget.remainingUsd, capUsd: budget.tightest?.capUsd ?? null, tightestScope: budget.tightest?.scope ?? null },
         autonomyLevel: agent.autonomyLevel,
@@ -192,7 +212,10 @@ export class RunExecutor {
 
       // ── 5–6. Plan + execute ──────────────────────────────────────────────
       const task: TaskPromptInput = { mode: 'proactive', orgSlug: org.slug, triggerNote: req.triggerNote, goals };
-      if (mode !== 'loop' || (req.prompt && !issue)) {
+      if (planGoal) {
+        task.mode = 'plan';
+        task.planGoal = planGoal;
+      } else if (mode !== 'loop' || (req.prompt && !issue)) {
         task.mode = mode === 'chat' ? 'chat' : 'custom';
         task.customPrompt = req.prompt ?? '';
         task.issue = issue;
@@ -209,10 +232,22 @@ export class RunExecutor {
         task.inbox = inbox;
       }
 
-      const ttl = agent.maxWallMs + RUN_TOKEN_GRACE_MS;
-      const runToken = this.d.governance.tokens.issueRunToken(org.id, agent.id, run.id, ttl);
+      const runToken = this.d.governance.tokens.issueRunToken(org.id, agent.id, run.id, runTokenTtl(this.d.governance.tokens, agent.maxWallMs));
       entry.secrets.push(runToken);
-      const baseUrl = this.d.baseUrl();
+      // Eval runs get a read-only gateway that serves only the skills under evaluation, so every
+      // adapter can load the skill body without the run reaching connectors, tasks or memory.
+      const evalGate = mode === 'eval' ? await this.evalGateway.open(run.id, skills, runToken) : null;
+      const baseUrl = evalGate?.baseUrl ?? this.d.baseUrl();
+      const mainEndpoint = { name: 'conductor', url: `${baseUrl}/mcp`, headers: { Authorization: `Bearer ${runToken}` } };
+
+      // A provider session is only resumed on the issue it belonged to — never attached to other work.
+      const resumeSessionId =
+        req.resumeSessionId && issue && checkedOut && issue.id === req.issueId && this.journal.sessionBelongsTo(org.id, agent.id, issue.id, req.resumeSessionId)
+          ? req.resumeSessionId
+          : undefined;
+      if (req.resumeSessionId && !resumeSessionId) {
+        this.journal.append(run, { type: 'status', status: 'previous provider session not resumed: it belongs to a different issue' });
+      }
 
       const ctx: RunContext = {
         runId: run.id, orgId: org.id, agentId: agent.id, issueId: issue?.id ?? null,
@@ -226,12 +261,15 @@ export class RunExecutor {
         prompt: buildTaskPrompt(task),
         model: primary.model, config: primary.config, secrets: primary.secrets,
         skills,
-        mcpEndpoints: mode === 'eval' ? [] : [{ name: 'conductor', url: `${baseUrl}/mcp`, headers: { Authorization: `Bearer ${runToken}` } }],
+        mcpEndpoints: [evalGate?.endpoint ?? mainEndpoint],
         workspacePath: entry.workspacePath,
         budgetCapUsd: budget.remainingUsd,
         maxSteps: agent.maxSteps, maxWallMs: agent.maxWallMs,
         runToken, apiBaseUrl: baseUrl,
-        resumeSessionId: req.resumeSessionId,
+        resumeSessionId,
+        sandbox: { conductorHome: this.k.paths.home },
+        // API adapters have no provider-side session: the journal of the interrupted run is the session.
+        ...(resumeSessionId?.startsWith('conductor-run:') ? { priorEvents: this.priorEvents(org.id, resumeSessionId.slice('conductor-run:'.length)) } : {}),
       };
       const job: WorkerJob = { adapterId: primary.adapterId, ctx, chain };
 
@@ -246,13 +284,20 @@ export class RunExecutor {
       if (entry.cancelReason) {
         result = cancelledBeforeStart(job);
       } else {
+        entry.spend = new SpendMeter((delta) => this.recordSpend(entry, delta, primary.adapterId, primary.model));
         const handle = this.supervisor.start(job, (e) => this.onEvent(entry, e));
         entry.handle = handle;
+        entry.execStartedAt = Date.now();
+        // Paused while still preparing: the clocks start stopped.
+        if (entry.pausedAt !== null) {
+          entry.pausedAt = entry.execStartedAt;
+          handle.pause?.();
+        }
         // A cancel can land between the decision to start and the handle existing.
         if (entry.cancelReason) void handle.cancel(entry.cancelReason);
         if (handle.pid) this.journal.update(run.id, { pid: handle.pid });
         result = await handle.done;
-        if (entry.cancelReason && result.outcome === 'completed') result = { ...result, outcome: 'cancelled' };
+        if (entry.cancelReason && result.outcome === 'completed') result = { ...result, outcome: entry.budgetStop ? 'budget' : 'cancelled' };
       }
     } catch (err) {
       this.k.log.error({ err, runId: run.id }, 'run failed before/while executing');
@@ -265,29 +310,67 @@ export class RunExecutor {
 
     // ── 7. Report ──────────────────────────────────────────────────────────
     const summary = await this.report(entry, result, started);
-    if (evalDir) rmSync(evalDir, { recursive: true, force: true });
+    if (mode === 'eval') this.evalGateway.closeRun(run.id);
+    if (evalDir) {
+      // Eval checks may assert on files the skill produced; list them before the sandbox is removed.
+      try {
+        summary.files = (readdirSync(evalDir, { recursive: true, withFileTypes: true }) as import('node:fs').Dirent[])
+          .filter((e) => e.isFile()).map((e) => relative(evalDir, join(e.parentPath, e.name))).slice(0, 2000);
+      } catch { /* listing is best-effort */ }
+      rmSync(evalDir, { recursive: true, force: true });
+    }
     return summary;
   }
 
   private onEvent(entry: ActiveRun, e: RunEvent): void {
     this.journal.append(entry.run, e, entry.secrets);
     if (e.type === 'session') this.journal.update(entry.run.id, { sessionId: e.sessionId });
+    if (e.type === 'usage' && entry.spend && !entry.budgetStop) {
+      try {
+        if (entry.spend.add(e)) this.enforceSharedCaps(entry);
+      } catch (err) {
+        this.k.log.error({ err, runId: entry.run.id }, 'in-run cost recording failed');
+      }
+    }
+  }
+
+  private recordSpend(entry: ActiveRun, delta: SpendDelta, provider: string, model: string | null, extra: { subscription?: boolean; seatSeconds?: number } = {}): void {
+    this.d.governance.budgets.record({
+      orgId: entry.org.id, agentId: entry.agent.id, projectId: entry.projectId, runId: entry.run.id,
+      category: entry.mode === 'eval' ? 'eval' : 'run', provider, model,
+      tokensIn: delta.tokensIn, tokensOut: delta.tokensOut, costUsd: delta.costUsd,
+      subscription: extra.subscription ?? false, seatSeconds: extra.seatSeconds ?? 0,
+    });
+  }
+
+  /** After spend lands in the ledger: if any cap this run shares is now spent, end the run cleanly. */
+  private enforceSharedCaps(entry: ActiveRun): void {
+    const status = this.d.governance.budgets.check(entry.org.id, entry.agent.id, entry.projectId);
+    if (!overCap(status)) return;
+    entry.budgetStop = true;
+    this.journal.append(entry.run, { type: 'status', status: `budget cap reached during the run — stopping (${status.reason ?? 'cap reached'})` });
+    void this.cancel(entry.run.id, `budget cap reached: ${status.reason ?? 'cap reached'}`);
+  }
+
+  private priorEvents(orgId: string, runId: string): RunEvent[] {
+    try {
+      return this.journal.events(orgId, runId).map((e) => e.event);
+    } catch {
+      return [];
+    }
   }
 
   private async report(entry: ActiveRun, result: SupervisedResult, started: number): Promise<RunSummary> {
     const { run, org, agent } = entry;
     this.journal.setPhase(run.id, 'report');
-    const outcome = entry.cancelReason && result.outcome !== 'completed' ? 'cancelled' : result.outcome;
+    const outcome = entry.budgetStop ? 'budget' : entry.cancelReason && result.outcome !== 'completed' ? 'cancelled' : result.outcome;
     const u = result.usage;
 
     try {
-      if (u.costUsd > 0 || u.tokensIn > 0 || u.tokensOut > 0 || u.seatSeconds > 0) {
-        const issue = entry.issueId ? this.d.work.findIssue(org.id, entry.issueId) : null;
-        this.d.governance.budgets.record({
-          orgId: org.id, agentId: agent.id, projectId: issue?.projectId ?? null, runId: run.id,
-          category: entry.mode === 'eval' ? 'eval' : 'run', provider: result.adapterId, model: result.model,
-          tokensIn: u.tokensIn, tokensOut: u.tokensOut, costUsd: u.costUsd, subscription: u.subscription, seatSeconds: u.seatSeconds,
-        });
+      // Spend recorded during the run is not booked twice: only the remainder goes in now.
+      const left = entry.spend ? entry.spend.remainder(u) : { tokensIn: u.tokensIn, tokensOut: u.tokensOut, costUsd: u.costUsd };
+      if (left.costUsd > 0 || left.tokensIn > 0 || left.tokensOut > 0 || u.seatSeconds > 0) {
+        this.recordSpend(entry, left, result.adapterId, result.model, { subscription: u.subscription, seatSeconds: u.seatSeconds });
       }
     } catch (err) {
       this.k.log.error({ err, runId: run.id }, 'cost recording failed');

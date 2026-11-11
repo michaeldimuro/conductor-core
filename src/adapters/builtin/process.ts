@@ -4,6 +4,7 @@ import { AdapterError } from '../shared/errors.js';
 import { parseRunEvent } from '../shared/events.js';
 import { ActiveRuns, withRun } from '../shared/guard.js';
 import { findExecutable, minimalEnv, runProcess } from '../shared/proc.js';
+import { agentSandbox, sandboxConfigJsonSchema } from '../shared/sandbox.js';
 
 const RESERVED_ENV = /^CONDUCTOR_(API_URL|RUN_TOKEN|RUN_ID|ISSUE_ID|MCP_URL|AGENT_ID|ORG_ID|MODEL|SYSTEM_PROMPT_FILE)$/;
 
@@ -32,6 +33,7 @@ export const processConfigJsonSchema: Record<string, unknown> = {
     input: { type: 'string', enum: ['prompt', 'json'], default: 'prompt' },
     secretEnv: { type: 'object', additionalProperties: { type: 'string' }, description: 'ENV_NAME -> name of a run secret.' },
     pricing: { type: 'object' },
+    sandbox: sandboxConfigJsonSchema,
   },
 };
 
@@ -147,11 +149,14 @@ export class ProcessAdapter implements AgentAdapter {
         cfg.input === 'json'
           ? JSON.stringify({ systemPrompt: ctx.systemPrompt, prompt: ctx.prompt, model: ctx.model, skills: ctx.skills })
           : ctx.prompt;
+      const childEnvironment = childEnv(ctx, cfg);
       const exit = await runProcess({
         command: cfg.command,
         args: cfg.args,
         cwd: ctx.workspacePath,
-        env: childEnv(ctx, cfg),
+        env: childEnvironment,
+        // An arbitrary command: workspace + temp only, no provider CLI state, no Keychain.
+        sandbox: agentSandbox(ctx, emit, { env: childEnvironment }),
         stdin,
         signal: guard.signal,
         onStdoutLine: onLine,

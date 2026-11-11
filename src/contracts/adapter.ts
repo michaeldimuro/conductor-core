@@ -70,6 +70,40 @@ export interface RunContext {
   apiBaseUrl: string;
   /** Provider session to resume, if the adapter supports resume. */
   resumeSessionId?: string;
+  /**
+   * Journaled events of the interrupted run named by `resumeSessionId`, oldest
+   * first. Populated by the runtime for adapters whose transcript lives in
+   * Conductor rather than at the provider (`claude_api`, `openai_api` emit the
+   * session id `conductor-run:<runId>`); they rebuild the message history from it.
+   */
+  priorEvents?: RunEvent[];
+  /**
+   * Sandbox policy resolved by the daemon for this run (per-agent / per-org).
+   * Optional: adapters fall back to safe defaults (network on, Conductor home
+   * inferred) when the runtime does not supply it.
+   */
+  sandbox?: RunSandboxPolicy;
+}
+
+/** What the daemon tells an adapter about confining the processes it spawns. */
+export interface RunSandboxPolicy {
+  /** Absolute path of the Conductor home the child must never read or write (outside its workspace). */
+  conductorHome?: string;
+  /** `on` (default): outbound network allowed. `local`: loopback only (the Conductor API / MCP gateway). */
+  network?: 'on' | 'local';
+}
+
+/** How the provider process of a run was confined; attached to a `status` RunEvent. */
+export interface SandboxReport {
+  /** True when the child runs under the macOS sandbox profile. */
+  enabled: boolean;
+  /** Why it is not enabled (opt-out, or `sandbox-exec` unavailable). */
+  reason?: string;
+  /** True when the sandbox was wanted but could not be applied (graceful fallback). */
+  fallback?: boolean;
+  network?: 'on' | 'local';
+  /** Paths the child may write (workspace, temp, the provider CLI's own state). */
+  writable?: string[];
 }
 
 export type AdapterErrorKind = 'rate_limit' | 'auth' | 'outage' | 'invalid_request' | 'other';
@@ -82,7 +116,7 @@ export type RunEvent =
   | { type: 'tool_result'; id: string; name: string; output: string; isError: boolean }
   | { type: 'usage'; tokensIn: number; tokensOut: number; costUsd: number; cacheReadTokens?: number; cacheWriteTokens?: number }
   | { type: 'session'; sessionId: string }
-  | { type: 'status'; status: string }
+  | { type: 'status'; status: string; sandbox?: SandboxReport }
   | { type: 'error'; kind: AdapterErrorKind; message: string; retryable: boolean };
 
 export type RunOutcome = 'completed' | 'failed' | 'cancelled' | 'max_steps' | 'timeout' | 'budget';
@@ -136,4 +170,25 @@ export interface AdapterRegistry {
   list(): Array<{ id: string; name: string; capabilities: AdapterCapabilities; configSchema: Record<string, unknown>; builtin: boolean }>;
   /** (Re)scan the plugin directory. */
   loadPlugins(): Promise<void>;
+}
+
+/** Outcome of one plugin-directory scan. */
+export interface AdapterRescanResult {
+  /** Plugin adapter ids registered after the scan. */
+  loaded: string[];
+  /** Ids that were not registered before this scan. */
+  added: string[];
+  /** Ids registered before this scan whose plugin is gone (or now fails to load). */
+  removed: string[];
+  /** Plugin folders that were skipped, with the reason. */
+  skipped: Array<{ folder: string; error: string }>;
+}
+
+/**
+ * A registry that can pick up newly installed plugins without a daemon
+ * restart. `createAdapterRegistry` returns this; `rescan()` is the reporting
+ * form of `loadPlugins()`.
+ */
+export interface RescannableAdapterRegistry extends AdapterRegistry {
+  rescan(): Promise<AdapterRescanResult>;
 }

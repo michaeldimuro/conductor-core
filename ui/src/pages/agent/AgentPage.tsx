@@ -3,6 +3,7 @@ import { Link, NavLink, useParams } from 'react-router-dom';
 import { AgentForm } from '../../components/AgentForm.js';
 import { describeBinding } from '../../components/binding.js';
 import { Button, Chip, ConfirmButton, Empty, ErrorNote, JsonView, Load, Loading, Meter, Panel, Status } from '../../components/ui.js';
+import { runNow } from '../../lib/run-now.js';
 import { api } from '../../lib/api.js';
 import type { Agent } from '../../lib/api.js';
 import { ago, dateTime, describeCron, duration, money } from '../../lib/format.js';
@@ -100,7 +101,7 @@ export function AgentPage() {
   const dir = useDirectory(org.id);
   const [editing, setEditing] = useState(false);
   const agent = dir.agents.find((a) => a.slug === slug || a.id === slug);
-  const run = useAction(() => api.runAgent(org.id, agent!.id), { success: 'Run queued', invalidate: [k(org.id, 'runs')] });
+  const run = useAction(() => runNow(org.id, agent!.id, agent!.name), { invalidate: [k(org.id, 'runs')] });
   if (!agent) {
     return (
       <div className="page page-narrow">

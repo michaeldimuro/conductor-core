@@ -131,6 +131,8 @@ export function OrgChart() {
   const [hire, setHire] = useState<{ deptId?: string } | null>(null);
   const [editAgent, setEditAgent] = useState<Agent | null>(null);
   const [deptForm, setDeptForm] = useState<{ dept?: Department } | null>(null);
+  const deptStatus = useAction((d: Department, archive: boolean) => (archive ? api.archiveDepartment(org.id, d.id) : api.unarchiveDepartment(org.id, d.id)),
+    { invalidate: [`${org.id}/`], success: (d) => (d.status === 'archived' ? `Archived ${d.name}` : `Restored ${d.name}`) });
 
   return (
     <div className="page">
@@ -157,7 +159,14 @@ export function OrgChart() {
               {depts.map((d) => {
                 const members = dir.agents.filter((a) => a.deptId === d.id && a.status !== 'terminated');
                 return (
-                  <Panel key={d.id} title={d.name} actions={<><Button small onClick={() => setDeptForm({ dept: d })}>Edit department</Button><Button small onClick={() => setHire({ deptId: d.id })}>Hire into {d.name}</Button></>}>
+                  <Panel key={d.id} title={<>{d.name} {d.status === 'archived' ? <Chip>Archived</Chip> : null}</>} actions={d.status === 'archived'
+                    ? <Button small busy={deptStatus.busy} onClick={() => void deptStatus.run(d, false)}>Restore department</Button>
+                    : <>
+                      <Button small onClick={() => setDeptForm({ dept: d })}>Edit department</Button>
+                      <Button small onClick={() => setHire({ deptId: d.id })}>Hire into {d.name}</Button>
+                      <ConfirmButton small variant="quiet" danger label="Archive" title={`Archive ${d.name}`} confirmLabel="Archive department" disabled={members.length > 0}
+                        message="The department is hidden from hiring and assignment. Its goals, issues and history are kept, and you can restore it later." onConfirm={() => deptStatus.run(d, true)} />
+                    </>}>
                     <div className="stack">
                       <p className="prose dim">{d.charter || 'No charter written yet.'}</p>
                       <p className="row muted">
@@ -166,7 +175,7 @@ export function OrgChart() {
                         <span>{d.sharedSkills.length} shared skills</span>
                         <span>{d.sharedConnectors.length} shared connectors</span>
                       </p>
-                      {members.length === 0 ? <p className="muted">Nobody works here yet.</p> : (
+                      {members.length === 0 ? <p className="muted">{d.status === 'archived' ? 'Archived. Restore it to hire into it again.' : 'Nobody works here yet. An empty department can be archived.'}</p> : (
                         <ul className="tree tree-flat">
                           {members.map((a) => <li key={a.id}><AgentCard agent={a} isLead={d.leadAgentId === a.id} onEdit={() => setEditAgent(a)} /></li>)}
                         </ul>

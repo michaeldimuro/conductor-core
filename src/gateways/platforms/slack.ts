@@ -79,6 +79,9 @@ export function createSlackAdapter(ctx: AdapterContext): GatewayAdapter {
 
   const fail = (what: string) => (err: unknown) => ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, `slack ${what} handling failed`);
 
+  /** Slack conversation ids: `D…` is a 1:1 direct message; channels (`C…`) and group DMs (`G…`) are shared. */
+  const isDirectMessage = (channelId: string): boolean => channelId.startsWith('D');
+
   function onEvent(payload: unknown): void {
     const envelope = asRecord(payload);
     if (envelope.type !== 'event_callback') return;
@@ -93,7 +96,8 @@ export function createSlackAdapter(ctx: AdapterContext): GatewayAdapter {
     // Slack retries deliveries, and a mention arrives as both `message` and `app_mention`.
     if (!seen.add(`${chatId}:${asString(event.ts) ?? asString(envelope.event_id) ?? ''}`)) return;
     const text = unescapeSlack(rawText.replace(/^(\s*<@[A-Z0-9]+>\s*)+/, ''));
-    void ctx.emit({ chatId, userId, text }).catch(fail('event'));
+    const isGroup = asString(event.channel_type) !== null ? event.channel_type !== 'im' : !isDirectMessage(chatId);
+    void ctx.emit({ chatId, userId, text, isGroup }).catch(fail('event'));
   }
 
   function onInteractive(payload: unknown): void {
@@ -110,7 +114,7 @@ export function createSlackAdapter(ctx: AdapterContext): GatewayAdapter {
     const original = unescapeSlack(asString(message.text) ?? '');
     if (!chatId || !userId || value === null) return;
     void ctx.emit({
-      chatId, userId, text: '', action: value,
+      chatId, userId, text: '', action: value, isGroup: !isDirectMessage(chatId),
       respond: async (outcome) => {
         if (outcome.final && ts) {
           // Replace the buttons with the verdict so the message cannot be pressed again.
@@ -135,7 +139,7 @@ export function createSlackAdapter(ctx: AdapterContext): GatewayAdapter {
     const chatId = asString(p.channel_id);
     const userId = asString(p.user_id);
     if (!command || !chatId || !userId || !/^\/[a-z_]{1,32}$/i.test(command)) return;
-    void ctx.emit({ chatId, userId, text: `${command} ${asString(p.text) ?? ''}`.trim() }).catch(fail('slash command'));
+    void ctx.emit({ chatId, userId, text: `${command} ${asString(p.text) ?? ''}`.trim(), isGroup: !isDirectMessage(chatId) }).catch(fail('slash command'));
   }
 
   async function handleWebhook(route: WebhookRoute, req: WebhookRequest): Promise<WebhookResponse> {

@@ -10,6 +10,11 @@
 .callout { display: block; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); color: var(--ink); border-left: 3px solid var(--line); }
 .callout-warn { background: var(--warn-wash); border-left-color: var(--warn); }
 .callout-stop { background: var(--stop-wash); border-left-color: var(--stop); }
+.exposure-banner { margin: 0; padding: 10px 16px; background: var(--stop-wash); border-bottom: 2px solid var(--stop); color: var(--ink); }
+.attachment { text-decoration: underline; }
+.pair-code { margin: 0; padding: 14px; text-align: center; font-size: 1.5rem; letter-spacing: 0.04em; background: var(--line-soft); border-radius: 6px; user-select: all; }
+.takeover-callout { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.takeover-callout > .grow { flex: 1 1 220px; min-width: 0; }
 
 .feed > li { display: grid; grid-template-columns: minmax(70px, 108px) minmax(0, 1fr) auto; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line-soft); align-items: baseline; }
 .feed > li:first-child { border-top: 0; }

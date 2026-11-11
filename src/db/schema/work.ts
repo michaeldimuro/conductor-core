@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { organizations } from './org.js';
 
 export const goals = sqliteTable(
@@ -88,7 +88,8 @@ export const issues = sqliteTable(
     index('issue_assignee_idx').on(t.assigneeAgentId, t.status),
     index('issue_parent_idx').on(t.parentIssueId),
     index('issue_goal_idx').on(t.goalId),
-    index('issue_org_number_idx').on(t.orgId, t.number),
+    /** Per-org issue numbers are unique (ACME-12 names exactly one issue). */
+    uniqueIndex('issue_org_number_uq').on(t.orgId, t.number),
   ],
 );
 

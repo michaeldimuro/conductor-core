@@ -14,7 +14,9 @@ import { ProcessSupervisor } from './supervisor.js';
 import { recoverInFlight } from './recovery.js';
 import { registerSystemJobs, PowerAssertion } from './system-jobs.js';
 import { startOtelExport } from './otel.js';
-import type { RuntimeDeps } from './types.js';
+import { keepPausedTokensAlive, pauseActive, resumeActive } from './pause.js';
+import { preflight } from './preflight.js';
+import type { RunRequest, RunSummary, RuntimeDeps } from './types.js';
 
 export interface Runtime extends RuntimeService, EvalRunner {
   /** Plug in handlers for job kinds owned by other contexts (e.g. webhook_out). */
@@ -44,7 +46,7 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
   let minuteTimer: NodeJS.Timeout | null = null;
   const unsubs: Array<() => void> = [];
 
-  registerSystemJobs(k, d, scheduler);
+  const systemJobs = registerSystemJobs(k, d, scheduler);
 
   // Step 8 — Reflect: queued after every real loop run.
   executor.onFinished = (run: Run, mode) => {
@@ -70,6 +72,31 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
     return [...ids];
   }
 
+  /**
+   * Chat turns and skill evals do not go through the job queue, so they take
+   * their concurrency slot here: same global / org / provider limits as the
+   * loop (plus a small headroom), one chat and one eval per agent, and a
+   * bounded wait for a slot.
+   */
+  async function executeDirect(mode: 'chat' | 'eval', req: RunRequest): Promise<RunSummary> {
+    const org = d.org.getOrg(req.orgId);
+    const agent = d.org.getAgent(req.orgId, req.agentId);
+    const waitMs = mode === 'chat' ? (d.options?.chatWaitMs ?? 15_000) : (d.options?.evalWaitMs ?? 10 * 60_000);
+    const slot = await scheduler.admission.acquireDirect(org, agent, mode, waitMs);
+    if ('blocked' in slot) {
+      k.audit.record({ orgId: org.id, actor: SYSTEM, action: 'run.capacity_refused', entityKind: 'agent', entityId: agent.id, data: { mode, reason: slot.blocked } });
+      return {
+        runId: null, outcome: 'skipped', finalText: '', provider: null, costUsd: 0, steps: 0, tokens: 0, wallMs: 0,
+        skipped: slot.blocked, skip: { code: 'capacity', reason: slot.blocked, temporary: true },
+      };
+    }
+    try {
+      return await executor.execute({ ...req, mode });
+    } finally {
+      slot.release();
+    }
+  }
+
   function activeOrThrow(runId: string) {
     const a = executor.active.get(runId);
     if (!a) throw notFound('active run', runId);
@@ -89,6 +116,7 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
         } catch (err) {
           k.log.warn({ err }, 'approval expiry failed');
         }
+        keepPausedTokensAlive(k, d, executor.active.values());
       };
       minuteTimer = setInterval(everyMinute, 60_000);
       minuteTimer.unref?.();
@@ -97,19 +125,31 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
     async stop() {
       if (minuteTimer) clearInterval(minuteTimer);
       for (const off of unsubs.splice(0)) off();
+      systemJobs.dispose();
       // Graceful shutdown: end in-flight runs cleanly so their issues are released, not orphaned.
       await executor.cancelWhere(() => true, 'daemon shutting down');
       await scheduler.stop();
+      await executor.evalGateway.close();
       power.set(false);
     },
 
     async runNow(orgId, agentId, opts = {}) {
       d.org.getAgent(orgId, agentId);
+      const trigger = opts.trigger ?? 'manual';
+      // Tell the caller now if this wake cannot run, and why — instead of a job id that silently does nothing.
+      const pinned = opts.issueId ? d.work.findIssue(orgId, opts.issueId) : null;
+      const pre = preflight(k, d, journal, { orgId, agentId, mode: 'loop', projectId: pinned?.projectId ?? null });
+      const skipped = pre.ok ? undefined : pre.skip;
+      if (skipped && !skipped.temporary) {
+        k.bus.emit('run.skipped', { orgId, agentId, jobId: null, trigger, code: skipped.code, reason: skipped.reason, deferredUntil: null });
+        return { jobId: '', skipped };
+      }
+      // A temporary cause keeps the wake queued: it runs when the cause clears.
       const jobId = scheduler.wake(orgId, agentId, {
-        trigger: opts.trigger ?? 'manual', issueId: opts.issueId ?? null, prompt: opts.prompt,
+        trigger, issueId: opts.issueId ?? null, prompt: opts.prompt,
         triggerNote: 'The owner asked you to run now.',
       });
-      return { jobId };
+      return skipped ? { jobId, skipped } : { jobId };
     },
 
     async cancelRun(orgId, runId, reason = 'cancelled by owner') {
@@ -135,7 +175,7 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
     },
 
     async chat(orgId, agentId, message, opts = {}) {
-      const summary = await executor.execute({ orgId, agentId, trigger: 'chat', mode: 'chat', prompt: message, issueId: opts.issueId ?? null });
+      const summary = await executeDirect('chat', { orgId, agentId, trigger: 'chat', prompt: message, issueId: opts.issueId ?? null });
       if (!summary.runId) throw new ConductorError('unavailable', `agent cannot chat right now: ${summary.skipped ?? 'unknown'}`);
       if (summary.outcome !== 'completed' && !summary.finalText) {
         const run = journal.get(orgId, summary.runId);
@@ -146,28 +186,12 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
 
     // ── RunControl ─────────────────────────────────────────────────────────
     pauseRun(runId, reason) {
-      const a = activeOrThrow(runId);
-      if (a.paused) return;
-      a.paused = true;
-      journal.update(runId, { status: 'paused' });
-      if (a.issueId && a.checkedOut) {
-        d.work.updateIssue(a.org.id, a.issueId, { status: 'blocked', blockedReason: reason }, SYSTEM);
-      }
-      k.audit.record({ orgId: a.org.id, actor: SYSTEM, action: 'run.paused', entityKind: 'run', entityId: runId, runId, issueId: a.issueId ?? undefined, data: { reason } });
-      k.bus.emit('run.paused', { orgId: a.org.id, runId, reason });
+      pauseActive(k, d, journal, activeOrThrow(runId), reason);
     },
 
     resumeRun(runId) {
       const a = executor.active.get(runId);
-      if (!a || !a.paused) return;
-      a.paused = false;
-      journal.update(runId, { status: 'running' });
-      if (a.issueId && a.checkedOut) {
-        const issue = d.work.findIssue(a.org.id, a.issueId);
-        if (issue?.status === 'blocked') d.work.updateIssue(a.org.id, a.issueId, { status: 'in_progress', blockedReason: null }, SYSTEM);
-      }
-      k.audit.record({ orgId: a.org.id, actor: SYSTEM, action: 'run.resumed', entityKind: 'run', entityId: runId, runId, issueId: a.issueId ?? undefined });
-      k.bus.emit('run.resumed', { orgId: a.org.id, runId });
+      if (a) resumeActive(k, d, journal, a);
     },
 
     isAlive: (runId) => executor.active.has(runId),
@@ -175,8 +199,8 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
     // ── EvalRunner: sandboxed replay for the skill eval gate ───────────────
     async run(input) {
       const t0 = Date.now();
-      const s = await executor.execute({
-        orgId: input.orgId, agentId: input.agentId, trigger: 'system', mode: 'eval',
+      const s = await executeDirect('eval', {
+        orgId: input.orgId, agentId: input.agentId, trigger: 'system',
         prompt: input.prompt, evalSkills: input.skills, triggerNote: `skill eval: ${input.label}`,
       });
       if (!s.runId) throw new ConductorError('unavailable', `eval could not run: ${s.skipped ?? 'unknown'}`);
@@ -184,6 +208,7 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
       return {
         wallMs: Date.now() - t0,
         finalText: s.finalText,
+        ...(s.files ? { files: s.files } : {}),
         result: {
           outcome: s.outcome as 'completed', finalText: s.finalText, steps: run.steps, sessionId: run.sessionId ?? undefined,
           usage: { tokensIn: run.tokensIn, tokensOut: run.tokensOut, costUsd: run.costUsd, subscription: run.subscription, seatSeconds: run.seatSeconds },
@@ -195,7 +220,10 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
     registerJobHandler: (kind, handler) => scheduler.registerHandler(kind, handler),
     enqueue: (input) => queue.enqueue(input),
     tick: () => scheduler.tick(),
-    idle: () => scheduler.idle(),
+    idle: async () => {
+      await scheduler.idle();
+      await systemJobs.idle();
+    },
     bindBrowser(browser) {
       d.browser = browser;
     },

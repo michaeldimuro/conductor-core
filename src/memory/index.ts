@@ -2,6 +2,8 @@ import type { Embedder, Kernel, UtilityModel } from '../contracts/kernel.js';
 import type { OrgService, WorkService } from '../contracts/org-work.js';
 import type { MemoryService, SkillService } from '../contracts/services.js';
 import { Consolidator } from './consolidate.js';
+import { embedderStatusOf } from './embedder.js';
+import { getBackendConfig, setBackendConfig } from './external.js';
 import { MemoryIndex } from './indexes.js';
 import { Recall } from './recall.js';
 import { Reflector } from './reflect.js';
@@ -23,6 +25,10 @@ export interface MemoryDeps extends MemoryOptionalDeps {
 /** MemoryService plus late binding for collaborators that are constructed after it. */
 export interface BindableMemoryService extends MemoryService {
   bind(deps: MemoryOptionalDeps): void;
+  applyReview: NonNullable<MemoryService['applyReview']>;
+  embedderStatus: NonNullable<MemoryService['embedderStatus']>;
+  getExternalBackend: NonNullable<MemoryService['getExternalBackend']>;
+  setExternalBackend: NonNullable<MemoryService['setExternalBackend']>;
 }
 
 /**
@@ -62,13 +68,17 @@ export function createMemoryService(kernel: Kernel, deps: MemoryDeps): BindableM
     snapshotScorecards: (orgId) => cards.snapshotScorecards(orgId),
     weeklyReview: (orgId) => cards.weeklyReview(orgId),
     toolProvider: () => provider,
+    applyReview: (orgId, issueId) => reflector.applyReview(orgId, issueId),
+    embedderStatus: () => embedderStatusOf(deps.embedder),
+    getExternalBackend: async (orgId) => getBackendConfig(kernel, store.org(orgId).id),
+    setExternalBackend: async (orgId, config, actor) => setBackendConfig(kernel, store.org(orgId).id, config, actor),
   };
   const provider = createMemoryToolProvider(service, store);
   return service;
 }
 
 export { createUtilityModel } from './utility-model.js';
-export { createEmbedder, LocalHashEmbedder, OpenAIEmbedder, cosine } from './embedder.js';
+export { createEmbedder, embedderStatusOf, LocalHashEmbedder, OpenAIEmbedder, cosine } from './embedder.js';
 export { ensureMemoryIndexes } from './indexes.js';
-export { createExternalBackend, type ExternalMemoryBackend, type ExternalHit, type BackendConfig } from './external.js';
+export { createExternalBackend, backendSettingKey, backendConfigSchema, type ExternalMemoryBackend, type ExternalHit, type BackendConfig } from './external.js';
 export { scoreMemory, recencyDecay, PROFILE_TOKEN_BUDGET } from './ranking.js';

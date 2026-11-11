@@ -200,13 +200,25 @@ export function governanceCommands(program: Command, deps: CliDeps): void {
       ));
     }));
   adapter
+    .command('rescan')
+    .description('load adapter plugins added to the plugin folder (<home>/adapters) without restarting the daemon')
+    .action(action(deps, async (ctx) => {
+      const r = await ctx.client().rescanAdapters();
+      ctx.emit(r, () => {
+        ctx.line(`added: ${r.added.join(', ') || 'none'}; removed: ${r.removed.join(', ') || 'none'}`);
+        for (const sk of r.skipped) ctx.line(`skipped ${sk.folder}: ${sk.error}`);
+      });
+    }));
+  adapter
     .command('test <id>')
     .description('test an adapter\'s connection (exit code 1 when it fails)')
-    .option('--auth-ref <ref>', 'secret ref of the API key to test with')
+    .option('--auth-ref <ref>', 'secret ref of the API key to test with (default: org/<org>/…-api-key, then conductor/…-api-key)')
     .option('--model <model>', 'model to check')
     .action(action(deps, async (ctx, args, opts) => {
       const id = arg(args, 0, 'id');
-      const h = await ctx.client().testAdapter(id, compact({ authRef: str(opts, 'authRef') ? secretRef(str(opts, 'authRef')!) : undefined, model: str(opts, 'model') }));
+      const authRef = str(opts, 'authRef') ? secretRef(str(opts, 'authRef')!) : undefined;
+      // Without an explicit key the daemon resolves the conventional refs, the chosen org's first.
+      const h = await ctx.client().testAdapter(id, compact({ authRef, model: str(opts, 'model'), orgId: authRef ? undefined : ctx.chosenOrg() }));
       ctx.emit({ adapter: id, ...h }, () => ctx.line(`${h.ok ? ctx.style.green('✓') : ctx.style.red('✗')} ${id}${h.version ? ` ${h.version}` : ''}: ${h.detail ?? (h.ok ? 'ok' : 'failed')}`));
       if (!h.ok) throw new SilentExit(EXIT.failure);
     }));

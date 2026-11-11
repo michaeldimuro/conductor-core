@@ -10,6 +10,7 @@ import { randomToken, sleep, truncate } from '../shared/util.js';
 import { hostOf } from './domains.js';
 import type { BrowserEngine, RunBrowser } from './engine.js';
 import { DESCRIBE_ELEMENT_JS, STASH_ELEMENT_JS } from './page-scripts.js';
+import type { OnePasswordOptions } from './onepassword.js';
 import type { OrgLookup } from './profiles.js';
 import { descriptorKey, looksLikeCommit, touchesSensitiveDomain, type ActionGate } from './sensitive.js';
 import { schemas, type ToolArgs, type ToolName } from './tool-defs.js';
@@ -19,6 +20,8 @@ export interface ToolEnv {
   engine: BrowserEngine;
   gate: ActionGate;
   org: OrgLookup;
+  /** How the 1Password CLI is invoked for `op://` secret references. */
+  onePassword?: OnePasswordOptions;
 }
 
 /** Everything one tool invocation works with. */

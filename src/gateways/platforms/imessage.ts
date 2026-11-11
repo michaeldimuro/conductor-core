@@ -119,7 +119,7 @@ export function createIMessageAdapter(ctx: AdapterContext): GatewayAdapter {
       const text = row.text ?? textFromAttributedBody(row.attributedBody);
       // Anyone can text a phone number: everything not from an allow-listed handle is ignored outright.
       if (!handle || !text || !allowed.has(handle.toLowerCase())) continue;
-      void ctx.emit({ chatId: handle, userId: handle, text }).catch((err) => {
+      void ctx.emit({ chatId: handle, userId: handle, text, isGroup: false }).catch((err) => {
         ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, 'imessage handling failed');
       });
     }

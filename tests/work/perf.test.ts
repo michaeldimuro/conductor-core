@@ -8,19 +8,27 @@ import { seedCompany, setup, type Fixture } from './helpers.js';
 const TOTAL = 5000;
 const BUDGET_MS = 200;
 
-function medianMs(fn: () => unknown, rounds = 9): number {
-  fn(); // warm the statement cache
+const SAMPLES = 40;
+
+/**
+ * p95 latency of what a board request costs the daemon in-process: the Work
+ * query plus encoding the response body. (Loopback HTTP and the browser's
+ * render are outside what a unit test can measure.) With 40 samples the 95th
+ * percentile is the 38th fastest — the two slowest runs are the only ones ignored.
+ */
+function p95Ms(fn: () => unknown): number {
+  JSON.stringify(fn()); // warm the statement cache
   const samples: number[] = [];
-  for (let i = 0; i < rounds; i++) {
+  for (let i = 0; i < SAMPLES; i++) {
     const t0 = performance.now();
-    fn();
+    JSON.stringify(fn());
     samples.push(performance.now() - t0);
   }
   samples.sort((a, b) => a - b);
-  return samples[Math.floor(samples.length / 2)]!;
+  return samples[Math.ceil(SAMPLES * 0.95) - 1]!;
 }
 
-/** PRD performance NFR: boards up to 5k issues stay well under 200 ms. */
+/** PRD performance NFR: "UI p95 < 200 ms for boards up to 5k issues". */
 describe('work: performance on a 5,000-issue org', () => {
   let k: TestKernel;
   let work: WorkService;
@@ -74,15 +82,19 @@ describe('work: performance on a 5,000-issue org', () => {
     ['the whole board', () => work.listIssues(f.org.id, { limit: 5000 }), (n) => expect(n).toBe(TOTAL)],
   ];
 
-  it.each(cases)('listIssues %s stays under the budget (median)', (_name, query, check) => {
+  // Retried: the budget is a latency bound, and the suite shares the machine with other test workers.
+  it.each(cases)('listIssues %s: p95 under 200 ms', { retry: 3 }, (_name, query, check) => {
     check(query().length);
-    expect(medianMs(query)).toBeLessThan(BUDGET_MS);
+    expect(p95Ms(query)).toBeLessThan(BUDGET_MS);
   });
 
-  it('inbox and goalTree stay under the budget too', () => {
+  it('inbox, goalTree and a full issue page (issue + comments + timeline): p95 under 200 ms', { retry: 3 }, () => {
     expect(work.inbox(f.org.id, f.dev.id).issues.length).toBeGreaterThan(0);
-    expect(medianMs(() => work.inbox(f.org.id, f.dev.id))).toBeLessThan(BUDGET_MS);
+    expect(p95Ms(() => work.inbox(f.org.id, f.dev.id))).toBeLessThan(BUDGET_MS);
     expect(work.goalTree(f.org.id)[0]!.issueCounts.open).toBe(1667);
-    expect(medianMs(() => work.goalTree(f.org.id))).toBeLessThan(BUDGET_MS);
+    expect(p95Ms(() => work.goalTree(f.org.id))).toBeLessThan(BUDGET_MS);
+    const issue = work.listIssues(f.org.id, { limit: 1 })[0]!;
+    for (let i = 0; i < 30; i++) work.addComment(f.org.id, issue.id, { body: `Update ${i}` }, OWNER);
+    expect(p95Ms(() => [work.getIssue(f.org.id, issue.id), work.listComments(f.org.id, issue.id), work.timeline(f.org.id, issue.id)])).toBeLessThan(BUDGET_MS);
   });
 });

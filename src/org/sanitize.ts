@@ -17,7 +17,7 @@ const SECRET_KEY = /(api[-_]?key|passw(or)?d|secret|token|bearer|authorization|p
 const IDENTIFIER_KEYS = new Set([
   'id', 'slug', 'deptId', 'reportsTo', 'leadAgentId', 'parentGoalId', 'ownerAgentId', 'managerAgentId', 'agentId',
   'scopeId', 'scopeSlug', 'templateId', 'skills', 'denySkills', 'sharedSkills', 'defaultSkills', 'connectors',
-  'denyConnectors', 'sharedConnectors', 'defaultConnectors',
+  'denyConnectors', 'sharedConnectors', 'defaultConnectors', 'connectorId', 'goalId', 'tool', 'toolAllowlist',
 ]);
 const IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 

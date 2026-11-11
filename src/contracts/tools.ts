@@ -45,6 +45,8 @@ export interface ToolResult {
   isError?: boolean;
   /** True when content came from the outside world (marks the run as having ingested untrusted input). */
   untrusted?: boolean;
+  /** What this call cost in USD, when the tool or its upstream reports one (logged on the tool call). */
+  costUsd?: number;
 }
 
 export const textResult = (text: string, opts: { isError?: boolean; untrusted?: boolean } = {}): ToolResult => ({

@@ -68,6 +68,20 @@ describe('governance / approvals', () => {
       expect(gov.approvals.requiresApproval(org.id, 'other', { amountUsd: 500 })).toBe(true);
     });
 
+    it('applies the default $50 spend threshold when the org sets none', () => {
+      setPolicies(k, org.id, { approvalOverrides: { payment: false } });
+      expect(gov.approvals.requiresApproval(org.id, 'payment', { amountUsd: 50 })).toBe(false);
+      expect(gov.approvals.requiresApproval(org.id, 'payment', { amountUsd: 50.01 })).toBe(true);
+      // An org can raise it, or set 0 to gate every priced action.
+      setPolicies(k, org.id, { approvalOverrides: { payment: false }, approvalSpendThresholdUsd: 200 });
+      expect(gov.approvals.requiresApproval(org.id, 'payment', { amountUsd: 199 })).toBe(false);
+      setPolicies(k, org.id, { approvalOverrides: { payment: false }, approvalSpendThresholdUsd: 0 });
+      expect(gov.approvals.requiresApproval(org.id, 'payment', { amountUsd: 0.01 })).toBe(true);
+      // Garbage in the policy falls back to the default rather than disabling the gate.
+      setPolicies(k, org.id, { approvalOverrides: { payment: false }, approvalSpendThresholdUsd: Number.NaN });
+      expect(gov.approvals.requiresApproval(org.id, 'payment', { amountUsd: 51 })).toBe(true);
+    });
+
     it('treats an unknown org as not found', () => {
       expect(codeOf(() => gov.approvals.requiresApproval('org_nope', 'payment'))).toBe('not_found');
     });
@@ -277,6 +291,37 @@ describe('governance / approvals', () => {
   });
 
   describe('expireApprovals', () => {
+    it('gives every approval a default expiry from org policy (72h), which the scheduler hook then enforces', () => {
+      const now = k.clock.now();
+      const byDefault = gov.approvals.request({ orgId: org.id, kind: 'tool_call', title: 'default', payload: { matchKey: 'k-default' }, requesterAgentId: agent.id });
+      expect(byDefault.expiresAt).toBe(now + 72 * 3_600_000);
+      expect(k.audit.query({ action: 'approval.requested', entityId: byDefault.id })[0]!.data).toMatchObject({ expiresAt: now + 72 * 3_600_000 });
+
+      setPolicies(k, other.id, { approvalExpiryHours: 2 });
+      const short = gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'short' });
+      expect(short.expiresAt).toBe(now + 2 * 3_600_000);
+      // The requester's own choice always wins: an explicit time, or null for "never".
+      const explicit = gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'explicit', expiresAt: now + 5_000 });
+      const never = gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'never', expiresAt: null });
+      expect([explicit.expiresAt, never.expiresAt]).toEqual([now + 5_000, null]);
+      // Policy 0 switches the default off; nonsense falls back to 72h.
+      setPolicies(k, other.id, { approvalExpiryHours: 0 });
+      expect(gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'off' }).expiresAt).toBeNull();
+      setPolicies(k, other.id, { approvalExpiryHours: -3 });
+      expect(gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'bad' }).expiresAt).toBe(now + 72 * 3_600_000);
+
+      k.clock.advance(2 * 3_600_000);
+      expect(gov.expireApprovals().map((a) => a.id).sort()).toEqual([short.id, explicit.id].sort());
+      expect(gov.approvals.findOpen(org.id, 'tool_call', 'k-default')?.id).toBe(byDefault.id);
+      k.clock.advance(70 * 3_600_000);
+      expect(gov.expireApprovals().map((a) => a.id)).toContain(byDefault.id);
+      expect(gov.approvals.get(org.id, byDefault.id).status).toBe('expired');
+      // An expired request is no longer open, cannot be decided, and the same action may be requested again.
+      expect(gov.approvals.findOpen(org.id, 'tool_call', 'k-default')).toBeNull();
+      expect(codeOf(() => gov.approvals.decide(org.id, byDefault.id, 'approved', OWNER))).toBe('conflict');
+      expect(gov.approvals.get(other.id, never.id).status).toBe('pending');
+    });
+
     it('marks only overdue pending approvals expired, audits, emits nothing', () => {
       const soon = gov.approvals.request({ orgId: org.id, kind: 'publish', title: 'soon', expiresAt: k.clock.now() + 100 });
       const later = gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'later', expiresAt: k.clock.now() + 10_000 });

@@ -55,7 +55,7 @@ const TOOLS: ToolDef[] = [
         replace: { type: 'string', description: 'patch: replacement for `find`.' },
         files: {
           type: 'object',
-          description: 'Extra files, relative path → content. Paths must be under scripts/, references/ or assets/.',
+          description: 'Extra files, relative path → content. Paths must be under scripts/, references/, assets/ or evals/. `evals/cases.json` may hold explicit eval cases: [{"prompt": "...", "criteria": "...", "expect": {"contains": [], "notContains": [], "regex": [], "files": []}}].',
           additionalProperties: { type: 'string', maxLength: MAX_FILE_BYTES },
         },
         reason: { type: 'string', maxLength: 1000, description: 'Why this change is being made (recorded in the skill history).' },

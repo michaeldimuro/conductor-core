@@ -3,16 +3,27 @@ import type { Kernel } from '../contracts/kernel.js';
 import type { ApprovalService } from '../contracts/services.js';
 import { textResult, type ToolCallContext, type ToolDef, type ToolResult } from '../contracts/tools.js';
 import { approvals as approvalsTable, toolCalls } from '../db/schema/index.js';
+import type { ApprovalKind } from '../db/schema/governance.js';
 import { errorMessage, isConductorError } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { redact, sha256, stableStringify } from '../shared/util.js';
 import type { AccessResolver } from './access.js';
 import { callToolDef, findToolsDef, searchTools } from './meta.js';
-import { argsPreview, escalatePolicy, isExternalRisk, isGuardedRisk, redactArgs, resultSize, toolMatchKey, wrapUntrusted } from './risk.js';
+import { classifyAction } from './actions.js';
+import { ActionGates } from './gates.js';
+import { argsPreview, escalate, isExternalRisk, redactArgs, resultSize, toolMatchKey, wrapUntrusted } from './risk.js';
 import type { ConnectorStore } from './store.js';
 import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER } from './types.js';
 
 type CallStatus = 'ok' | 'error' | 'denied' | 'approval_pending';
+
+const TITLES: Record<string, string> = {
+  payment: 'Payment', spend_threshold: 'Spend over threshold', new_recipient: 'First send to a new recipient', publish: 'Publish',
+  credential_new_origin: 'Credential on a new site',
+};
+
+/** A reported per-call cost, when it is a sane non-negative USD amount. */
+const validCost = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_000_000 ? v : undefined);
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -20,6 +31,7 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v ===
 export class ToolCalls {
   /** Runs known to have ingested untrusted content (mirrors runs.ingested_untrusted). */
   private readonly untrustedRuns = new Set<string>();
+  private readonly gates: ActionGates;
 
   constructor(
     private readonly k: Kernel,
@@ -27,10 +39,13 @@ export class ToolCalls {
     private readonly access: AccessResolver,
     private readonly approvals: ApprovalService,
     private readonly deniedCooldownMs: number,
-  ) {}
+  ) {
+    this.gates = new ActionGates(approvals);
+  }
 
   endRun(runId: string): void {
     this.untrustedRuns.delete(runId);
+    this.gates.endRun(runId);
   }
 
   async listTools(ctx: ToolCallContext): Promise<ToolDef[]> {
@@ -77,12 +92,12 @@ export class ToolCalls {
     return this.untrustedRuns.has(ctx.runId) || this.store.runIngestedUntrusted(ctx.orgId, ctx.runId);
   }
 
-  private recentlyDenied(orgId: string, matchKey: string): string | null {
+  private recentlyDenied(orgId: string, kind: ApprovalKind, matchKey: string): string | null {
     const row = this.k.db
       .select({ id: approvalsTable.id })
       .from(approvalsTable)
       .where(and(
-        eq(approvalsTable.orgId, orgId), eq(approvalsTable.kind, 'tool_call'), eq(approvalsTable.status, 'denied'),
+        eq(approvalsTable.orgId, orgId), eq(approvalsTable.kind, kind), eq(approvalsTable.status, 'denied'),
         gte(approvalsTable.decidedAt, this.k.clock.now() - this.deniedCooldownMs),
         sql`json_extract(${approvalsTable.payload}, '$.matchKey') = ${matchKey}`,
       ))
@@ -112,32 +127,35 @@ export class ToolCalls {
     const entry = resolution.entry;
     const log = { ...base, connectorId: entry.connectorId };
     const untrustedBefore = this.ingestedUntrusted(ctx);
-    const effective = escalatePolicy(entry.policy, entry.def.risk, ctx.autonomyLevel, untrustedBefore);
+    const category = classifyAction(entry.def.name, { builtin: !!entry.builtin });
+    const escalated = escalate(entry.policy, entry.def.risk, ctx.autonomyLevel, untrustedBefore, category);
+    // Default approval gates (payment, spend threshold, first send, publish, org extras) come before the tool policy.
+    const gate = this.gates.evaluate(ctx, entry, args, category, untrustedBefore);
+    const ask = gate ?? (escalated.policy === 'ask' ? { kind: 'tool_call' as const, reason: escalated.reason ?? 'policy', detail: {}, remember: [] } : null);
     let approvalId: string | undefined;
 
-    if (effective === 'ask') {
+    if (ask) {
       const matchKey = toolMatchKey(ctx.agentId, qualified, args);
-      const approved = this.approvals.consume(ctx.orgId, 'tool_call', matchKey);
+      const approved = this.approvals.consume(ctx.orgId, ask.kind, matchKey);
       if (approved) {
         approvalId = approved.id;
       } else {
-        const open = this.approvals.findOpen(ctx.orgId, 'tool_call', matchKey);
+        const open = this.approvals.findOpen(ctx.orgId, ask.kind, matchKey);
         if (open) {
           return this.finish(ctx, { ...log, status: 'approval_pending', approvalId: open.id }, textResult(
             `Still pending: "${qualified}" with these exact arguments is awaiting board approval (${open.id}). It has NOT run. ` +
             'Do not retry now — continue with other work or finish; you will be woken when it is decided, then repeat this exact call.'));
         }
-        const denied = this.recentlyDenied(ctx.orgId, matchKey);
+        const denied = this.recentlyDenied(ctx.orgId, ask.kind, matchKey);
         if (denied) {
           return this.finish(ctx, { ...log, status: 'denied', approvalId: denied }, textResult(
             `The board denied this exact call (${denied}). It was not executed. Do not repeat it; choose a different approach or report back.`, { isError: true }));
         }
-        const reason = entry.policy === 'ask' ? 'policy' : untrustedBefore && isGuardedRisk(entry.def.risk) ? 'untrusted_content' : 'autonomy';
         const approval = this.approvals.request({
           orgId: ctx.orgId,
-          kind: 'tool_call',
-          title: `Tool call: ${qualified}`,
-          payload: { matchKey, tool: qualified, connectorId: entry.connectorId, args: redactArgs(args), risk: entry.def.risk, reason },
+          kind: ask.kind,
+          title: `${TITLES[ask.reason] ?? 'Tool call'}: ${qualified}`,
+          payload: { matchKey, tool: qualified, connectorId: entry.connectorId, args: redactArgs(args), risk: entry.def.risk, category, reason: ask.reason, ...ask.detail },
           requesterAgentId: ctx.agentId,
           runId: ctx.runId,
           issueId: ctx.issueId,
@@ -150,16 +168,25 @@ export class ToolCalls {
 
     let result: ToolResult;
     let status: CallStatus = 'ok';
+    let costUsd = 0;
     try {
       if (entry.builtin) {
         const r = await entry.builtin.call(ctx, entry.def.name, args);
+        costUsd = validCost(r.costUsd) ?? 0;
         result = r.untrusted ? wrapUntrusted(r, qualified) : r;
       } else {
         const r = await this.access.callUpstream(ctx, entry, args);
+        // What the upstream reported for this call, else the connector's flat per-call price.
+        costUsd = validCost(r.costUsd) ?? validCost((entry.connector?.config as { costPerCallUsd?: unknown } | undefined)?.costPerCallUsd) ?? 0;
         // Anything an external-facing upstream tool returns is outside-world content.
         result = isExternalRisk(entry.def.risk) ? wrapUntrusted(r, qualified) : { content: r.content, ...(r.isError ? { isError: true } : {}) };
       }
       if (result.isError) status = 'error';
+      else {
+        this.gates.observe(ctx, entry, args);
+        // The board approved this send / credential use: it is no longer "new".
+        if (approvalId && ask) this.gates.remember(ctx.orgId, ask.remember);
+      }
     } catch (e) {
       if (e instanceof AuthRequiredError && entry.connector) {
         const approval = this.access.requestAuth(ctx, entry.connector, entry.grant, e);
@@ -173,7 +200,7 @@ export class ToolCalls {
       this.untrustedRuns.add(ctx.runId);
       this.store.markRunUntrusted(ctx.orgId, ctx.runId);
     }
-    return this.finish(ctx, { ...log, status, approvalId }, result);
+    return this.finish(ctx, { ...log, status, approvalId, costUsd }, result);
   }
 
   private authPending(connectorName: string, approvalId: string, authUrl: string | null): ToolResult {
@@ -186,17 +213,18 @@ export class ToolCalls {
   /** Log to `tool_calls` and the audit trail (hash + redacted preview only — never raw args). */
   private finish(
     ctx: ToolCallContext,
-    call: { connectorId: string; tool: string; args: Record<string, unknown>; status: CallStatus; started: number; approvalId?: string },
+    call: { connectorId: string; tool: string; args: Record<string, unknown>; status: CallStatus; started: number; approvalId?: string; costUsd?: number },
     result: ToolResult,
   ): ToolResult {
     const id = newId('toolCall');
     const argsHash = sha256(stableStringify(call.args));
     const latencyMs = Math.max(0, Math.round(performance.now() - call.started));
     const size = resultSize(result.content);
+    const costUsd = call.costUsd ?? 0;
     try {
       this.k.db.insert(toolCalls).values({
         id, orgId: ctx.orgId, runId: ctx.runId, agentId: ctx.agentId, issueId: ctx.issueId, connectorId: call.connectorId, tool: call.tool,
-        argsHash, resultSize: size, latencyMs, costUsd: 0, status: call.status, approvalId: call.approvalId ?? null, ts: this.k.clock.now(),
+        argsHash, resultSize: size, latencyMs, costUsd, status: call.status, approvalId: call.approvalId ?? null, ts: this.k.clock.now(),
       }).run();
       this.k.audit.record({
         orgId: ctx.orgId,
@@ -208,7 +236,7 @@ export class ToolCalls {
         issueId: ctx.issueId ?? undefined,
         data: {
           tool: call.tool, connectorId: call.connectorId, status: call.status, argsHash, argsPreview: argsPreview(call.args),
-          resultSize: size, latencyMs, costUsd: 0, approvalId: call.approvalId ?? null, untrusted: result.untrusted === true,
+          resultSize: size, latencyMs, costUsd, approvalId: call.approvalId ?? null, untrusted: result.untrusted === true,
         },
       });
     } catch (e) {

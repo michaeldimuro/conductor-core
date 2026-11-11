@@ -8,7 +8,7 @@ import type { ApprovalService } from '../contracts/services.js';
 import { SYSTEM, type Actor } from '../contracts/types.js';
 import { conflict, forbidden, invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
-import { evaluateGate, scrubSecrets, summarizePayload } from './policy.js';
+import { approvalTtlMs, evaluateGate, scrubSecrets, summarizePayload } from './policy.js';
 import { parse, requireAgent, requireOrg } from './store.js';
 
 const requestSchema = z.object({
@@ -80,10 +80,13 @@ export class Approvals implements ApprovalService {
 
   request(raw: Parameters<ApprovalService['request']>[0]): Approval {
     const input = parse(requestSchema, raw);
-    requireOrg(this.k, input.orgId);
+    const org = requireOrg(this.k, input.orgId);
     const requester = input.requesterAgentId ? requireAgent(this.k, input.orgId, input.requesterAgentId) : null;
     const now = this.k.clock.now();
     if (input.expiresAt != null && input.expiresAt <= now) throw invalid('expiresAt must be in the future');
+    // No expiry given → the org's default lifetime (policy `approvalExpiryHours`, 72h). An explicit null means "never".
+    const ttl = approvalTtlMs(org.policies);
+    const expiresAt = input.expiresAt === undefined ? (ttl === null ? null : now + ttl) : input.expiresAt;
 
     const id = newId('approval');
     const payload = scrubSecrets(input.payload ?? {});
@@ -99,7 +102,7 @@ export class Approvals implements ApprovalService {
         title: input.title,
         payload,
         status: 'pending',
-        expiresAt: input.expiresAt ?? null,
+        expiresAt,
         createdAt: now,
       })
       .run();
@@ -113,7 +116,7 @@ export class Approvals implements ApprovalService {
       entityId: id,
       runId: input.runId ?? undefined,
       issueId: input.issueId ?? undefined,
-      data: { kind: input.kind, title: input.title, payloadKeys: Object.keys(payload), expiresAt: input.expiresAt ?? null },
+      data: { kind: input.kind, title: input.title, payloadKeys: Object.keys(payload), expiresAt },
     });
 
     this.k.bus.emit('approval.requested', { orgId: input.orgId, approvalId: id, kind: input.kind });

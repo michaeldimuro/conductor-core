@@ -97,6 +97,16 @@ export function workCommands(program: Command, deps: CliDeps): void {
     }));
 
   goal
+    .command('delete <goal>')
+    .description('delete a goal; its sub-goals, projects and issues move to the parent goal')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.org();
+      const g = await resolveGoal(ctx, o, arg(args, 0, 'goal'));
+      await ctx.client().deleteGoal(o, g.id);
+      ctx.emit({ ok: true, goalId: g.id }, () => ctx.ok(`deleted goal "${g.title}"`));
+    }));
+
+  goal
     .command('tree')
     .description('print the goal tree with issue progress')
     .action(action(deps, async (ctx) => {

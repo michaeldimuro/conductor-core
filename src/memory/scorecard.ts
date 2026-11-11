@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lt, ne, or, isNull } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt, ne, notInArray, or, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Kernel, UtilityModel } from '../contracts/kernel.js';
 import type { Agent, Department, Scorecard } from '../contracts/rows.js';
@@ -17,6 +17,12 @@ const WEEK = 7 * DAY;
 /** 1970-01-05 was a Monday: weekly buckets are Monday-aligned (UTC). */
 const MONDAY_OFFSET = 4 * DAY;
 export const weekStartOf = (ts: number): number => ts - ((((ts - MONDAY_OFFSET) % WEEK) + WEEK) % WEEK);
+
+/**
+ * Triggers of runs that are not heartbeat-loop work: `chat` is a conversational turn and
+ * `system` is the sandboxed skill-eval replay (the runtime's EvalRunner).
+ */
+export const NON_LOOP_TRIGGERS = ['chat', 'system'] as const;
 
 interface RunRow {
   status: string;
@@ -98,6 +104,8 @@ export class Scorecards {
         and(
           eq(runs.orgId, orgId), eq(runs.agentId, agentId), gte(runs.createdAt, from), lt(runs.createdAt, to),
           inArray(runs.status, ['succeeded', 'failed']), or(isNull(runs.outcome), ne(runs.outcome, 'no_work')),
+          // Only real heartbeat-loop runs count: chat turns and sandboxed skill-eval replays are not work.
+          notInArray(runs.trigger, [...NON_LOOP_TRIGGERS]),
         ),
       )
       .orderBy(runs.createdAt)

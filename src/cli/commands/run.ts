@@ -4,7 +4,7 @@ import type { Run, RunEvent, TranscriptEntry } from '../../api/types.js';
 import type { CliDeps } from '../deps.js';
 import type { Ctx } from '../context.js';
 import { action, arg, choice, compact, flag, num, str } from '../command.js';
-import { CliError, EXIT, UsageError } from '../errors.js';
+import { CliError, EXIT, SilentExit, UsageError } from '../errors.js';
 import { ago, clip, clock, duration, usd, type Style } from '../output.js';
 import { agentNames, pick, resolveAgent, resolveIssue } from '../resolve.js';
 
@@ -148,9 +148,17 @@ export function runCommands(program: Command, deps: CliDeps): void {
       const issue = str(opts, 'issue') ? await resolveIssue(ctx, o, str(opts, 'issue')!) : null;
       const r = await ctx.client().runAgent(o, a.id, compact({ issueId: issue?.id, prompt: str(opts, 'prompt') }));
       ctx.emit({ ...r, agentId: a.id, issueId: issue?.id ?? null }, () => {
+        if (r.skipped) {
+          // Say so instead of pretending a run is on its way.
+          ctx.line(`${ctx.style.yellow('!')} no run started for ${a.name}: ${r.skipped.reason}`);
+          ctx.line(r.skipped.temporary ? '  the wake stays queued and runs when that clears' : '  nothing was queued');
+          return;
+        }
         ctx.ok(`queued a run for ${a.name}${issue ? ` on #${issue.number}` : ''}`);
         ctx.line(`  watch it: conductor logs -f --agent ${a.slug}   ·   conductor run list --agent ${a.slug}`);
+        ctx.line(ctx.style.dim('  an agent with nothing to do ends the wake without a run; `conductor run list` shows whether one started'));
       });
+      if (r.skipped && !r.skipped.temporary) throw new SilentExit(EXIT.failure);
     }));
 
   run

@@ -71,8 +71,24 @@ export class ConductorPaths {
   browserProfile(orgSlug: string, profileSlug: string): string {
     return this.safe(join(this.org(orgSlug), 'browser-profiles', seg(profileSlug)));
   }
+  /** Root of one org's run artifacts (PRD on-disk layout). Never shared between orgs. */
   artifacts(orgSlug: string): string {
     return join(this.org(orgSlug), 'artifacts');
+  }
+  /** `<org>/artifacts/<scope>/` — one folder per run or issue id. */
+  artifactDir(orgSlug: string, scope: string): string {
+    return join(this.artifacts(orgSlug), seg(scope));
+  }
+  /**
+   * A file inside one org's artifact folder for `scope`. `name` may contain
+   * sub-folders but can never leave `<org>/artifacts/<scope>/` — and so never
+   * reach another org.
+   */
+  artifactFile(orgSlug: string, scope: string, name: string): string {
+    const dir = this.artifactDir(orgSlug, scope);
+    const file = resolveInside(dir, name);
+    if (file === dir) throw invalid(`artifact name is empty: ${name}`);
+    return file;
   }
   transcripts(orgSlug: string): string {
     return join(this.org(orgSlug), 'transcripts');
@@ -81,9 +97,31 @@ export class ConductorPaths {
     return join(this.transcripts(orgSlug), `${seg(runId)}.jsonl`);
   }
 
+  /** The CLI's credential file (0600). Lives directly in the home, which agents' sandboxes cannot read. */
+  get ownerTokenFile(): string {
+    return join(this.home, 'owner.token');
+  }
+  get orgsRoot(): string {
+    return join(this.home, 'orgs');
+  }
+
   ensure(dir: string): string {
     mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  /** Create the install-wide part of the PRD layout; returns the directories. */
+  ensureBaseLayout(): string[] {
+    return [this.home, this.adapters, this.globalSkills, this.orgsRoot, this.backups, this.runDir].map((d) => this.ensure(d));
+  }
+
+  /** Create one org's part of the PRD layout (skills, agents, browser profiles, artifacts, transcripts). */
+  ensureOrgLayout(orgSlug: string): string[] {
+    const org = this.org(orgSlug);
+    return [
+      org, this.orgSkills(orgSlug), join(org, 'depts'), join(org, 'agents'), join(org, 'browser-profiles'),
+      this.artifacts(orgSlug), this.transcripts(orgSlug),
+    ].map((d) => this.ensure(d));
   }
 
   /** Throws unless `p` resolves inside CONDUCTOR_HOME. */

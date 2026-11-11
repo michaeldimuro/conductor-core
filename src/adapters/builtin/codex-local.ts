@@ -3,6 +3,7 @@ import type { AdapterCapabilities, AgentAdapter, Health, RunContext, RunEvent, R
 import { AdapterError, kindFromMessage } from '../shared/errors.js';
 import { ActiveRuns, withRun, type RunEnv } from '../shared/guard.js';
 import { minimalEnv, probeCommand, runJsonLines } from '../shared/proc.js';
+import { codexSandbox } from '../shared/sandbox-codex.js';
 import { writeAgentsSkills } from '../shared/skills.js';
 
 const configSchema = z.object({
@@ -101,10 +102,32 @@ export function buildCodexArgs(ctx: RunContext, cfg: Config, mcpArgs: string[]):
   return args;
 }
 
+/**
+ * Codex reads skills from AGENTS.md and has no `Skill` tool, so nothing in its stream says which
+ * skill it followed. It is asked to announce it; the adapter turns the announcement into the same
+ * `Skill` tool call Claude Code emits, which is what the runtime's usage attribution looks for.
+ */
+export const CODEX_SKILL_MARKER = 'Using skill:';
+const skillNote = (skills: RunContext['skills']): string =>
+  skills.length > 0
+    ? `\n\nWhen you follow one of the Conductor skills listed in AGENTS.md, announce it first on its own line as \`${CODEX_SKILL_MARKER} <skill name>\`.`
+    : '';
+
 /** Codex has no system-prompt flag, so a fresh session gets the operating instructions ahead of the task. */
-export function buildCodexPrompt(ctx: Pick<RunContext, 'systemPrompt' | 'prompt' | 'resumeSessionId'>): string {
-  if (ctx.resumeSessionId || !ctx.systemPrompt) return ctx.prompt;
-  return `# Operating instructions\n\n${ctx.systemPrompt}\n\n# Task\n\n${ctx.prompt}`;
+export function buildCodexPrompt(ctx: Pick<RunContext, 'systemPrompt' | 'prompt' | 'resumeSessionId'> & Partial<Pick<RunContext, 'skills'>>): string {
+  // A resumed session already carries the instruction from its first prompt.
+  if (ctx.resumeSessionId) return ctx.prompt;
+  const note = skillNote(ctx.skills ?? []);
+  if (!ctx.systemPrompt) return `${ctx.prompt}${note}`;
+  return `# Operating instructions\n\n${ctx.systemPrompt}\n\n# Task\n\n${ctx.prompt}${note}`;
+}
+
+/** Skills a piece of Codex output shows in use: an announcement line, or a touch of the skill's own folder. */
+export function skillsUsedIn(text: string, skills: RunContext['skills']): string[] {
+  if (!text || skills.length === 0) return [];
+  const announced = new Set<string>();
+  for (const m of text.matchAll(/using skill:\s*[`"'*]*([A-Za-z0-9._-]+)/gi)) if (m[1]) announced.add(m[1].toLowerCase());
+  return skills.filter((s) => announced.has(s.name.toLowerCase()) || (s.hasScripts && text.includes(s.path))).map((s) => s.name);
 }
 
 interface StreamState {
@@ -115,6 +138,19 @@ interface StreamState {
   turnCompleted: boolean;
   failure?: string;
   lastError?: string;
+  /** Skill names already reported as used. */
+  skillsUsed: Set<string>;
+}
+
+/** Report each skill once, as a `Skill` tool call (not a step: it is attribution, not model work). */
+function noteSkillUse(text: string, st: StreamState, env: RunEnv): void {
+  for (const name of skillsUsedIn(text, env.ctx.skills)) {
+    if (st.skillsUsed.has(name)) continue;
+    st.skillsUsed.add(name);
+    const id = `skill_${name}`;
+    env.emit({ type: 'tool_call', id, name: 'Skill', input: { skill: name } });
+    env.emit({ type: 'tool_result', id, name: 'Skill', output: `skill ${name} loaded from AGENTS.md`, isError: false });
+  }
 }
 
 const TOOL_ITEMS = new Set(['command_execution', 'mcp_tool_call', 'file_change', 'web_search', 'collab_tool_call']);
@@ -195,15 +231,18 @@ function handleEvent(msg: Record<string, unknown>, st: StreamState, env: RunEnv,
       if (msg.type !== 'item.completed') return;
       if (isTool) {
         emit({ type: 'tool_result', id, name: toolCallOf(item).name, ...toolResultOf(item) });
+        if (item.type === 'command_execution') noteSkillUse(str(item.command), st, env);
       } else if (item.type === 'agent_message') {
         const text = str(item.text);
         if (text) {
           st.finalText = text;
           emit({ type: 'text', text });
+          noteSkillUse(text, st, env);
         }
       } else if (item.type === 'reasoning') {
         const text = str(item.text);
         if (text) emit({ type: 'thinking', text });
+        noteSkillUse(text, st, env);
       } else if (item.type === 'error') {
         st.lastError = str(item.message) || st.lastError;
         emit({ type: 'status', status: `codex: ${str(item.message)}` });
@@ -275,10 +314,13 @@ export class CodexLocalAdapter implements AgentAdapter {
       for (const w of writeAgentsSkills(ctx.workspacePath, ctx.skills)) env.emit({ type: 'status', status: w });
 
       const mcp = buildCodexMcpOverrides(ctx, cfg.mcpToolApproval);
-      const st: StreamState = { finalText: '', steps: 0, started: new Set(), turnCompleted: false };
+      const st: StreamState = { finalText: '', steps: 0, started: new Set(), turnCompleted: false, skillsUsed: new Set() };
+      // Process-level macOS sandbox (shared helper); it also switches off Codex's own, since seatbelt profiles do not nest.
+      const confined = codexSandbox(ctx, env.emit, buildCodexArgs(ctx, cfg, mcp.args), { env: { ...process.env, ...cfg.env } });
       const exit = await runJsonLines({
         command: cfg.command,
-        args: buildCodexArgs(ctx, cfg, mcp.args),
+        args: confined.args,
+        sandbox: confined.sandbox,
         cwd: ctx.workspacePath,
         env: minimalEnv(
           { ...cfg.env, ...mcp.env, ...(metered ? { CODEX_API_KEY: ctx.secrets.apiKey, OPENAI_API_KEY: ctx.secrets.apiKey } : {}) },

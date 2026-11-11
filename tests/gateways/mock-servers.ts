@@ -56,8 +56,8 @@ export interface TelegramMock extends MockHttp {
   /** Bot API calls by method name (getUpdates excluded). */
   of(method: string): Array<Record<string, unknown>>;
   offsets: number[];
-  pushMessage(chatId: number, userId: number, text: string): void;
-  pushCallback(chatId: number, userId: number, data: string, messageId: number): string;
+  pushMessage(chatId: number, userId: number, text: string, chatType?: string): void;
+  pushCallback(chatId: number, userId: number, data: string, messageId: number, chatType?: string): string;
 }
 
 export async function startTelegramMock(token = '123456789:AAFakeTelegramTokenForTestsOnly_abcdefgh'): Promise<TelegramMock> {
@@ -84,12 +84,13 @@ export async function startTelegramMock(token = '123456789:AAFakeTelegramTokenFo
     token,
     offsets,
     of: (method: string) => mock.calls.filter((c) => c.path.endsWith(`/${method}`)).map((c) => c.body),
-    pushMessage: (chatId: number, userId: number, text: string) => {
-      updates.push({ update_id: nextUpdate++, message: { message_id: nextMessage++, chat: { id: chatId }, from: { id: userId }, text } });
+    /** `chatType` as Telegram reports it: `private` (1:1 with the bot), `group`, `supergroup` or `channel`. */
+    pushMessage: (chatId: number, userId: number, text: string, chatType = 'private') => {
+      updates.push({ update_id: nextUpdate++, message: { message_id: nextMessage++, chat: { id: chatId, type: chatType }, from: { id: userId }, text } });
     },
-    pushCallback: (chatId: number, userId: number, data: string, messageId: number) => {
+    pushCallback: (chatId: number, userId: number, data: string, messageId: number, chatType = 'private') => {
       const id = `cb${nextUpdate}`;
-      updates.push({ update_id: nextUpdate++, callback_query: { id, from: { id: userId }, data, message: { message_id: messageId, chat: { id: chatId } } } });
+      updates.push({ update_id: nextUpdate++, callback_query: { id, from: { id: userId }, data, message: { message_id: messageId, chat: { id: chatId, type: chatType } } } });
       return id;
     },
   });

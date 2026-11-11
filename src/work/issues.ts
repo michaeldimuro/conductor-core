@@ -1,13 +1,14 @@
 import { and, asc, desc, eq, inArray, isNull, max, or, sql, type SQL } from 'drizzle-orm';
 import type { CreateIssueInput, IssueFilter } from '../contracts/org-work.js';
 import type { Actor } from '../contracts/types.js';
-import type { Issue } from '../contracts/rows.js';
-import { issues, playbooks } from '../db/schema/index.js';
+import type { Issue, Organization } from '../contracts/rows.js';
+import { issues, playbooks, projects } from '../db/schema/index.js';
 import type { IssueStatus } from '../db/schema/work.js';
 import { invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { parse, requireAgent, requireAssignable, requireOrg, type WorkCtx } from './context.js';
-import { activeGoalOfAgent, firstActiveOrgGoal, getGoal, getProject } from './goals.js';
+import { activeGoalOfAgent, ensureDefaultGoal, getGoal } from './goals.js';
+import { getProject } from './projects.js';
 import { actingAgent, assertCanAssign, assertCanTouch, assertMayCreateIssues } from './permissions.js';
 import { issueFilter, issueInput, issuePatch } from './schemas.js';
 import { CREATABLE_STATUSES, assertTransition, isClosed } from './status.js';
@@ -72,25 +73,33 @@ function validateBlockers(ctx: WorkCtx, orgId: string, ids: string[], selfId?: s
 }
 
 /**
- * Every issue traces to a goal: explicit → parent issue's → the assignee's
- * active goal → the creating agent's active goal → the org's first active
- * org-level goal → null.
+ * Every issue traces to a goal (PRD "Domain model"), so this never returns
+ * null: explicit → parent issue's → the project's → the assignee's active goal
+ * → the creating agent's active goal → the org's default goal (created on
+ * first use).
  */
 function resolveGoalId(
   ctx: WorkCtx,
-  orgId: string,
+  org: Organization,
   explicit: string | null | undefined,
-  parent: Issue | null,
-  assigneeId: string | null,
-  creatorAgentId: string | null,
-): string | null {
+  from: { parentGoalId: string | null; projectId: string | null; assigneeId: string | null; creatorAgentId: string | null },
+): string {
+  const orgId = org.id;
   if (explicit) return getGoal(ctx, orgId, explicit).id;
-  if (parent?.goalId) return parent.goalId;
-  for (const agentId of [assigneeId, creatorAgentId]) {
+  if (from.parentGoalId) return from.parentGoalId;
+  if (from.projectId) {
+    const project = ctx.kernel.db
+      .select({ goalId: projects.goalId })
+      .from(projects)
+      .where(and(eq(projects.orgId, orgId), eq(projects.id, from.projectId)))
+      .get();
+    if (project?.goalId) return project.goalId;
+  }
+  for (const agentId of [from.assigneeId, from.creatorAgentId]) {
     const goal = agentId ? activeGoalOfAgent(ctx, orgId, agentId) : null;
     if (goal) return goal.id;
   }
-  return firstActiveOrgGoal(ctx, orgId)?.id ?? null;
+  return ensureDefaultGoal(ctx, org).id;
 }
 
 export interface CreateIssueOptions {
@@ -107,21 +116,26 @@ export function createIssue(
 ): Issue {
   const input = parse(issueInput, raw);
   return ctx.tx(() => {
-    requireOrg(ctx, orgId);
+    const org = requireOrg(ctx, orgId);
     const agent = actingAgent(ctx, orgId, actor);
     const assigneeId = input.assigneeAgentId ?? null;
+    const parent = input.parentIssueId ? getIssue(ctx, orgId, input.parentIssueId) : null;
     if (!opts.preauthorized) {
-      assertMayCreateIssues(agent);
+      assertMayCreateIssues(agent, parent);
       if (assigneeId) assertCanAssign(ctx, orgId, agent, assigneeId);
     }
     if (assigneeId) requireAssignable(ctx, orgId, assigneeId);
     if (input.reviewerAgentId) requireAgent(ctx, orgId, input.reviewerAgentId);
 
-    const parent = input.parentIssueId ? getIssue(ctx, orgId, input.parentIssueId) : null;
     const projectId = input.projectId ? getProject(ctx, orgId, input.projectId).id : (parent?.projectId ?? null);
     if (input.playbookId) requirePlaybook(ctx, orgId, input.playbookId);
     const blockedBy = validateBlockers(ctx, orgId, input.blockedBy ?? []);
-    const goalId = resolveGoalId(ctx, orgId, input.goalId, parent, assigneeId, agent?.id ?? null);
+    const goalId = resolveGoalId(ctx, org, input.goalId, {
+      parentGoalId: parent?.goalId ?? null,
+      projectId,
+      assigneeId,
+      creatorAgentId: agent?.id ?? null,
+    });
 
     const status: IssueStatus = input.status ?? (assigneeId ? 'todo' : 'backlog');
     if (!(CREATABLE_STATUSES as readonly IssueStatus[]).includes(status)) {
@@ -285,7 +299,6 @@ export function updateIssue(
       blockedReason: patch.blockedReason,
     };
     if (patch.labels) changes.labels = [...new Set(patch.labels)];
-    if (patch.goalId !== undefined) changes.goalId = patch.goalId ? getGoal(ctx, orgId, patch.goalId).id : null;
     if (patch.projectId !== undefined) {
       changes.projectId = patch.projectId ? getProject(ctx, orgId, patch.projectId).id : null;
     }
@@ -301,6 +314,17 @@ export function updateIssue(
       changes.parentIssueId = patch.parentIssueId;
     }
     if (patch.blockedBy) changes.blockedBy = validateBlockers(ctx, orgId, patch.blockedBy, issueId);
+    // An issue is never left without a goal: clearing it (null) — or touching a
+    // legacy goal-less issue — falls back to the inherited/default goal.
+    if (patch.goalId !== undefined || issue.goalId === null) {
+      const parentId = changes.parentIssueId !== undefined ? changes.parentIssueId : issue.parentIssueId;
+      changes.goalId = resolveGoalId(ctx, requireOrg(ctx, orgId), patch.goalId, {
+        parentGoalId: parentId ? getIssue(ctx, orgId, parentId).goalId : null,
+        projectId: changes.projectId !== undefined ? changes.projectId : issue.projectId,
+        assigneeId: issue.assigneeAgentId,
+        creatorAgentId: issue.creatorKind === 'agent' ? issue.creatorId : null,
+      });
+    }
 
     let status = patch.status;
     if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== issue.assigneeAgentId) {

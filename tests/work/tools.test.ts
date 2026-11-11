@@ -42,7 +42,7 @@ describe('conductor-tasks tool provider', () => {
       [
         'inbox', 'get_issue', 'search_issues', 'create_issue', 'update_issue', 'comment', 'delegate', 'escalate',
         'report_progress', 'review_issue', 'list_goals', 'create_goal', 'list_team', 'propose_hire', 'reassign',
-        'request_approval', 'run_playbook', 'list_playbooks',
+        'request_approval', 'run_playbook', 'list_playbooks', 'propose_termination', 'propose_budget_change',
       ].sort(),
     );
     const reads = ['inbox', 'get_issue', 'search_issues', 'list_goals', 'list_team', 'list_playbooks'];
@@ -76,8 +76,10 @@ describe('conductor-tasks tool provider', () => {
     expect(l1).not.toContain('create_goal');
     expect(l2).toContain('create_goal');
     expect(l2).not.toContain('propose_hire');
+    expect(l2).not.toContain('propose_termination');
+    expect(l2).not.toContain('propose_budget_change');
     expect(l2).not.toContain('reassign');
-    expect(l3).toEqual(expect.arrayContaining(['propose_hire', 'reassign', 'create_goal']));
+    expect(l3).toEqual(expect.arrayContaining(['propose_hire', 'propose_termination', 'propose_budget_change', 'reassign', 'create_goal']));
     expect(l0.length).toBeLessThan(l1.length);
     expect(l1.length).toBeLessThan(l2.length);
     expect(l2.length).toBeLessThan(l3.length);
@@ -327,6 +329,65 @@ describe('conductor-tasks tool provider', () => {
     );
     expect(errorOf(await provider.call(toolCtx(f.lead), 'propose_hire', { name: 'Sam', role: 'SRE', reportsTo: 'ghost' }))).toMatch(/not_found/);
     expect(errorOf(await provider.call(toolCtx(f.lead), 'propose_hire', { name: 'Sam' }))).toMatch(/validation.*role/);
+  });
+
+  it('propose_termination and propose_budget_change go through the Org context\'s gated actions as the agent', async () => {
+    const terminateAgent = vi.fn<OrgService['terminateAgent']>((orgId) => ({
+      approval: fakeApproval({ orgId, kind: 'terminate_agent', title: 'Terminate June', requesterAgentId: f.lead.id }),
+    }));
+    const proposeBudgetChange = vi.fn<NonNullable<OrgService['proposeBudgetChange']>>((orgId) => ({
+      approval: fakeApproval({ orgId, kind: 'budget_raise', title: 'Set Dev budget', requesterAgentId: f.lead.id }),
+    }));
+    const gated = Object.assign(Object.create(org) as OrgService, { terminateAgent, proposeBudgetChange });
+    const provider = createTasksToolProvider(k, { work, org: gated, approvals });
+    const asLead = toolCtx(f.lead, { runId: 'run_g' });
+    const actor = { kind: 'agent', id: f.lead.id, runId: 'run_g' };
+
+    const fired = payloadOf<{ approval: { kind: string; status: string }; note: string }>(
+      await provider.call(asLead, 'propose_termination', { agent: 'june', reason: 'Duplicates the QA suite; key sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345' }),
+    );
+    expect(fired.approval).toMatchObject({ kind: 'terminate_agent', status: 'pending' });
+    expect(fired.note).toMatch(/only if the owner approves/);
+    expect(terminateAgent).toHaveBeenCalledWith(f.org.id, f.junior.id, actor, { reason: expect.stringContaining('[REDACTED]') });
+    expect(JSON.stringify(terminateAgent.mock.calls)).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(errorOf(await provider.call(asLead, 'propose_termination', { agent: 'ghost', reason: 'x' }))).toMatch(/not_found/);
+    expect(errorOf(await provider.call(asLead, 'propose_termination', { agent: 'june' }))).toMatch(/validation.*reason/);
+
+    const raise = payloadOf<{ approval: { kind: string } }>(
+      await provider.call(asLead, 'propose_budget_change', { scope: 'agent', target: 'dev', budgetUsd: 120, reason: 'More review load' }),
+    );
+    expect(raise.approval.kind).toBe('budget_raise');
+    expect(proposeBudgetChange).toHaveBeenLastCalledWith(f.org.id, { scope: 'agent', id: f.dev.id, budgetUsd: 120, reason: 'More review load' }, actor);
+    // Defaults: the caller itself, or its own department.
+    await provider.call(asLead, 'propose_budget_change', { scope: 'agent', budgetUsd: null, reason: 'Uncap' });
+    expect(proposeBudgetChange).toHaveBeenLastCalledWith(f.org.id, expect.objectContaining({ scope: 'agent', id: f.lead.id, budgetUsd: null }), actor);
+    await provider.call(asLead, 'propose_budget_change', { scope: 'dept', budgetUsd: 500, reason: 'Q3' });
+    expect(proposeBudgetChange).toHaveBeenLastCalledWith(f.org.id, expect.objectContaining({ scope: 'dept', id: f.eng.id }), actor);
+    expect(errorOf(await provider.call(asLead, 'propose_budget_change', { scope: 'agent', budgetUsd: -1, reason: 'x' }))).toMatch(/validation/);
+
+    // Below autonomy 3 the tools are refused before the Org context is asked.
+    expect(errorOf(await provider.call(toolCtx(f.dev), 'propose_termination', { agent: 'june', reason: 'x' }))).toMatch(/forbidden.*autonomy level 3/);
+    expect(errorOf(await provider.call(toolCtx(f.dev), 'propose_budget_change', { scope: 'agent', budgetUsd: 1, reason: 'x' }))).toMatch(/forbidden/);
+    expect(terminateAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('create_issue at autonomy 1 makes sub-issues of the agent\'s own work only', async () => {
+    const mine = work.createIssue(f.org.id, { title: 'Test the release', assigneeAgentId: f.junior.id }, OWNER);
+    const theirs = work.createIssue(f.org.id, { title: 'Build the release', assigneeAgentId: f.dev.id }, OWNER);
+
+    // Inside a run the parent defaults to the issue being worked on.
+    const sub = payloadOf<{ issue: Brief & { parentIssueId: string; goalId: string } }>(
+      await call(f.junior, 'create_issue', { title: 'Write regression cases' }, { issueId: mine.id }),
+    ).issue;
+    expect(sub.parentIssueId).toBe(mine.id);
+    expect(sub.goalId).toBe(work.getIssue(f.org.id, mine.id).goalId);
+    // …and a sub-issue of its own sub-issue is still its own work.
+    expect(payloadOf<{ issue: Brief }>(await call(f.junior, 'create_issue', { title: 'Deeper', parentIssue: sub.number })).issue.title).toBe('Deeper');
+
+    expect(errorOf(await call(f.junior, 'create_issue', { title: 'Free-floating' }))).toMatch(/forbidden.*autonomy 1.*sub-issues of its own work/);
+    expect(errorOf(await call(f.junior, 'create_issue', { title: 'Not mine', parentIssue: theirs.number }))).toMatch(/forbidden/);
+    // Autonomy 2 creates any issue.
+    expect(payloadOf<{ issue: Brief }>(await call(f.dev, 'create_issue', { title: 'Proactive' })).issue.title).toBe('Proactive');
   });
 
   it('reassign (autonomy 3) moves work within the reporting line', async () => {

@@ -2,12 +2,13 @@ import { and, asc, eq, inArray, lt, lte, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Kernel, UtilityModel } from '../contracts/kernel.js';
 import type { Issue, Memory, Run } from '../contracts/rows.js';
-import type { MemoryWriteInput, ReflectionResult } from '../contracts/services.js';
+import type { MemoryWriteInput, ReflectionResult, ReviewRegrade } from '../contracts/services.js';
 import type { Actor, RunGrade } from '../contracts/types.js';
 import { issues, memories, runEvents, runs, sessionSummaries } from '../db/schema/index.js';
 import { errorMessage, notFound } from '../shared/errors.js';
 import { slugify } from '../shared/ids.js';
 import { heuristicExtract, type ExtractedItem, type Extraction } from './heuristics.js';
+import { reviewNote, reviewOutcomeFor, reviewedRun } from './review.js';
 import { openSkillDraft, skillExists, type SkillDeps } from './skill-draft.js';
 import type { MemoryStore } from './store.js';
 import { fitTranscript, renderSteps, tag, toSteps, type TranscriptStep } from './transcript.js';
@@ -114,9 +115,66 @@ export class Reflector {
     return { grade, memoriesWritten: written, memoriesQueued: queued, skillCandidate, summary };
   }
 
+  /**
+   * A review verdict landed on the issue: re-grade the run it judged so scorecards and skill
+   * outcomes stop using the pre-review grade, and learn from the reviewer's correction.
+   * Idempotent: returns null when the stored grade already reflects the verdict.
+   */
+  async applyReview(orgId: string, issueId: string): Promise<ReviewRegrade | null> {
+    const { db } = this.kernel;
+    const issue = db.select().from(issues).where(and(eq(issues.orgId, orgId), eq(issues.id, issueId))).get();
+    if (!issue) throw notFound('issue', issueId);
+    const run = reviewedRun(this.kernel, issue);
+    if (!run) return null;
+    const previous = run.grade ?? null;
+    const grade = this.grade(run, issue);
+    if (grade.reviewOutcome === null || grade.reviewOutcome === 'pending') return null;
+    if (previous && previous.reviewOutcome === grade.reviewOutcome && previous.success === grade.success && previous.issueClosed === grade.issueClosed) return null;
+    db.update(runs).set({ grade }).where(and(eq(runs.orgId, orgId), eq(runs.id, run.id))).run();
+
+    const actor: Actor = { kind: 'system', id: 'reflection', runId: run.id };
+    const session = db.select({ summary: sessionSummaries.summary }).from(sessionSummaries).where(and(eq(sessionSummaries.orgId, orgId), eq(sessionSummaries.runId, run.id))).get();
+    if (session) await this.saveEpisode(orgId, run, issue, session.summary, grade, actor);
+
+    const corrected = grade.reviewOutcome === 'edited' || grade.reviewOutcome === 'rejected';
+    const note = corrected ? reviewNote(this.kernel, issue) : null;
+    let lessonId: string | null = null;
+    if (note) {
+      try {
+        const lesson = await this.store.write(
+          orgId,
+          {
+            scope: 'agent', scopeId: run.agentId, kind: 'lesson', taskType: issue.taskType ?? null, sourceRunId: run.id, author: 'reflection',
+            content: `Reviewer ${grade.reviewOutcome} the work on "${issue.title}": ${note.text}`,
+            confidence: note.byHuman ? 0.85 : 0.65, importance: 0.7,
+          },
+          actor,
+        );
+        lessonId = lesson.id;
+      } catch (e) {
+        this.kernel.log.warn({ orgId, runId: run.id, err: errorMessage(e) }, 'could not store the review lesson');
+      }
+    }
+
+    // "A correction from a human" is a skill-candidate trigger; only accepted-with-edits work is worth distilling.
+    let skillCandidate: ReflectionResult['skillCandidate'] = null;
+    if (grade.reviewOutcome === 'edited') {
+      const eventRows = db.select().from(runEvents).where(and(eq(runEvents.orgId, orgId), eq(runEvents.runId, run.id))).orderBy(asc(runEvents.seq)).all();
+      const steps = toSteps(eventRows.map((r) => (r.payload !== null && typeof r.payload === 'object' ? { type: r.type, ...(r.payload as object) } : { type: r.type })));
+      const lessons: ExtractedItem[] = note ? [{ content: `Reviewer correction: ${note.text}`, kind: 'lesson', entity: null, confidence: 0.85, importance: 0.7 }] : [];
+      skillCandidate = await this.skillCheck(orgId, run, issue, steps, { summary: session?.summary ?? '', facts: [], lessons, preferences: [] });
+    }
+
+    this.kernel.audit.record({
+      orgId, actor, action: 'run.regraded', entityKind: 'run', entityId: run.id, runId: run.id, issueId,
+      data: { grade, previous, lessonId, skillCandidate },
+    });
+    return { runId: run.id, agentId: run.agentId, issueId, grade, previous };
+  }
+
   private grade(run: Run, issue: Issue | null): RunGrade {
     const issueClosed = issue?.status === 'done';
-    const reviewOutcome: RunGrade['reviewOutcome'] = issue ? (issue.reviewOutcome ?? 'pending') : null;
+    const reviewOutcome = reviewOutcomeFor(this.kernel, run, issue);
     let costVsMedian: number | null = null;
     if (issue?.taskType) {
       const prior = this.kernel.db

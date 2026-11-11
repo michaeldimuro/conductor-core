@@ -45,6 +45,8 @@ export const issueHandlers: Handlers<IssueTools> = {
   },
 
   create_issue(env, ctx, args) {
+    // Autonomy 1 "creates its own sub-issues": without an explicit parent the new issue hangs off the current one.
+    const parentRef = args.parentIssue ?? (ctx.autonomyLevel === AUTONOMY.SUPERVISED ? (ctx.issueId ?? undefined) : undefined);
     const input: CreateIssueInput = {
       title: args.title,
       body: args.body,
@@ -56,7 +58,7 @@ export const issueHandlers: Handlers<IssueTools> = {
       labels: args.labels,
       assigneeAgentId: args.assignee ? resolveAgent(env, ctx, args.assignee).id : undefined,
       reviewerAgentId: args.reviewer ? resolveAgent(env, ctx, args.reviewer).id : undefined,
-      parentIssueId: args.parentIssue !== undefined ? resolveIssue(env, ctx, args.parentIssue).id : undefined,
+      parentIssueId: parentRef !== undefined ? resolveIssue(env, ctx, parentRef).id : undefined,
       blockedBy: args.blockedBy?.map((ref) => resolveIssue(env, ctx, ref).id),
     };
     return { issue: issueFull(env.work.createIssue(ctx.orgId, input, actorOf(ctx))) };

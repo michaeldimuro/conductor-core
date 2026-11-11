@@ -1,0 +1,8 @@
+{
+  "name": "conductor-adapter-example-echo",
+  "version": "1.0.0",
+  "description": "Example Conductor adapter plugin: copy this folder into ~/.conductor/adapters/ to install it.",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs"
+}

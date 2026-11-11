@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { verifyComposioSignature } from '../../connectors/composio-webhook.js';
 import { eq } from 'drizzle-orm';
 import type { Services } from '../../daemon/container.js';
 import type { Webhook } from '../../contracts/rows.js';
@@ -85,6 +86,12 @@ export function inboundWebhookRoutes(app: FastifyInstance, s: Services, opts: { 
       if (!verifySha256Header(secret, raw, header(req, 'x-hub-signature-256'))) reject(hook, 'bad signature');
     } else if (hook.source === 'stripe') {
       const res = verifyStripe(secret, raw, header(req, 'stripe-signature'), k.clock.now());
+      if (!res.ok) reject(hook, res.reason ?? 'bad signature');
+    } else if (hook.source === 'composio') {
+      const res = verifyComposioSignature(secret, raw, {
+        id: header(req, 'webhook-id'), timestamp: header(req, 'webhook-timestamp'),
+        signature: header(req, 'webhook-signature'), legacySignature: header(req, 'x-composio-signature'),
+      }, k.clock.now());
       if (!res.ok) reject(hook, res.reason ?? 'bad signature');
     } else if (!verifySha256Header(secret, raw, header(req, SIGNATURE_HEADER))) {
       reject(hook, 'bad signature');

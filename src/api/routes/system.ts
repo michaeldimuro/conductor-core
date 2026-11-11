@@ -10,7 +10,7 @@ import { errorMessage, invalid, notFound } from '../../shared/errors.js';
 import { body, param, parse, query, resolveOrg } from '../http.js';
 import { secretRef as secretRefSchema } from '../schemas/common.js';
 import * as q from '../schemas/capabilities.js';
-import type { BindingCheck, DoctorResponse, KillSwitchResponse, SecretStatus, SettingDto, StatusResponse } from '../types.js';
+import type { BindInfo, BindingCheck, DoctorResponse, KillSwitchResponse, SecretStatus, SettingDto, StatusResponse } from '../types.js';
 
 const httpUrl = z.string().max(2000).refine((v) => {
   try {
@@ -30,13 +30,16 @@ const SETTING_SCHEMAS: Record<string, z.ZodType> = {
 };
 
 /** Conventional key refs the runtime tries when a binding names no `authRef` (mirrors runtime binding resolution). */
-const DEFAULT_KEY_REFS: Record<string, (orgSlug: string) => string[]> = {
-  claude_api: (o) => [`org/${o}/anthropic-api-key`, 'conductor/anthropic-api-key'],
-  openai_api: (o) => [`org/${o}/openai-api-key`, 'conductor/openai-api-key'],
-};
+const DEFAULT_KEY_NAMES: Record<string, string> = { claude_api: 'anthropic-api-key', openai_api: 'openai-api-key' };
+/** `org/<slug>/<name>` first when an org is known, then the install-wide `conductor/<name>`. */
+export function defaultKeyRefs(adapterId: string, orgSlug?: string): string[] {
+  const name = DEFAULT_KEY_NAMES[adapterId];
+  if (!name) return [];
+  return [...(orgSlug ? [`org/${orgSlug}/${name}`] : []), `conductor/${name}`];
+}
 const TEST_TIMEOUT_MS = 20_000;
 
-export function systemRoutes(app: FastifyInstance, s: Services): void {
+export function systemRoutes(app: FastifyInstance, s: Services, bind: () => BindInfo): void {
   const k = s.kernel;
   const getSetting = (key: string): unknown => k.db.select().from(settings).where(eq(settings.key, key)).get()?.value ?? null;
   const settingSchema = (key: string): z.ZodType => {
@@ -49,7 +52,7 @@ export function systemRoutes(app: FastifyInstance, s: Services): void {
     const adapter = s.registry.get(adapterId);
     if (!adapter) return { ok: false, detail: 'adapter not installed' };
     const secrets: Record<string, string> = {};
-    const refs = cfg.authRef ? [cfg.authRef] : orgSlug ? (DEFAULT_KEY_REFS[adapterId]?.(orgSlug) ?? []) : [];
+    const refs = cfg.authRef ? [cfg.authRef] : defaultKeyRefs(adapterId, orgSlug);
     for (const ref of refs) {
       const v = await k.secrets.get(ref).catch(() => null);
       if (v) {
@@ -96,6 +99,7 @@ export function systemRoutes(app: FastifyInstance, s: Services): void {
     return {
       version: s.version,
       publicUrl: s.publicUrl(),
+      bind: bind(),
       runtime: s.runtime.status(),
       killSwitch: { global: s.governance.killSwitch.globalEngaged(), orgs: orgs.filter((o) => o.killSwitch).map((o) => o.id) },
       counts: {
@@ -122,6 +126,7 @@ export function systemRoutes(app: FastifyInstance, s: Services): void {
       baseUrl: s.baseUrl(),
       publicUrl,
       publicUrlConfigured: publicUrl !== s.baseUrl().replace(/\/+$/, ''),
+      bind: bind(),
       secretStore,
       adapters: s.registry.list(),
       runtime: s.runtime.status(),
@@ -183,9 +188,16 @@ export function systemRoutes(app: FastifyInstance, s: Services): void {
 
   /* ── Adapters ── */
   app.get('/adapters', async () => s.registry.list());
+  /** Load adapter plugins dropped into the plugin folder since start. */
+  app.post('/adapters/rescan', async () => {
+    if (!s.rescanAdapters) throw invalid('this daemon build cannot rescan adapter plugins');
+    return s.rescanAdapters();
+  });
   app.post('/adapters/:adapterId/test', async (req): Promise<Health> => {
     const id = param(req, 'adapterId');
     if (!s.registry.get(id)) throw notFound('adapter', id);
-    return testBinding(id, body(req, q.testAdapter));
+    // No explicit key: fall back to the conventional refs, exactly as a run would resolve them.
+    const { orgId, ...cfg } = body(req, q.testAdapter);
+    return testBinding(id, cfg, orgId ? resolveOrg(s, orgId).slug : undefined);
   });
 }

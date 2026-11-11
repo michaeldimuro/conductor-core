@@ -4,6 +4,7 @@
  * Protocol (Node IPC):
  *   parent → { type: 'start', job: WorkerJob, pluginDir }   (secrets travel here, in memory only)
  *   parent → { type: 'cancel' }
+ *   parent → { type: 'pause' } / { type: 'resume' }         (human takeover: wall clocks stop / restart)
  *   child  → { type: 'event', event: RunEvent }
  *   child  → { type: 'result', result: RunResult & { adapterId, model } }
  *   child  → { type: 'fatal', message }
@@ -14,9 +15,10 @@
 import type { RunEvent, RunResult } from '../contracts/adapter.js';
 import type { WorkerJob } from '../contracts/services.js';
 import { createAdapterRegistry, runChain, cancelRun } from '../adapters/index.js';
+import { pauseRunClock, resumeRunClock } from '../adapters/shared/guard.js';
 import { errorMessage } from '../shared/errors.js';
 
-export type ParentMessage = { type: 'start'; job: WorkerJob; pluginDir: string } | { type: 'cancel' };
+export type ParentMessage = { type: 'start'; job: WorkerJob; pluginDir: string } | { type: 'cancel' } | { type: 'pause' } | { type: 'resume' };
 export type ChildMessage =
   | { type: 'event'; event: RunEvent }
   | { type: 'result'; result: RunResult & { adapterId: string; model: string | null } }
@@ -41,6 +43,11 @@ async function main(): Promise<void> {
     const msg = raw as ParentMessage;
     if (msg.type === 'cancel') {
       void cancel();
+      return;
+    }
+    if (msg.type === 'pause' || msg.type === 'resume') {
+      // The adapters' wall-clock guards live in this process.
+      if (runId) (msg.type === 'pause' ? pauseRunClock : resumeRunClock)(runId);
       return;
     }
     if (msg.type !== 'start' || runId) return;

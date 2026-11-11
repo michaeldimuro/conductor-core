@@ -7,6 +7,7 @@ import type { Ctx } from '../context.js';
 import { action, flag } from '../command.js';
 import { SilentExit, isUnreachable, toCliError } from '../errors.js';
 import { clip, duration } from '../output.js';
+import { claudeLogin, codexLogin, type ProviderLogin } from '../provider-login.js';
 
 export type CheckStatus = 'ok' | 'fail' | 'warn' | 'skip';
 
@@ -60,13 +61,21 @@ function layoutDirs(ctx: Ctx): string[] {
 
 async function providerChecks(ctx: Ctx, client: ConductorClient | null, checks: Check[]): Promise<void> {
   const before = checks.length;
-  for (const [bin, adapter, hint] of [
-    ['claude', 'claude_local', 'install Claude Code (npm i -g @anthropic-ai/claude-code) and run `claude` once to log in'],
-    ['codex', 'codex_local', 'install the Codex CLI (npm i -g @openai/codex) and run `codex login`'],
+  for (const [bin, adapter, hint, loginFix, login] of [
+    ['claude', 'claude_local', 'install Claude Code (npm i -g @anthropic-ai/claude-code) and run `claude` once to log in', 'log in: claude auth login   (or run `claude` once)', claudeLogin],
+    ['codex', 'codex_local', 'install the Codex CLI (npm i -g @openai/codex) and run `codex login`', 'log in: codex login', codexLogin],
   ] as const) {
+    const id = `provider.${adapter}`;
     const res = await ctx.deps.exec(bin, ['--version'], { timeoutMs: 10_000 });
-    if (res.code === 0) checks.push({ id: `provider.${adapter}`, label: `${bin} CLI`, status: 'ok', detail: `${firstLine(res.stdout) || 'present'} (${adapter}; uses your local login)` });
-    else checks.push({ id: `provider.${adapter}`, label: `${bin} CLI`, status: 'warn', detail: res.code === 127 ? 'not installed' : `\`${bin} --version\` failed: ${clip(firstLine(res.stderr), 100)}`, fix: hint });
+    if (res.code !== 0) {
+      checks.push({ id, label: `${bin} CLI`, status: 'warn', detail: res.code === 127 ? 'not installed' : `\`${bin} --version\` failed: ${clip(firstLine(res.stderr), 100)}`, fix: hint });
+      continue;
+    }
+    // Installed is not enough: ask the CLI for its stored login (no prompt is run, nothing is billed).
+    const state: ProviderLogin = await login(ctx.deps);
+    const version = firstLine(res.stdout) || 'present';
+    if (state.loggedIn === 'no') checks.push({ id, label: `${bin} CLI`, status: 'warn', detail: `${version} (${adapter}; ${state.detail}, so agents bound to it cannot run)`, fix: loginFix });
+    else checks.push({ id, label: `${bin} CLI`, status: 'ok', detail: `${version} (${adapter}; ${state.detail})` });
   }
 
   const org = ctx.chosenOrg();
@@ -210,6 +219,16 @@ export async function runDoctor(ctx: Ctx, opts: { fix: boolean }): Promise<Check
     } catch (err) {
       checks.push({ id: 'auth', label: 'owner token', status: 'fail', detail: errText(ctx, err), fix: 'conductor restart   (re-issues the token)' });
     }
+  }
+
+  if (doc?.bind && !doc.bind.loopback) {
+    checks.push({
+      id: 'bind', label: 'network exposure', status: 'fail',
+      detail: `the daemon listens on ${doc.bind.host}: every device that can reach this Mac can reach the API`,
+      fix: 'unset CONDUCTOR_HOST (default 127.0.0.1), then: conductor restart   ·   for remote access use Tailscale serve or a Cloudflare Tunnel',
+    });
+  } else if (doc?.bind) {
+    checks.push({ id: 'bind', label: 'network exposure', status: 'ok', detail: `listening on ${doc.bind.host} only (loopback)` });
   }
 
   if (!doc) checks.push({ id: 'secrets', label: 'secret store', status: 'skip', detail: 'not checked (daemon unreachable)' });

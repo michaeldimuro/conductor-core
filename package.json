@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Local-first, always-on agent orchestration harness",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs && npm run build:ui",
+    "build": "tsc -p tsconfig.json --declaration && node scripts/copy-assets.mjs && npm run build:ui",
     "build:ui": "vite build --config ui/vite.config.ts",
     "typecheck": "tsc -p config/tsconfig.check.json",
     "test": "vitest run --config config/vitest.config.ts",
@@ -58,5 +58,17 @@
   "bin": {
     "conductor": "bin/conductor.mjs",
     "conductord": "bin/conductord.mjs"
-  }
+  },
+  "exports": {
+    "./adapters/sdk": {
+      "types": "./dist/adapters/sdk.d.ts",
+      "default": "./dist/adapters/sdk.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "examples"
+  ]
 }

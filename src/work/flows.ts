@@ -29,7 +29,7 @@ export function delegate(
     const parent = getIssue(ctx, orgId, parentIssueId);
     if (isClosed(parent.status)) throw conflict(`issue #${parent.number} is ${parent.status} and cannot be split`);
     const agent = actingAgent(ctx, orgId, actor);
-    assertMayCreateIssues(agent);
+    assertMayCreateIssues(agent, parent);
     assertCanTouch(ctx, orgId, agent, parent);
 
     // createIssue applies the reporting-line rule to each assignee.
@@ -145,6 +145,7 @@ export function review(
         ? { status: 'todo', reviewOutcome: 'rejected', reworkCount: issue.reworkCount + 1 }
         : { status: 'done', reviewOutcome: outcome };
     const updated = applyChanges(ctx, issue, changes, actor, { action: 'issue.reviewed', data: { outcome } });
+    ctx.emit('issue.reviewed', { orgId, issueId, outcome });
 
     const text = note?.trim();
     if (outcome === 'rejected') {

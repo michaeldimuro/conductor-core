@@ -42,6 +42,13 @@ export function recoverInFlight(k: Kernel, d: RuntimeDeps, journal: RunJournal, 
           resumed++;
         } else {
           d.work.addComment(run.orgId, issue.id, { body: `Run ${run.id} was interrupted by a daemon restart. Released back to todo.` }, SYSTEM);
+          // Released work must not wait for a heartbeat the agent may not have: wake its assignee again.
+          if (agent?.status === 'active' && issue.assigneeAgentId === agent.id) {
+            scheduler.wake(run.orgId, run.agentId, {
+              trigger: 'assignment', issueId: issue.id,
+              triggerNote: 'Your previous run on this issue was interrupted by a restart. Start it again.',
+            });
+          }
           released++;
         }
       }

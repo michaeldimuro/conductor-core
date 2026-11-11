@@ -3,11 +3,11 @@ import { departments } from '../db/schema/index.js';
 import type { Actor } from '../contracts/types.js';
 import type { Department, Organization } from '../contracts/rows.js';
 import type { CreateDeptInput, OrgService } from '../contracts/org-work.js';
-import { invalid } from '../shared/errors.js';
+import { conflict, invalid } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { assertBoard, type Ctx } from './context.js';
 import {
-  allocateSlug, assertSlugUnchanged, deptSlugTaken, findAgentRow, recordRevision, requireActiveOrg, requireDept, requireOrg,
+  allocateSlug, assertSlugUnchanged, deptSlugTaken, findAgentRow, listAgentRows, recordRevision, requireActiveOrg, requireDept, requireOrg,
 } from './repo.js';
 import { createDeptSchema, definedOnly, parse, updateDeptSchema, type CreateDeptParsed } from './schemas.js';
 
@@ -74,7 +74,10 @@ export function persistDept(
     entityId: dept.id,
     data: { change: 'dept.updated', revision, fields: Object.keys(set), ...data },
   });
-  ctx.after(() => k.bus.emit('org.updated', { orgId: dept.orgId }));
+  ctx.after(() => {
+    k.bus.emit('org.updated', { orgId: dept.orgId });
+    if ('budgetUsd' in set) k.bus.emit('budget.updated', { orgId: dept.orgId, scope: 'dept', scopeId: dept.id });
+  });
   return next;
 }
 
@@ -114,5 +117,36 @@ export function updateDept(
       leadAgentId: patch.leadAgentId,
     });
     return persistDept(ctx, dept, set, actor, 'updated');
+  });
+}
+
+/**
+ * Archive a department (never delete: issues, goals and history still point at
+ * it). Refused while it has non-terminated agents — move or terminate them
+ * first — so no agent is left working in a department that no longer exists.
+ */
+export function archiveDept(ctx: Ctx, orgId: string, deptId: string, actor: Actor): Department {
+  assertBoard(actor, 'archive departments');
+  return ctx.mutate(() => {
+    requireOrg(ctx.kernel, orgId);
+    const dept = requireDept(ctx.kernel, orgId, deptId);
+    if (dept.status === 'archived') return dept;
+    const staff = listAgentRows(ctx.kernel, orgId, { deptId, excludeTerminated: true });
+    if (staff.length > 0) {
+      throw conflict(`department ${dept.slug} still has ${staff.length} agent(s); move or terminate them before archiving`, {
+        agents: staff.map((a) => a.slug),
+      });
+    }
+    return persistDept(ctx, dept, { status: 'archived', leadAgentId: null }, actor, 'archived', { change: 'dept.archived' });
+  });
+}
+
+export function unarchiveDept(ctx: Ctx, orgId: string, deptId: string, actor: Actor): Department {
+  assertBoard(actor, 'unarchive departments');
+  return ctx.mutate(() => {
+    requireActiveOrg(ctx.kernel, orgId);
+    const dept = requireDept(ctx.kernel, orgId, deptId);
+    if (dept.status === 'active') return dept;
+    return persistDept(ctx, dept, { status: 'active' }, actor, 'unarchived', { change: 'dept.unarchived' });
   });
 }

@@ -132,6 +132,8 @@ export class MemoryIndex {
       for (let i = 0; i < missing.length; i += 64) {
         const batch = missing.slice(i, i + 64);
         const vecs = await this.embedder.embed(batch.map((m) => m.content));
+        // The embedder switched mid-sync (provider fallback): stop; `ready()` re-syncs against the new one.
+        if (this.embedder.id !== id || this.embedder.dims !== dims) return;
         const tx = sqlite.transaction(() => {
           batch.forEach((m, j) => {
             const v = vecs[j];
@@ -146,10 +148,16 @@ export class MemoryIndex {
   }
 
   async embed(text: string): Promise<Float32Array> {
-    await this.ready();
-    const [v] = await this.embedder.embed([text]);
-    if (!v || v.length !== this.embedder.dims) throw new Error('embedder returned an invalid vector');
-    return v;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await this.ready();
+      const key = `${this.embedder.id}|${this.embedder.dims}`;
+      const [v] = await this.embedder.embed([text]);
+      // The embedder may switch while embedding (provider fallback): re-sync the index and embed again.
+      if (`${this.embedder.id}|${this.embedder.dims}` !== key) continue;
+      if (!v || v.length !== this.embedder.dims) throw new Error('embedder returned an invalid vector');
+      return v;
+    }
+    throw new Error('embedder kept changing while embedding');
   }
 
   put(rowid: number, vec: Float32Array): void {

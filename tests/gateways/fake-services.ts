@@ -199,7 +199,7 @@ export interface MemoryPlatform {
   sent: Array<{ gatewayId: string; chatId: string; message: OutboundMessage }>;
   contexts: Map<string, AdapterContext>;
   stopped: string[];
-  /** Deliver an inbound message to a gateway and wait until the router is done with it. */
+  /** Deliver an inbound message to a gateway and wait until the router is done with it. A 1:1 chat unless `isGroup` is set. */
   receive(gatewayId: string, message: InboundMessage): Promise<void>;
   texts(chatId?: string): string[];
 }
@@ -229,7 +229,7 @@ export function createMemoryPlatform(opts: { kind?: GatewayKind; maxLength?: num
     receive: (gatewayId, message) => {
       const ctx = platform.contexts.get(gatewayId);
       if (!ctx) throw new Error(`gateway ${gatewayId} is not running`);
-      return ctx.emit(message);
+      return ctx.emit({ isGroup: false, ...message });
     },
     texts: (chatId) => platform.sent.filter((s) => chatId === undefined || s.chatId === chatId).map((s) => s.message.text),
   };

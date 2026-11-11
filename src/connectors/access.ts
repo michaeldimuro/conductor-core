@@ -27,6 +27,8 @@ interface AgentScope {
   orgSlug: string;
   agentId: string;
   servers: Server[];
+  /** Org policy: which toolkit source wins when Composio and Arcade both offer the same tool. */
+  toolkitDefault?: 'composio' | 'arcade';
 }
 
 export type Resolution =
@@ -35,6 +37,24 @@ export type Resolution =
   | { kind: 'auth'; connector: Connector; approval: Approval; authUrl: string | null };
 
 type Who = Pick<ToolCallContext, 'orgId' | 'agentId'> & Partial<Pick<ToolCallContext, 'runId' | 'issueId'>>;
+
+const toolKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Org policy `toolkitDefault`: when a Composio and an Arcade connector both
+ * offer the same tool to this agent, only the preferred source's copy is
+ * listed. (A call by exact name to the other one still resolves — the policy
+ * picks a default, it does not revoke a grant.) No policy → both are listed.
+ */
+export function preferToolkit<S extends { connector: Connector | null }>(
+  perServer: Array<{ server: S; tools: ToolEntry[] }>, preferred: 'composio' | 'arcade' | undefined,
+): Array<{ server: S; tools: ToolEntry[] }> {
+  if (!preferred) return perServer;
+  const other = preferred === 'composio' ? 'arcade' : 'composio';
+  const offered = new Set(perServer.filter((p) => p.server.connector?.kind === preferred).flatMap((p) => p.tools.map((t) => toolKey(t.def.name))));
+  if (offered.size === 0) return perServer;
+  return perServer.map((p) => (p.server.connector?.kind === other ? { server: p.server, tools: p.tools.filter((t) => !offered.has(toolKey(t.def.name))) } : p));
+}
 
 /**
  * Per-agent scoping: which servers an agent may reach and, for each, which
@@ -59,9 +79,15 @@ export class AccessResolver {
   private scope(orgId: string, agentId: string): AgentScope | null {
     let orgSlug: string;
     let refs: ReturnType<OrgService['resolveCapabilityRefs']>;
+    let deptId: string;
+    let toolkitDefault: 'composio' | 'arcade' | undefined;
     try {
-      orgSlug = this.store.org(orgId).slug;
-      if (this.deps.org.getAgent(orgId, agentId).orgId !== orgId) return null;
+      const org = this.store.org(orgId);
+      orgSlug = org.slug;
+      toolkitDefault = org.policies?.toolkitDefault;
+      const agent = this.deps.org.getAgent(orgId, agentId);
+      if (agent.orgId !== orgId) return null;
+      deptId = agent.deptId;
       refs = this.deps.org.resolveCapabilityRefs(orgId, agentId);
     } catch {
       return null;
@@ -81,12 +107,14 @@ export class AccessResolver {
     for (const row of rows) {
       if (row.kind === 'builtin' || row.status !== 'active' || this.builtins.has(row.name)) continue;
       if (denied.has(row.id)) continue;
+      // A department's connector never reaches another department, whatever grant or default points at it.
+      if (row.scope === 'dept' && row.scopeId !== deptId) continue;
       const grant = grants.get(row.id) ?? null;
       // An explicit grant row, or an implicit one through org defaults / department shared connectors.
       if (!grant && !inherited.has(row.id)) continue;
       servers.push({ name: row.name, connectorId: row.id, builtin: null, connector: row, grant });
     }
-    return { orgId, orgSlug, agentId, servers };
+    return { orgId, orgSlug, agentId, servers, toolkitDefault };
   }
 
   private credentials(scope: Pick<AgentScope, 'orgId' | 'orgSlug' | 'agentId'>, connector: Connector, grant: ConnectorGrant | null): CredentialContext {
@@ -166,7 +194,8 @@ export class AccessResolver {
         }
       }),
     );
-    for (const { server, tools } of perServer) {
+    const preferred = preferToolkit(perServer, scope.toolkitDefault);
+    for (const { server, tools } of preferred) {
       (!server.builtin && tools.length >= this.largeThreshold ? large : direct).push(...tools);
     }
     return { direct, large };

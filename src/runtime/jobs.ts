@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { jobs, type JobKind } from '../db/schema/index.js';
 import type { Kernel } from '../contracts/kernel.js';
 import type { Job } from '../contracts/rows.js';
@@ -10,8 +10,13 @@ export interface EnqueueInput {
   agentId?: string | null;
   payload?: Record<string, unknown>;
   runAt?: number;
-  /** At most one PENDING job per key. A second enqueue is a no-op (collapses bursts and missed heartbeats). */
+  /** At most one PENDING job per key. A second enqueue is a no-op (collapses bursts and missed heartbeats) unless `merge` is given. */
   dedupeKey?: string | null;
+  /**
+   * How a second enqueue for the same key combines with the pending job's
+   * payload, so the newcomer's data is kept rather than dropped.
+   */
+  merge?: (existing: Record<string, unknown>, incoming: Record<string, unknown>) => Record<string, unknown>;
   maxAttempts?: number;
 }
 
@@ -27,14 +32,17 @@ export class JobQueue {
     return this.k.sqlite.transaction(() => {
       if (input.dedupeKey) {
         const existing = this.k.db
-          .select({ id: jobs.id, runAt: jobs.runAt })
+          .select({ id: jobs.id, runAt: jobs.runAt, payload: jobs.payload })
           .from(jobs)
           .where(and(eq(jobs.dedupeKey, input.dedupeKey), eq(jobs.status, 'pending')))
           .get();
         if (existing) {
           // Pull an existing job earlier if the new request is more urgent.
-          const runAt = input.runAt ?? now;
-          if (runAt < existing.runAt) {
+          const runAt = Math.min(input.runAt ?? now, existing.runAt);
+          if (input.merge) {
+            const payload = input.merge(existing.payload ?? {}, input.payload ?? {});
+            this.k.db.update(jobs).set({ runAt, payload }).where(eq(jobs.id, existing.id)).run();
+          } else if (runAt < existing.runAt) {
             this.k.db.update(jobs).set({ runAt, payload: input.payload ?? {} }).where(eq(jobs.id, existing.id)).run();
           }
           return { id: existing.id, created: false };
@@ -110,12 +118,26 @@ export class JobQueue {
     }
   }
 
-  cancelPending(filter: { dedupeKey?: string; agentId?: string; kind?: JobKind }): number {
+  cancelPending(filter: { dedupeKey?: string; agentId?: string; orgId?: string; kind?: JobKind; kinds?: JobKind[] }): number {
     const where = [eq(jobs.status, 'pending')];
     if (filter.dedupeKey) where.push(eq(jobs.dedupeKey, filter.dedupeKey));
     if (filter.agentId) where.push(eq(jobs.agentId, filter.agentId));
+    if (filter.orgId) where.push(eq(jobs.orgId, filter.orgId));
     if (filter.kind) where.push(eq(jobs.kind, filter.kind));
+    if (filter.kinds?.length) where.push(inArray(jobs.kind, filter.kinds));
     return this.k.db.update(jobs).set({ status: 'cancelled', finishedAt: this.k.clock.now() }).where(and(...where)).run().changes;
+  }
+
+  /**
+   * Make deferred jobs due now (the cause they were waiting on cleared).
+   * `orgId: null` matches every org.
+   */
+  pullForward(filter: { kind: JobKind; agentId?: string; orgId?: string | null }): number {
+    const now = this.k.clock.now();
+    const where = [eq(jobs.status, 'pending'), eq(jobs.kind, filter.kind), gt(jobs.runAt, now)];
+    if (filter.agentId) where.push(eq(jobs.agentId, filter.agentId));
+    if (filter.orgId) where.push(eq(jobs.orgId, filter.orgId));
+    return this.k.db.update(jobs).set({ runAt: now }).where(and(...where)).run().changes;
   }
 
   pendingByKey(dedupeKey: string): Job | undefined {

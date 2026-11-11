@@ -19,6 +19,8 @@ export interface UpstreamTool {
 export interface UpstreamResult {
   content: ToolContent[];
   isError?: boolean;
+  /** Cost of this call in USD when the upstream reports one (MCP result `_meta`). */
+  costUsd?: number;
 }
 
 /** One live connection to an upstream tool source (MCP server or wrapped OpenAPI spec). */

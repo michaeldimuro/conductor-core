@@ -7,16 +7,24 @@ export interface DomainEvents {
   'org.created': { orgId: string };
   'org.updated': { orgId: string };
   'org.kill_switch': { orgId: string | null; engaged: boolean };
+  /** The org was archived: its in-flight runs are cancelled and nothing more is scheduled for it. */
+  'org.archived': { orgId: string };
+  'org.unarchived': { orgId: string };
   'agent.hired': { orgId: string; agentId: string };
   'agent.updated': { orgId: string; agentId: string };
   'agent.paused': { orgId: string; agentId: string; reason: string };
   'agent.resumed': { orgId: string; agentId: string };
   'goal.created': { orgId: string; goalId: string };
   'goal.updated': { orgId: string; goalId: string };
+  'goal.deleted': { orgId: string; goalId: string };
+  'project.updated': { orgId: string; projectId: string };
+  'playbook.changed': { orgId: string; playbookId: string; change: 'updated' | 'deleted' | 'restored' };
   'issue.created': { orgId: string; issueId: string; assigneeAgentId: string | null };
   'issue.assigned': { orgId: string; issueId: string; agentId: string };
   'issue.updated': { orgId: string; issueId: string; status: string };
   'issue.done': { orgId: string; issueId: string };
+  /** A reviewer's verdict on an in_review issue (feeds run grading, scorecards and skill adaptation). */
+  'issue.reviewed': { orgId: string; issueId: string; outcome: 'accepted' | 'edited' | 'rejected' };
   'comment.created': { orgId: string; issueId: string; commentId: string; mentions: string[] };
   'approval.requested': { orgId: string; approvalId: string; kind: string };
   'approval.decided': { orgId: string; approvalId: string; status: 'approved' | 'denied'; requesterAgentId: string | null };
@@ -25,7 +33,11 @@ export interface DomainEvents {
   'run.paused': { orgId: string; runId: string; reason: string };
   'run.resumed': { orgId: string; runId: string };
   'run.finished': { orgId: string; runId: string; agentId: string; issueId: string | null; outcome: string };
+  /** A wake produced no run. `deferredUntil` is set when the wake was kept and will be retried. */
+  'run.skipped': { orgId: string; agentId: string; jobId: string | null; trigger: string; code: string; reason: string; deferredUntil: number | null };
   'budget.alert': { orgId: string; level: 'soft' | 'hard'; scope: string; scopeId: string; pct: number };
+  /** A budget cap was created, raised, lowered or removed (budget-paused agents may be resumable). */
+  'budget.updated': { orgId: string; scope: string; scopeId: string };
   'skill.changed': { orgId: string | null; skillId: string; status: string };
   'memory.written': { orgId: string; memoryId: string };
   'browser.human_requested': { orgId: string; runId: string; sessionId: string; reason: string };

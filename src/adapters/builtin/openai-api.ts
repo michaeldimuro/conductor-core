@@ -5,7 +5,7 @@ import { AdapterError, kindFromStatus } from '../shared/errors.js';
 import { ActiveRuns, withRun } from '../shared/guard.js';
 import type { McpTool } from '../shared/mcp-tools.js';
 import { runMcpToolLoop, type ModelToolCall, type ModelTurn, type ToolLoopDriver, type ToolReturn } from '../shared/tool-loop.js';
-
+import { conductorSessionId, resumeHistoryOf, resumePreamble, type ResumeHistory } from './resume-history.js';
 
 export const OPENAI_API_DEFAULT_MODEL = 'gpt-5.5';
 
@@ -17,7 +17,7 @@ const configSchema = z.object({
   maxRetries: z.number().int().min(0).max(10).default(2),
   organization: z.string().optional(),
   project: z.string().optional(),
-  /** Conductor transcript to resume from: Responses API input items from an earlier run. */
+  /** Explicit Responses API input items to start from (overrides the history rebuilt from `RunContext.priorEvents` on resume). */
   priorMessages: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 type Config = z.infer<typeof configSchema>;
@@ -31,7 +31,7 @@ export const openaiApiConfigJsonSchema: Record<string, unknown> = {
     maxRetries: { type: 'integer', minimum: 0, maximum: 10, default: 2 },
     organization: { type: 'string' },
     project: { type: 'string' },
-    priorMessages: { type: 'array', description: 'Responses API input items to resume from (Conductor transcript).' },
+    priorMessages: { type: 'array', description: 'Explicit Responses API input items to start from. Normally unset: a resumed run rebuilds its input from the journaled transcript.' },
     pricing: { type: 'object', description: 'USD per MTok: { input, output, cacheRead? } or a per-model map.' },
   },
 };
@@ -103,6 +103,9 @@ class OpenAIDriver implements ToolLoopDriver {
   }
 
   start(tools: McpTool[]): void {
+    // Resume: rebuild the input from Conductor's journaled transcript (explicit `priorMessages` wins).
+    const history = this.cfg.priorMessages ? null : resumeHistoryOf(this.ctx, tools);
+    if (history) this.input.splice(0, this.input.length, ...resumeInput(history, this.ctx.prompt));
     this.tools = tools.map((t) => ({
       type: 'function',
       name: t.name,
@@ -209,6 +212,24 @@ class OpenAIDriver implements ToolLoopDriver {
 }
 
 /**
+ * Responses API input for a resumed run: preamble, each journaled turn as an assistant message
+ * plus `function_call` / `function_call_output` pairs, and the task last. Items carry no `id`, so
+ * they stand alone without the (un-journaled) reasoning items of the interrupted run.
+ */
+export function resumeInput(history: ResumeHistory, prompt: string): OpenAI.Responses.ResponseInputItem[] {
+  const input: OpenAI.Responses.ResponseInputItem[] = [{ role: 'user', content: resumePreamble(history) }];
+  for (const turn of history.turns) {
+    if (turn.text.trim()) input.push({ role: 'assistant', content: turn.text });
+    for (const c of turn.calls) {
+      input.push({ type: 'function_call', call_id: c.id, name: c.name, arguments: JSON.stringify(c.input) });
+      input.push({ type: 'function_call_output', call_id: c.id, output: `${c.isError ? 'ERROR: ' : ''}${c.output}` });
+    }
+  }
+  input.push({ role: 'user', content: prompt });
+  return input;
+}
+
+/**
  * `openai_api` — OpenAI Responses API with the loop owned by Conductor.
  * Gateway MCP tools are exposed as function tools.
  */
@@ -236,6 +257,11 @@ export class OpenAIApiAdapter implements AgentAdapter {
     return withRun(this.active, ctx, onEvent, { metered: true }, async (env) => {
       const cfg = parseConfig(ctx.config);
       const client = createClient(cfg, ctx.secrets);
+      // The journal is the session: recovery hands this id back together with `priorEvents`.
+      env.emit({ type: 'session', sessionId: conductorSessionId(ctx.runId) });
+      if (ctx.resumeSessionId && !cfg.priorMessages && !ctx.priorEvents?.length) {
+        env.emit({ type: 'status', status: 'resume requested but no prior transcript was supplied; starting from the task prompt' });
+      }
       return runMcpToolLoop(env, new OpenAIDriver(client, ctx, cfg));
     });
   }

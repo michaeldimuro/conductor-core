@@ -66,4 +66,5 @@ export function createConnectorGateway(kernel: Kernel, deps: ConnectorGatewayDep
 
 export { createFilesToolProvider } from './files/provider.js';
 export { connectorCatalog } from './catalog.js';
+export { verifyComposioSignature, signComposioWebhook, type ComposioWebhookHeaders, type ComposioVerification } from './composio-webhook.js';
 export type { GatewayOptions } from './types.js';

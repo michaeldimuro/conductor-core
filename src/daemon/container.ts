@@ -1,5 +1,5 @@
 import type { KernelHandle } from '../kernel/index.js';
-import type { AdapterRegistry } from '../contracts/adapter.js';
+import type { AdapterRegistry, AdapterRescanResult } from '../contracts/adapter.js';
 import type { OrgService, WorkService } from '../contracts/org-work.js';
 import type { BrowserService, ConnectorGateway, Governance, MemoryService, SkillService } from '../contracts/services.js';
 import type { Embedder, UtilityModel } from '../contracts/kernel.js';
@@ -21,6 +21,11 @@ export interface Services {
   browser: BrowserService;
   runtime: Runtime;
   registry: AdapterRegistry;
+  /**
+   * Re-scan the adapter plugin directory now and report what changed
+   * (`conductor adapter rescan` / after `conductor adapter install`).
+   */
+  rescanAdapters?(): Promise<AdapterRescanResult>;
   utility: UtilityModel;
   embedder: Embedder;
   /** Base URL of the local API, e.g. http://127.0.0.1:7420 */

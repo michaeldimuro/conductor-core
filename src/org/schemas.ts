@@ -34,6 +34,7 @@ const policiesSchema = z.strictObject({
   approvalOverrides: z.partialRecord(z.enum(DEFAULT_GATED_ACTIONS), z.boolean()).optional(),
   extraGated: z.array(z.string().min(1).max(100)).max(100).optional(),
   approvalSpendThresholdUsd: z.number().finite().nonnegative().optional(),
+  approvalExpiryHours: z.number().finite().min(0).max(8760).optional(),
   deptSkillPromotion: z.enum(['lead', 'auto']).optional(),
   ownerApprovesOrgSkillPromotion: z.boolean().optional(),
   networkAllowlist: z.array(z.string().min(1).max(300)).max(500).optional(),
@@ -122,6 +123,14 @@ export const fromTemplateSchema = z.strictObject({
 });
 
 export const pauseReasonSchema = z.string().trim().min(1).max(500);
+export const reasonSchema = z.string().trim().min(1).max(2000);
+
+export const budgetChangeSchema = z.strictObject({
+  scope: z.enum(['agent', 'dept']),
+  id: z.string().min(1).max(200),
+  budgetUsd: usd,
+  reason: reasonSchema.optional(),
+});
 
 export type CreateOrgParsed = z.infer<typeof createOrgSchema>;
 export type UpdateOrgParsed = z.infer<typeof updateOrgSchema>;
@@ -130,6 +139,7 @@ export type UpdateDeptParsed = z.infer<typeof updateDeptSchema>;
 export type HireAgentParsed = z.infer<typeof hireAgentSchema>;
 export type AgentExtras = z.infer<typeof agentExtrasSchema>;
 export type UpdateAgentParsed = z.infer<typeof updateAgentSchema>;
+export type BudgetChangeParsed = z.infer<typeof budgetChangeSchema>;
 
 /** Parse boundary input; failures become `validation` ConductorErrors. */
 export function parse<S extends z.ZodType>(schema: S, input: unknown, what: string): z.infer<S> {

@@ -4,8 +4,9 @@ import { skills, skillVersions } from '../db/schema/index.js';
 import type { Kernel } from '../contracts/kernel.js';
 import type { Skill } from '../contracts/rows.js';
 import type { Actor, SkillEvalResult } from '../contracts/types.js';
-import { invalid } from '../shared/errors.js';
+import { errorMessage, invalid } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
+import { syncEvalCases } from './eval-cases.js';
 import { hashSkillDir, readSkillMd, assertDescription } from './format.js';
 import { hasBlockingFinding, scanSkillDir, type ScanFinding } from './scan.js';
 import type { SkillGit } from './git.js';
@@ -131,6 +132,12 @@ export class SkillWriter {
       });
 
       const skill = kernel.db.select().from(skills).where(eq(skills.id, id)).get() as Skill;
+      try {
+        // Eval cases follow every write: the folder's explicit cases and the issue the write came from.
+        syncEvalCases(kernel, skill, { issueId: req.issueId ?? (existing ? null : (req.create?.originIssueId ?? null)) });
+      } catch (e) {
+        kernel.log.warn({ skillId: id, err: errorMessage(e) }, 'could not sync skill eval cases');
+      }
       this.announce(skill, req.actor, {
         change: req.change,
         runId,

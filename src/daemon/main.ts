@@ -7,12 +7,10 @@
  * Exit codes matter: launchd's KeepAlive={SuccessfulExit:false} restarts us on
  * any non-zero exit (crash) but not after a clean, requested shutdown (0).
  */
-import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { createServices } from './compose.js';
-import { createApiServer } from '../api/index.js';
-import { startGateways } from '../gateways/index.js';
+import { readFileSync, existsSync } from 'node:fs';
 import { VERSION } from './container.js';
+import { SHUTDOWN_BUDGET_MS } from './lifecycle.js';
+import { startDaemon } from './server.js';
 
 async function serve(): Promise<void> {
   // Headless profile: the vault passphrase lives in a root-only key file, never in the plist.
@@ -21,39 +19,25 @@ async function serve(): Promise<void> {
     process.env.CONDUCTOR_VAULT_KEY = readFileSync(keyFile, 'utf8').trim();
   }
 
-  const services = await createServices({ browserHeadless: true });
-  const { kernel, config } = services;
-  const log = kernel.log;
-  // PRD on-disk layout: present from first start, not created lazily by whichever feature runs first.
-  for (const dir of [kernel.paths.adapters, kernel.paths.globalSkills, join(kernel.paths.home, 'orgs'), kernel.paths.backups, kernel.paths.logs]) kernel.paths.ensure(dir);
-  // The CLI and first-run UI pairing authenticate with the owner token on disk (0600).
-  services.governance.tokens.ownerTokenFile();
-  const pidFile = join(kernel.paths.ensure(kernel.paths.runDir), 'conductord.pid');
-
-  // Messaging gateways contribute their own HTTP routes (Slack events, etc.) as a plugin.
-  const gateways = await startGateways(services);
-  const api = await createApiServer(services, { plugins: [gateways.routes], gateways });
-  await api.listen(config.host, config.port);
-  // Runs are only dispatched once the API (and with it the MCP gateway endpoint) is up.
-  await services.runtime.start();
-  writeFileSync(pidFile, String(process.pid));
-  log.info({ port: config.port, host: config.host, home: kernel.paths.home, version: VERSION }, 'conductord ready');
+  const daemon = await startDaemon();
+  const log = daemon.services.kernel.log;
+  // What FR-1 is measured against: process launch → API reachable.
+  log.info({ sinceProcessStartMs: Math.round(process.uptime() * 1000), startupMs: daemon.startupMs }, 'conductord start time');
 
   let stopping = false;
   const shutdown = async (signal: string, code: number) => {
     if (stopping) return;
     stopping = true;
-    log.info({ signal }, 'conductord shutting down');
-    const force = setTimeout(() => process.exit(code || 1), 20_000);
+    log.info({ signal, budgetMs: SHUTDOWN_BUDGET_MS }, 'conductord shutting down');
+    // Backstop: stop() is time-boxed itself; this only fires if something blocks the event loop's exit path.
+    const force = setTimeout(() => process.exit(code || 1), SHUTDOWN_BUDGET_MS + 1_000);
     force.unref();
     try {
-      await gateways.stop();
-      await api.close();
-      await services.close();
+      const report = await daemon.stop();
+      log.info(report, 'conductord stopped');
     } catch (err) {
       log.error({ err }, 'error during shutdown');
     }
-    rmSync(pidFile, { force: true });
     process.exit(code);
   };
 

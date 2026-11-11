@@ -10,6 +10,7 @@ const policies = z.strictObject({
   approvalOverrides: z.partialRecord(z.enum(DEFAULT_GATED_ACTIONS), z.boolean()).optional(),
   extraGated: z.array(z.string().min(1).max(100)).max(100).optional(),
   approvalSpendThresholdUsd: z.number().finite().nonnegative().optional(),
+  approvalExpiryHours: z.number().finite().min(0).max(8760).optional(),
   deptSkillPromotion: z.enum(['lead', 'auto']).optional(),
   ownerApprovesOrgSkillPromotion: z.boolean().optional(),
   networkAllowlist: z.array(z.string().min(1).max(300)).max(500).optional(),
@@ -126,6 +127,7 @@ export const createProject = z.strictObject({
   workspacePath: z.string().min(1).max(2000).nullable().optional(),
   budgetUsd: usd.optional(),
 });
+export const updateProject = createProject.partial().extend({ status: z.enum(['active', 'archived']).optional() });
 
 /* ── Issues ── */
 const issueStatus = z.enum(ISSUE_STATUSES);
@@ -187,6 +189,7 @@ export const createPlaybook = z.strictObject({
     .min(1)
     .max(100),
 });
+export const updatePlaybook = createPlaybook.partial();
 export const runPlaybook = z.strictObject({ issueId: idStr });
 
 /* ── Runs / approvals / budgets / activity ── */

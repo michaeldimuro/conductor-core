@@ -18,7 +18,7 @@ import { newId } from '../../src/shared/ids.js';
 
 type AnyFn = (...args: never[]) => unknown;
 /** Every method of T as a vitest mock; methods without an implementation are created on first use. */
-export type Stub<T> = { [K in keyof T]: T[K] extends AnyFn ? Mock<T[K]> : T[K] };
+export type Stub<T> = { [K in keyof T]-?: NonNullable<T[K]> extends AnyFn ? Mock<NonNullable<T[K]>> : T[K] };
 
 /** London-style collaborator: implemented methods are spies, everything else is a lazily created `vi.fn()`. */
 export function stub<T extends object>(impl: Partial<T> = {}): Stub<T> {

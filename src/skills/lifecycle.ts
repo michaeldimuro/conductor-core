@@ -125,6 +125,7 @@ export async function activateLocked(ctx: SkillCtx, skillId: string, actor: Acto
   if (!force) {
     const ev = ctx.store.version(skill.id, skill.version)?.eval;
     if (!ev) throw policyDenied('skill has not been evaluated; run evaluate first (or force-activate as the owner)', { skillId });
+    if (ev.needsReview) throw policyDenied('skill evaluation was inconclusive and needs human review (the owner can force-activate)', { skillId, score: ev.score, needsReview: true });
     if (!ev.passed) throw policyDenied('skill did not beat the baseline in its evaluation', { skillId, score: ev.score });
   }
   return ctx.writer.changeStatus(skill, 'active', actor, force ? 'force_activated' : 'activated', { forced: force });

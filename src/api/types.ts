@@ -14,6 +14,7 @@ import type {
 import type {
   AgentScorecard, BudgetService, BudgetStatus, ConnectorTemplate, GrantInput, InstallConnectorInput, MemoryWriteInput, MemoryService,
   Principal, RuntimeService, ScoredMemory, BrowserInputEvent, ConnectorGateway, SkillService, BrowserService,
+  BrowserEngineConfig, BrowserProfileSettings, ExternalBackendConfig, ExternalBackendStatus, RunSkip,
 } from '../contracts/services.js';
 import type { AdapterRegistry, Health as AdapterHealth, RunEvent } from '../contracts/adapter.js';
 import type { AuditLog, AuditRecord } from '../contracts/kernel.js';
@@ -27,6 +28,7 @@ export type {
   CreateOrgInput, CreateDeptInput, HireAgentInput, CreateGoalInput, CreateIssueInput, IssueFilter, OrgChartNode, CapabilityRefs,
   OrgTemplate, OrgBundle, GoalNode, TimelineEntry, AgentScorecard, BudgetStatus, ConnectorTemplate, GrantInput, InstallConnectorInput,
   ScoredMemory, BrowserInputEvent, AuditRecord, ProviderBinding, SkillEvalResult, ToolDef, ToolResult, RunEvent, Principal, AdapterHealth,
+  BrowserEngineConfig, BrowserProfileSettings, ExternalBackendConfig, ExternalBackendStatus, RunSkip,
 };
 
 export const API_PREFIX = '/api/v1';
@@ -53,9 +55,15 @@ export interface HealthResponse {
   version: string;
   uptimeMs: number;
 }
+/** The interface the daemon listens on. Anything but loopback exposes the API to the network. */
+export interface BindInfo {
+  host: string;
+  loopback: boolean;
+}
 export interface StatusResponse {
   version: string;
   publicUrl: string;
+  bind: BindInfo;
   runtime: ReturnType<RuntimeService['status']>;
   killSwitch: { global: boolean; orgs: string[] };
   counts: { orgs: number; agents: number; pendingApprovals: number };
@@ -74,6 +82,7 @@ export interface DoctorResponse {
   baseUrl: string;
   publicUrl: string;
   publicUrlConfigured: boolean;
+  bind: BindInfo;
   secretStore: { reachable: boolean; detail?: string };
   adapters: AdapterInfo[];
   runtime: ReturnType<RuntimeService['status']>;
@@ -96,6 +105,8 @@ export interface TestAdapterRequest {
   config?: Record<string, unknown>;
   authRef?: string | null;
   model?: string | null;
+  /** Without `authRef`: try this org's conventional key ref before the install-wide one. */
+  orgId?: string;
 }
 
 /* ── Auth ── */
@@ -147,7 +158,10 @@ export interface RunNowRequest {
   prompt?: string;
 }
 export interface RunNowResponse {
+  /** Empty when nothing was queued (see `skipped`). */
   jobId: string;
+  /** Why no run starts right now; a `temporary` cause leaves the wake queued. */
+  skipped?: RunSkip;
 }
 export interface ChatRequest {
   message: string;
@@ -161,6 +175,8 @@ export interface ChatResponse {
 /* ── Work ── */
 export type UpdateGoalRequest = Parameters<WorkService['updateGoal']>[2];
 export type CreateProjectRequest = Parameters<WorkService['createProject']>[1];
+export type UpdateProjectRequest = Parameters<NonNullable<WorkService['updateProject']>>[2];
+export type UpdatePlaybookRequest = Parameters<NonNullable<WorkService['updatePlaybook']>>[2];
 export type UpdateIssueRequest = Parameters<WorkService['updateIssue']>[2];
 export type CreatePlaybookRequest = Parameters<WorkService['createPlaybook']>[1];
 export interface ListIssuesQuery extends Omit<IssueFilter, 'parentIssueId'> {
@@ -211,6 +227,10 @@ export type ListMemoryQuery = NonNullable<Parameters<MemoryService['list']>[1]>;
 export type WriteMemoryRequest = Omit<MemoryWriteInput, 'sourceRunId' | 'author'>;
 export type UpdateMemoryRequest = Parameters<MemoryService['update']>[2];
 export type SessionHit = ReturnType<MemoryService['searchSessions']>[number];
+export interface MemoryBackendResponse {
+  /** Null when the org uses local memory only. Never contains the key, only its secret ref. */
+  backend: ExternalBackendStatus | null;
+}
 
 /* ── Connectors / browser ── */
 export type UpdateConnectorRequest = Parameters<ConnectorGateway['update']>[2];
@@ -221,10 +241,30 @@ export interface GrantResponse {
   approval?: Approval;
 }
 export type BrowserSessionDto = Omit<BrowserSession, 'tokenHash' | 'viewerId'>;
+/** The profile row plus the settings that have no column (engine, headed mode, 1Password vaults). */
+export type BrowserProfileDto = Omit<BrowserProfile, 'engine' | 'headed'> & BrowserProfileSettings;
+/** A freshly minted single-use takeover link. Shown once; only its hash is stored. */
+export interface TakeoverLinkResponse {
+  sessionId: string;
+  /** Absolute link on the public (tunnel) URL, for another device. */
+  url: string;
+  /** The same link as a path on whatever origin the caller is using. */
+  path: string;
+  expiresAt: number;
+}
 export type CreateProfileRequest = Parameters<BrowserService['createProfile']>[1];
 export type UpdateProfileRequest = Parameters<BrowserService['updateProfile']>[2];
 
 /* ── Gateways / webhooks ── */
+export interface GatewayStatusDto {
+  id: string;
+  kind: string;
+  status: string;
+  lastError: string | null;
+}
+export interface PairingCodeResponse {
+  code: string;
+}
 export interface CreateGatewayRequest {
   orgId?: string | null;
   kind: Gateway['kind'];

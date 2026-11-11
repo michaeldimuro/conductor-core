@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { Memory, UpdateMemoryRequest } from '../../api/types.js';
 import type { CliDeps } from '../deps.js';
 import type { Ctx } from '../context.js';
-import { action, arg, choice, choices, compact, flag, isEmpty, num, str } from '../command.js';
+import { action, arg, choice, choices, compact, flag, isEmpty, list, num, oneOf, str } from '../command.js';
 import { UsageError } from '../errors.js';
 import { ago, clip } from '../output.js';
 import { resolveAgent } from '../resolve.js';
@@ -10,6 +10,7 @@ import { resolveAgent } from '../resolve.js';
 const KINDS = ['profile', 'owner_model', 'procedural', 'semantic', 'episodic', 'lesson'] as const;
 const SCOPES = ['org', 'dept', 'agent'] as const;
 const STATUSES = ['active', 'review', 'superseded', 'forgotten'] as const;
+const BACKENDS = ['honcho', 'mem0', 'zep', 'supermemory'] as const;
 
 function showMemory(ctx: Ctx, m: Memory): void {
   ctx.fields([
@@ -165,5 +166,52 @@ export function memoryCommands(program: Command, deps: CliDeps): void {
       if (next === current.content) return ctx.emit(current, () => ctx.line(ctx.style.dim('no changes')));
       const saved = await ctx.client().putOwnerModel(o, next);
       ctx.emit(saved, () => ctx.ok(`owner model updated (${saved.content.length} characters)`));
+    }));
+
+  const backend = memory.command('backend').description('optional external memory backend for an org (Honcho, Mem0, Zep, Supermemory); local memory always stays on');
+
+  backend
+    .command('show')
+    .description('show the org\'s external memory backend')
+    .action(action(deps, async (ctx) => {
+      const { backend: b } = await ctx.client().getMemoryBackend(await ctx.org());
+      ctx.emit({ backend: b }, () => {
+        if (!b) return ctx.line(ctx.style.dim('local memory only — add a backend: conductor memory backend set mem0 --secret-ref org/<org>/mem0-api-key'));
+        ctx.fields([['backend', b.kind], ['base URL', b.baseUrl ?? '(default)'], ['secret ref', b.authRef], ['key stored', b.ready ? 'yes' : ctx.style.yellow('no — the backend is skipped until it is')], ['options', b.options ? JSON.stringify(b.options) : null]]);
+        if (!b.ready) ctx.line(`  store the key (never echoed): conductor secret set ${b.authRef}`);
+      });
+    }));
+
+  backend
+    .command('set <kind>')
+    .description(`use an external memory backend (${BACKENDS.join(', ')}) for this org`)
+    .requiredOption('--secret-ref <ref>', 'secret holding the backend API key (store it with `conductor secret set <ref>`)')
+    .option('--base-url <url>', 'self-hosted endpoint (default: the vendor\'s cloud)')
+    .option('--option <key=value...>', 'backend-specific option, e.g. workspace=acme (repeatable)')
+    .action(action(deps, async (ctx, args, opts) => {
+      const options: Record<string, string> = {};
+      for (const pair of list(opts, 'option')) {
+        const i = pair.indexOf('=');
+        if (i < 1) throw new UsageError('--option expects key=value');
+        options[pair.slice(0, i).trim()] = pair.slice(i + 1);
+      }
+      const { backend: b } = await ctx.client().putMemoryBackend(await ctx.org(), compact({
+        kind: oneOf(arg(args, 0, 'kind'), '<kind>', BACKENDS),
+        authRef: str(opts, 'secretRef')!,
+        baseUrl: str(opts, 'baseUrl'),
+        options: isEmpty(options) ? undefined : options,
+      }));
+      ctx.emit({ backend: b }, () => {
+        ctx.ok(`external memory backend set to ${b?.kind ?? arg(args, 0, 'kind')}`);
+        if (b && !b.ready) ctx.line(`  the secret ${b.authRef} is not stored yet: conductor secret set ${b.authRef}`);
+      });
+    }));
+
+  backend
+    .command('clear')
+    .description('go back to local memory only')
+    .action(action(deps, async (ctx) => {
+      await ctx.client().clearMemoryBackend(await ctx.org());
+      ctx.emit({ backend: null }, () => ctx.ok('external memory backend removed; local memory only'));
     }));
 }

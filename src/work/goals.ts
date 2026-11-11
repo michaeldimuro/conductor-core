@@ -1,15 +1,15 @@
-import { isAbsolute, normalize, sep } from 'node:path';
-import { and, asc, desc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql, type SQL } from 'drizzle-orm';
 import type { CreateGoalInput, GoalNode, WorkService } from '../contracts/org-work.js';
 import type { Actor } from '../contracts/types.js';
-import { AUTONOMY } from '../contracts/types.js';
-import type { Agent, Goal, Project } from '../contracts/rows.js';
+import { AUTONOMY, SYSTEM } from '../contracts/types.js';
+import type { Agent, Goal, Organization } from '../contracts/rows.js';
 import { departments, goals, issues, projects } from '../db/schema/index.js';
 import { forbidden, invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { parse, requireAgent, requireOrg, type WorkCtx } from './context.js';
 import { actingAgent } from './permissions.js';
-import { goalFilter, goalInput, goalPatch, projectInput } from './schemas.js';
+import { recordRevision } from './revisions.js';
+import { goalFilter, goalInput, goalPatch } from './schemas.js';
 
 type Level = Goal['level'];
 const LEVEL_RANK: Record<Level, number> = { org: 0, dept: 1, agent: 2 };
@@ -113,13 +113,14 @@ export function createGoal(ctx: WorkCtx, orgId: string, raw: CreateGoalInput, ac
       })
       .returning()
       .get();
+    const revision = recordRevision(ctx, orgId, 'goal', row.id, row, actor, 'created');
     ctx.kernel.audit.record({
       orgId,
       actor,
       action: 'goal.created',
       entityKind: 'goal',
       entityId: row.id,
-      data: { title: row.title, level, parentGoalId: row.parentGoalId, ownerAgentId, deptId },
+      data: { title: row.title, level, parentGoalId: row.parentGoalId, ownerAgentId, deptId, revision },
     });
     ctx.emit('goal.created', { orgId, goalId: row.id });
     return row;
@@ -182,13 +183,14 @@ export function updateGoal(
       .returning()
       .get();
     if (!row) throw notFound('goal', goalId);
+    const revision = recordRevision(ctx, orgId, 'goal', goalId, row, actor, 'updated');
     ctx.kernel.audit.record({
       orgId,
       actor,
       action: 'goal.updated',
       entityKind: 'goal',
       entityId: goalId,
-      data: { fields: Object.keys(patch), status: row.status },
+      data: { fields: Object.keys(patch), status: row.status, revision },
     });
     ctx.emit('goal.updated', { orgId, goalId });
     return row;
@@ -262,90 +264,122 @@ export function activeGoalOfAgent(ctx: WorkCtx, orgId: string, agentId: string):
   );
 }
 
-export function firstActiveOrgGoal(ctx: WorkCtx, orgId: string): Goal | null {
+export function firstActiveOrgGoal(ctx: WorkCtx, orgId: string, excludeGoalId?: string): Goal | null {
+  const where: SQL[] = [eq(goals.orgId, orgId), eq(goals.level, 'org'), eq(goals.status, 'active')];
+  if (excludeGoalId) where.push(ne(goals.id, excludeGoalId));
   return (
     ctx.kernel.db
       .select()
       .from(goals)
-      .where(and(eq(goals.orgId, orgId), eq(goals.level, 'org'), eq(goals.status, 'active')))
+      .where(and(...where))
       .orderBy(asc(goals.createdAt), sql`${goals}.rowid`)
       .limit(1)
       .get() ?? null
   );
 }
 
-/* ───────────────────────── Projects ───────────────────────── */
-
-export function getProject(ctx: WorkCtx, orgId: string, projectId: string): Project {
+/**
+ * The org's default goal — where an issue lands when nothing more specific
+ * applies. It is the first active org-level goal; an org that has none gets
+ * one created from its mission, so every issue traces to a goal (PRD "Domain
+ * model": "Every issue traces to a goal"). Call inside `ctx.tx`.
+ */
+export function ensureDefaultGoal(ctx: WorkCtx, org: Organization, excludeGoalId?: string): Goal {
+  const existing = firstActiveOrgGoal(ctx, org.id, excludeGoalId);
+  if (existing) return existing;
+  const mission = (org.mission.split('\n')[0] ?? '').trim();
+  const now = ctx.now();
   const row = ctx.kernel.db
-    .select()
-    .from(projects)
-    .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)))
+    .insert(goals)
+    .values({
+      id: newId('goal'),
+      orgId: org.id,
+      level: 'org',
+      title: mission ? mission.slice(0, 200) : `${org.name}: general operations`,
+      description: 'Default organization goal, created automatically so that every issue traces to a goal.',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning()
     .get();
-  if (!row) throw notFound('project', projectId);
+  const revision = recordRevision(ctx, org.id, 'goal', row.id, row, SYSTEM, 'created as the default goal');
+  ctx.kernel.audit.record({
+    orgId: org.id,
+    actor: SYSTEM,
+    action: 'goal.created',
+    entityKind: 'goal',
+    entityId: row.id,
+    data: { title: row.title, level: 'org', default: true, revision },
+  });
+  ctx.emit('goal.created', { orgId: org.id, goalId: row.id });
   return row;
 }
 
-export function createProject(
-  ctx: WorkCtx,
-  orgId: string,
-  raw: Parameters<WorkService['createProject']>[1],
-  actor: Actor,
-): Project {
-  const input = parse(projectInput, raw);
-  return ctx.tx(() => {
+/**
+ * Delete a goal. Nothing is orphaned: child goals and projects move to its
+ * parent, and its issues move to the parent goal — or, for a root goal, to
+ * the org's default goal. The last state is kept as a revision, so
+ * `rollback` can restore the goal (the moved issues stay where they went).
+ */
+export function deleteGoal(ctx: WorkCtx, orgId: string, goalId: string, actor: Actor): void {
+  ctx.tx(() => {
     const org = requireOrg(ctx, orgId);
+    const goal = getGoal(ctx, orgId, goalId);
     const agent = actingAgent(ctx, orgId, actor);
-    if (agent && agent.autonomyLevel < AUTONOMY.AUTONOMOUS) {
-      throw forbidden(`agent ${agent.slug} needs autonomy 2 or higher to create projects`);
-    }
-    if (input.goalId) getGoal(ctx, orgId, input.goalId);
-
-    let workspacePath: string | null = null;
-    if (input.workspacePath) {
-      if (!isAbsolute(input.workspacePath)) throw invalid('workspacePath must be an absolute path');
-      workspacePath = normalize(input.workspacePath);
-      // The owner may point a project at any repo on the machine; agents stay inside their org's directory.
-      if (agent) {
-        const orgDir = ctx.kernel.paths.org(org.slug);
-        if (workspacePath !== orgDir && !workspacePath.startsWith(orgDir + sep)) {
-          throw forbidden('agents may only create projects inside their organization directory');
-        }
-      }
-    }
-
+    if (agent) assertAgentMaySetGoal(ctx, orgId, agent, goal);
+    const db = ctx.kernel.db;
     const now = ctx.now();
-    const row = ctx.kernel.db
-      .insert(projects)
-      .values({
-        id: newId('project'),
-        orgId,
-        goalId: input.goalId ?? null,
-        name: input.name,
-        workspacePath,
-        budgetUsd: input.budgetUsd ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
+
+    const children = db.select().from(goals).where(and(eq(goals.orgId, orgId), eq(goals.parentGoalId, goalId))).all();
+    for (const child of children) {
+      const moved = db
+        .update(goals)
+        .set({ parentGoalId: goal.parentGoalId, updatedAt: now })
+        .where(and(eq(goals.orgId, orgId), eq(goals.id, child.id)))
+        .returning()
+        .get();
+      if (!moved) continue;
+      recordRevision(ctx, orgId, 'goal', child.id, moved, actor, `parent goal "${goal.title}" deleted`);
+      ctx.emit('goal.updated', { orgId, goalId: child.id });
+    }
+    const movedProjects = db
+      .update(projects)
+      .set({ goalId: goal.parentGoalId, updatedAt: now })
+      .where(and(eq(projects.orgId, orgId), eq(projects.goalId, goalId)))
+      .returning({ id: projects.id })
+      .all();
+
+    const linked = db
+      .select({ n: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(eq(issues.orgId, orgId), eq(issues.goalId, goalId)))
       .get();
+    let issuesMovedTo: string | null = null;
+    if (Number(linked?.n ?? 0) > 0) {
+      issuesMovedTo = goal.parentGoalId ?? ensureDefaultGoal(ctx, org, goalId).id;
+      db.update(issues)
+        .set({ goalId: issuesMovedTo, updatedAt: now })
+        .where(and(eq(issues.orgId, orgId), eq(issues.goalId, goalId)))
+        .run();
+    }
+
+    const revision = recordRevision(ctx, orgId, 'goal', goalId, goal, actor, 'deleted');
+    db.delete(goals).where(and(eq(goals.orgId, orgId), eq(goals.id, goalId))).run();
     ctx.kernel.audit.record({
       orgId,
       actor,
-      action: 'project.created',
-      entityKind: 'project',
-      entityId: row.id,
-      data: { name: row.name, goalId: row.goalId },
+      action: 'goal.deleted',
+      entityKind: 'goal',
+      entityId: goalId,
+      data: {
+        title: goal.title,
+        revision,
+        childGoals: children.length,
+        projects: movedProjects.length,
+        issues: Number(linked?.n ?? 0),
+        issuesMovedTo,
+      },
     });
-    return row;
+    ctx.emit('goal.deleted', { orgId, goalId });
   });
-}
-
-export function listProjects(ctx: WorkCtx, orgId: string): Project[] {
-  return ctx.kernel.db
-    .select()
-    .from(projects)
-    .where(eq(projects.orgId, orgId))
-    .orderBy(asc(projects.createdAt), sql`${projects}.rowid`)
-    .all();
 }

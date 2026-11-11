@@ -7,6 +7,7 @@ import { ago, dateTime, humanize } from '../lib/format.js';
 import { useAgents } from '../lib/org.js';
 import { invalidate, setQueryData, useQuery } from '../lib/query.js';
 import { toast } from '../lib/toast.js';
+import { OrgTakeovers } from '../components/takeover.js';
 
 const PENDING_KEY = 'approvals/pending';
 
@@ -82,6 +83,7 @@ export function Approvals({ orgs }: { orgs: Organization[] }) {
     <div className="page page-narrow">
       <PageHead title="Approvals" sub="Risky actions wait here for your decision, across every organization. Agents keep working on other things while they wait." />
       <Segmented label="Approvals view" value={view} onChange={setView} options={[{ value: 'pending', label: `Waiting (${pending.data?.length ?? 0})` }, { value: 'history', label: 'History' }]} />
+      {view === 'pending' ? <div aria-live="polite">{orgs.filter((o) => o.status === 'active').map((o) => <OrgTakeovers key={o.id} org={o} showOrg={orgs.length > 1} />)}</div> : null}
       {view === 'pending' ? (
         <Panel flush>
           <div aria-live="polite">

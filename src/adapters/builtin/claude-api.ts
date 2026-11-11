@@ -5,7 +5,7 @@ import { AdapterError, kindFromStatus } from '../shared/errors.js';
 import { ActiveRuns, withRun } from '../shared/guard.js';
 import type { McpTool } from '../shared/mcp-tools.js';
 import { runMcpToolLoop, type ModelToolCall, type ModelTurn, type ToolLoopDriver, type ToolReturn } from '../shared/tool-loop.js';
-
+import { conductorSessionId, resumeHistoryOf, resumePreamble, type ResumeHistory } from './resume-history.js';
 
 export const CLAUDE_API_DEFAULT_MODEL = 'claude-opus-5-5';
 
@@ -27,7 +27,7 @@ const configSchema = z.object({
   refusalFallback: z.boolean().default(true),
   /** Stream tool inputs as generated. Off automatically behind a custom baseURL (proxies may reject the field). */
   eagerInputStreaming: z.boolean().optional(),
-  /** Conductor transcript to resume from: Anthropic `messages` from an earlier run. */
+  /** Explicit Anthropic `messages` to start from (overrides the history rebuilt from `RunContext.priorEvents` on resume). */
   priorMessages: z
     .array(z.object({ role: z.enum(['user', 'assistant']), content: z.union([z.string(), z.array(z.record(z.string(), z.unknown()))]) }))
     .optional(),
@@ -44,7 +44,7 @@ export const claudeApiConfigJsonSchema: Record<string, unknown> = {
     maxRetries: { type: 'integer', minimum: 0, maximum: 10, default: 2 },
     refusalFallback: { type: 'boolean', default: true },
     eagerInputStreaming: { type: 'boolean' },
-    priorMessages: { type: 'array', description: 'Anthropic messages to resume from (Conductor transcript).' },
+    priorMessages: { type: 'array', description: 'Explicit Anthropic messages to start from. Normally unset: a resumed run rebuilds its history from the journaled transcript.' },
     pricing: { type: 'object', description: 'USD per MTok: { input, output, cacheRead?, cacheWrite? } or a per-model map.' },
   },
 };
@@ -96,6 +96,8 @@ class ClaudeDriver implements ToolLoopDriver {
   readonly model: string;
   private tools: Anthropic.Beta.BetaToolUnion[] = [];
   private readonly messages: Anthropic.Beta.BetaMessageParam[];
+  /** Turns (or explicit prior messages) restored for a resumed run; 0 for a fresh one. */
+  resumed = 0;
 
   constructor(
     private readonly client: Anthropic,
@@ -107,6 +109,11 @@ class ClaudeDriver implements ToolLoopDriver {
   }
 
   start(tools: McpTool[]): void {
+    // Resume: the transcript lives in Conductor's journal, so the history is rebuilt from it
+    // (an explicit `priorMessages` in the binding config wins).
+    const history = this.cfg.priorMessages ? null : resumeHistoryOf(this.ctx, tools);
+    if (history) this.messages.splice(0, this.messages.length, ...resumeMessages(history, this.ctx.prompt));
+    this.resumed = history ? history.turns.length : this.cfg.priorMessages ? this.cfg.priorMessages.length : 0;
     const eager = this.cfg.eagerInputStreaming ?? !this.cfg.baseURL;
     this.tools = tools.map((t) => ({
       name: t.name,
@@ -215,6 +222,29 @@ class ClaudeDriver implements ToolLoopDriver {
 }
 
 /**
+ * Anthropic `messages` for a resumed run: preamble, then each journaled turn as an assistant
+ * message (text + tool_use) answered by one user message holding every tool_result, and the task
+ * last. Thinking blocks are not replayed (their signatures are not journaled).
+ */
+export function resumeMessages(history: ResumeHistory, prompt: string): Anthropic.Beta.BetaMessageParam[] {
+  const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: resumePreamble(history) }];
+  let pending: Anthropic.Beta.BetaContentBlockParam[] | null = null;
+  for (const turn of history.turns) {
+    const content: Anthropic.Beta.BetaContentBlockParam[] = [];
+    if (turn.text.trim()) content.push({ type: 'text', text: turn.text });
+    for (const c of turn.calls) content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.input });
+    if (content.length === 0) continue;
+    messages.push({ role: 'assistant', content });
+    pending = turn.calls.length > 0 ? turn.calls.map((c) => ({ type: 'tool_result' as const, tool_use_id: c.id, content: c.output, ...(c.isError ? { is_error: true } : {}) })) : null;
+    if (pending) messages.push({ role: 'user', content: pending });
+  }
+  // Tool results and the restated task share one user turn (roles must alternate).
+  if (pending) pending.push({ type: 'text', text: prompt });
+  else messages.push({ role: 'user', content: prompt });
+  return messages;
+}
+
+/**
  * `claude_api` — Anthropic Messages API with the loop owned by Conductor.
  * Tools come only from the gateway MCP endpoints in the RunContext.
  */
@@ -242,6 +272,11 @@ export class ClaudeApiAdapter implements AgentAdapter {
     return withRun(this.active, ctx, onEvent, { metered: true }, async (env) => {
       const cfg = parseConfig(ctx.config);
       const client = createClient(cfg, ctx.secrets);
+      // The journal is the session: recovery hands this id back together with `priorEvents`.
+      env.emit({ type: 'session', sessionId: conductorSessionId(ctx.runId) });
+      if (ctx.resumeSessionId && !cfg.priorMessages && !ctx.priorEvents?.length) {
+        env.emit({ type: 'status', status: 'resume requested but no prior transcript was supplied; starting from the task prompt' });
+      }
       return runMcpToolLoop(env, new ClaudeDriver(client, ctx, cfg));
     });
   }

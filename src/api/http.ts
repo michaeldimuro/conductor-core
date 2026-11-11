@@ -58,6 +58,18 @@ export function assertOrg<T extends { orgId: string | null }>(row: T | null | un
   return row;
 }
 
+/** An optional contract method: answer 503 with a clear message when this daemon build does not provide it. */
+export function supported<F>(fn: F | undefined, what: string): F {
+  if (typeof fn !== 'function') throw new ConductorError('unavailable', `${what} is not supported by this daemon build`);
+  return fn;
+}
+
+/** True for 127.0.0.0/8, ::1 and `localhost`: addresses only this machine can reach. */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h) || h === '::ffff:127.0.0.1';
+}
+
 export function errorBody(code: string, message: string, details?: Record<string, unknown>): ApiErrorBody {
   return { error: { code, message, ...(details ? { details } : {}) } };
 }

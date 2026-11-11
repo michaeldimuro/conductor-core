@@ -3,9 +3,10 @@ import { join } from 'node:path';
 import type { Page } from 'playwright';
 import type { BuiltinToolProvider, ToolCallContext, ToolDef, ToolResult } from '../contracts/tools.js';
 import { AUTONOMY } from '../contracts/types.js';
-import { invalid, notFound } from '../shared/errors.js';
+import { errorMessage, invalid, notFound } from '../shared/errors.js';
 import { sha256, truncate } from '../shared/util.js';
 import { checkNavigation, hostOf } from './domains.js';
+import { isOpReference, opVault, readOnePassword } from './onepassword.js';
 import type { RunBrowser } from './engine.js';
 import { ATTRIBUTES_JS, LINKS_JS, MARK_SECRET_JS, SECRET_FIELDS_SELECTOR, TABLES_JS } from './page-scripts.js';
 import { touchesSensitiveDomain } from './sensitive.js';
@@ -215,15 +216,44 @@ const handlers: Record<Exclude<ToolName, 'request_human'>, Handler> = {
       runId: c.ctx.runId, issueId: c.ctx.issueId ?? undefined,
       data: { secretRef: ref, field: a.field, host: hostOf(c.page.url()), ...data },
     });
-    // Org confinement: only this org's namespace, and never the browser service's own keys.
-    if (!ref.startsWith(prefix) || ref.includes('..') || ref.startsWith(`${prefix}browser/`)) {
-      audit('browser.secret_refused', { why: 'reference is outside this organization' });
-      return errorResult(`secret reference ${ref} is not available to this organization (use ${prefix}…)`);
-    }
-    const value = await c.env.kernel.secrets.get(ref);
-    if (value === null || value.length === 0) {
-      audit('browser.secret_refused', { why: 'not found' });
-      return errorResult(`secret reference ${ref} was not found`);
+    const refuse = (why: string, message: string): ToolResult => {
+      audit('browser.secret_refused', { why });
+      return errorResult(message);
+    };
+    /** `op read` through the 1Password CLI; the value never passes through logs, audit data or the result. */
+    const fromOnePassword = async (opRef: string): Promise<string | ToolResult> => {
+      try {
+        return await readOnePassword(opRef, c.env.onePassword);
+      } catch (e) {
+        return refuse('1password unavailable', `could not read ${ref} from 1Password: ${errorMessage(e)}`);
+      }
+    };
+
+    let value: string | null;
+    if (isOpReference(ref)) {
+      // A direct 1Password reference: only into vaults the owner allowed for this browser profile.
+      const vault = opVault(ref);
+      const allowed = c.env.engine.settingsOf(c.rb).onePasswordVaults.map((v) => v.toLowerCase());
+      if (vault === null) return refuse('malformed 1password reference', '1Password references look like op://<vault>/<item>/<field>');
+      if (!allowed.includes(vault.toLowerCase())) {
+        return refuse('1password vault not allowed for this profile', `the 1Password vault "${vault}" is not allowed for this browser profile. Ask the owner to allow it on the profile, or to store the reference under ${prefix}… and use that.`);
+      }
+      const read = await fromOnePassword(ref);
+      if (typeof read !== 'string') return read;
+      value = read;
+    } else {
+      // Org confinement: only this org's namespace, and never the browser service's own keys.
+      if (!ref.startsWith(prefix) || ref.includes('..') || ref.startsWith(`${prefix}browser/`)) {
+        return refuse('reference is outside this organization', `secret reference ${ref} is not available to this organization (use ${prefix}…)`);
+      }
+      value = await c.env.kernel.secrets.get(ref);
+      if (value === null || value.length === 0) return refuse('not found', `secret reference ${ref} was not found`);
+      // The owner may store a 1Password reference instead of the value itself.
+      if (isOpReference(value.trim())) {
+        const read = await fromOnePassword(value.trim());
+        if (typeof read !== 'string') return read;
+        value = read;
+      }
     }
     c.rb.secrets.add(value); // before touching the page, so even an error message cannot echo it
     const loc = locateField(c.page, a.field);

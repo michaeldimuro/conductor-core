@@ -76,7 +76,7 @@ export const TOOL_SPECS = {
   }),
   create_issue: spec({
     description:
-      'Create an issue. It is linked to a goal automatically (parent issue → assignee goal → your goal → org goal) unless goalId is given. Assign only to yourself, your reports, or a peer through your lead.',
+      'Create an issue. It is linked to a goal automatically (parent issue → project goal → assignee goal → your goal → org goal) unless goalId is given. Assign only to yourself, your reports, or a peer through your lead. At autonomy 1 you may only create sub-issues of your own work: parentIssue defaults to the issue this run is working on.',
     risk: 'write',
     minAutonomy: AUTONOMY.SUPERVISED,
     schema: z.strictObject({
@@ -208,6 +208,28 @@ export const TOOL_SPECS = {
       heartbeatCron: z.string().min(1).max(200).optional(),
       budgetUsd: z.number().nonnegative().optional(),
       autonomyLevel: z.number().int().min(0).max(3).optional(),
+    }),
+  }),
+  propose_termination: spec({
+    description:
+      'Propose terminating an agent. Creates a board approval; the agent is terminated only if the owner approves (its reports then move up to its manager).',
+    risk: 'write',
+    minAutonomy: AUTONOMY.LEAD,
+    schema: z.strictObject({
+      agent: agentRef,
+      reason: z.string().trim().min(1).max(2000).describe('Why — the owner reads this when deciding.'),
+    }),
+  }),
+  propose_budget_change: spec({
+    description:
+      'Propose a new monthly budget for yourself, one of your reports, or a department in your reporting line. Creates a board approval; the budget changes only if the owner approves.',
+    risk: 'write',
+    minAutonomy: AUTONOMY.LEAD,
+    schema: z.strictObject({
+      scope: z.enum(['agent', 'dept']).describe('Whose budget: an agent or a department.'),
+      target: z.string().min(1).max(200).optional().describe('Agent id/slug or department id. Default: you (agent) or your department (dept).'),
+      budgetUsd: z.number().finite().nonnegative().nullable().describe('New monthly cap in USD; null removes the cap.'),
+      reason: z.string().trim().min(1).max(2000).describe('Why — the owner reads this when deciding.'),
     }),
   }),
   reassign: spec({

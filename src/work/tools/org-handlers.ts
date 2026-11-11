@@ -1,7 +1,7 @@
 import type { HireAgentInput } from '../../contracts/org-work.js';
 import { AUTONOMY } from '../../contracts/types.js';
 import type { Approval } from '../../contracts/rows.js';
-import { forbidden, notFound } from '../../shared/errors.js';
+import { ConductorError, forbidden, notFound } from '../../shared/errors.js';
 import { redact } from '../../shared/util.js';
 import {
   actorOf, agentView, goalView, issueBrief, resolveAgent, resolveIssue,
@@ -9,8 +9,8 @@ import {
 } from './support.js';
 
 type OrgTools =
-  | 'list_goals' | 'create_goal' | 'list_team' | 'propose_hire' | 'request_approval'
-  | 'list_playbooks' | 'run_playbook';
+  | 'list_goals' | 'create_goal' | 'list_team' | 'propose_hire' | 'propose_termination' | 'propose_budget_change'
+  | 'request_approval' | 'list_playbooks' | 'run_playbook';
 
 const approvalView = (a: Approval) => ({ id: a.id, kind: a.kind, title: a.title, status: a.status });
 
@@ -84,6 +84,35 @@ export const orgHandlers: Handlers<OrgTools> = {
       return { approval: approvalView(result.approval), note: 'The hire happens only if the owner approves.' };
     }
     return { agent: result.agent ? agentView(result.agent) : null };
+  },
+
+  propose_termination(env, ctx, args) {
+    const target = resolveAgent(env, ctx, args.agent);
+    // As an agent actor the Org context raises a `terminate_agent` approval instead of terminating.
+    const result = env.org.terminateAgent(ctx.orgId, target.id, actorOf(ctx), { reason: redact(args.reason) });
+    if (result.approval) {
+      return { approval: approvalView(result.approval), note: 'The agent is terminated only if the owner approves.' };
+    }
+    return { agent: result.agent ? agentView(result.agent) : null };
+  },
+
+  propose_budget_change(env, ctx, args) {
+    if (!env.org.proposeBudgetChange) {
+      throw new ConductorError('unavailable', 'budget proposals are not available in this installation');
+    }
+    const id = args.scope === 'agent' ? (args.target ? resolveAgent(env, ctx, args.target).id : ctx.agentId) : (args.target ?? ctx.deptId);
+    const result = env.org.proposeBudgetChange(
+      ctx.orgId,
+      { scope: args.scope, id, budgetUsd: args.budgetUsd, reason: redact(args.reason) },
+      actorOf(ctx),
+    );
+    if (result.approval) {
+      return { approval: approvalView(result.approval), note: 'The budget changes only if the owner approves.' };
+    }
+    return {
+      agent: result.agent ? { ...agentView(result.agent), budgetUsd: result.agent.budgetUsd } : undefined,
+      department: result.department ? { id: result.department.id, name: result.department.name, budgetUsd: result.department.budgetUsd } : undefined,
+    };
   },
 
   request_approval(env, ctx, args) {

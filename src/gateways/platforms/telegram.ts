@@ -41,7 +41,8 @@ export function createTelegramAdapter(ctx: AdapterContext): GatewayAdapter {
       const userId = asString(asRecord(message.from).id);
       const text = asString(message.text) ?? asString(message.caption);
       if (!chatId || !userId || !text) return;
-      void ctx.emit({ chatId, userId, text }).catch((err) => ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, 'telegram message handling failed'));
+      const isGroup = asString(asRecord(message.chat).type) !== 'private';
+      void ctx.emit({ chatId, userId, text, isGroup }).catch((err) => ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, 'telegram message handling failed'));
       return;
     }
     if (update.callback_query) {
@@ -53,7 +54,7 @@ export function createTelegramAdapter(ctx: AdapterContext): GatewayAdapter {
       const data = asString(callback.data);
       if (!callbackId || !chatId || !userId || data === null) return;
       void ctx.emit({
-        chatId, userId, text: '', action: data,
+        chatId, userId, text: '', action: data, isGroup: asString(asRecord(original.chat).type) !== 'private',
         respond: async (outcome) => {
           await call('answerCallbackQuery', { callback_query_id: callbackId, text: outcome.text.slice(0, 200) });
           if (!outcome.final || typeof messageId !== 'number') return;

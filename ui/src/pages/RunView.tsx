@@ -8,6 +8,7 @@ import { live } from '../lib/live.js';
 import { k, useDirectory, useOrg } from '../lib/org.js';
 import { useAction, useQuery } from '../lib/query.js';
 import { Markdown } from '../components/markdown.js';
+import { OrgTakeovers } from '../components/takeover.js';
 
 const LIVE_STATUSES = new Set(['queued', 'running', 'paused']);
 
@@ -182,6 +183,7 @@ export function RunView() {
         ) : <Button onClick={runQ.reload}>Refresh</Button>}
       </header>
       {run.error ? <p className="note note-stop">{run.error}</p> : null}
+      {isLive ? <OrgTakeovers org={org} runId={run.id} /> : null}
       <div className="tiles">
         <div className="tile"><span className="tile-label">Started</span><span className="tile-sub">{dateTime(run.startedAt ?? run.createdAt)}</span></div>
         <div className="tile"><span className="tile-label">Duration</span><span className="tile-value">{run.startedAt ? duration((run.endedAt ?? Date.now()) - run.startedAt) : 'Queued'}</span></div>

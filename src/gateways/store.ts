@@ -109,7 +109,7 @@ export class GatewayStore {
    * Redeem a pairing code for a chat. One-time: success consumes the code and
    * allow-lists the chat; too many wrong guesses burn it.
    */
-  redeemPairingCode(gatewayId: string, chatId: string, userId: string, code: string): 'paired' | 'invalid' | 'expired' | 'none' {
+  redeemPairingCode(gatewayId: string, chatId: string, userId: string, code: string, isGroup = false): 'paired' | 'invalid' | 'expired' | 'none' {
     let result: 'paired' | 'invalid' | 'expired' | 'none' = 'none';
     const candidate = code.trim().toUpperCase();
     this.patchConfig(gatewayId, (config) => {
@@ -138,6 +138,8 @@ export class GatewayStore {
       config.allowedChatIds = [...new Set([...current.allowedChatIds, chatId])];
       // When a user allow-list is also in force, the pairing user must pass it too.
       if (current.allowedUserIds.length > 0) config.allowedUserIds = [...new Set([...current.allowedUserIds, userId])];
+      // Whoever held the owner's code is the owner: in a group, only they (not every member) may decide approvals.
+      if (isGroup && userId) config.approverUserIds = [...new Set([...current.approverUserIds, userId])];
       result = 'paired';
     });
     return result;

@@ -80,7 +80,7 @@ export function buildSystemPrompt(i: SystemPromptInput): string {
 }
 
 export interface TaskPromptInput {
-  mode: 'issue' | 'inbox' | 'proactive' | 'chat' | 'custom';
+  mode: 'issue' | 'inbox' | 'proactive' | 'plan' | 'chat' | 'custom';
   issue?: Issue | null;
   goal?: Goal | null;
   parent?: Issue | null;
@@ -88,6 +88,8 @@ export interface TaskPromptInput {
   comments?: Comment[];
   inbox?: Inbox;
   goals?: Goal[];
+  /** `plan` mode: the goal to break down into issues. */
+  planGoal?: Goal | null;
   /** Why the agent was woken (assignment, mention, approval decided…). */
   triggerNote?: string;
   customPrompt?: string;
@@ -140,6 +142,24 @@ export function buildTaskPrompt(i: TaskPromptInput): string {
     }
     p.push('\nRead the relevant issues, reply with `conductor-tasks__comment`, and take any action that is yours to take.');
     return p.join('\n');
+  }
+
+  if (i.mode === 'plan' && i.planGoal) {
+    const g = i.planGoal;
+    p.push(
+      `You own a goal that has not been broken down into work yet (goal id ${g.id}, ${g.level} level).`,
+      `\n# Goal: ${g.title}`,
+      g.description || '(no description)',
+      g.successMetric ? `Success metric: ${g.successMetric}${g.target ? ` → ${g.target}` : ''}` : '',
+      g.due ? `Due: ${new Date(g.due).toISOString().slice(0, 10)}` : '',
+      '\nPlan it now:',
+      '1. Check the existing goals and issues first so you do not duplicate work.',
+      `2. Decompose the goal into a small set of concrete, well-scoped issues. Give each a clear title, a body, an expected output, and link it to goal id ${g.id}.`,
+      '3. Assign each issue to the right agent on your reporting line (yourself or your reports). If a part belongs to a whole department, hand it to that department\'s lead so they can break it down further.',
+      '4. Order the work with priorities and blockers where one issue depends on another.',
+      '\nCreate the issues with the conductor-tasks tools. Do not start the work itself in this run; finish with a short summary of the plan.',
+    );
+    return p.filter(Boolean).join('\n');
   }
 
   // proactive

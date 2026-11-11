@@ -30,6 +30,13 @@ export interface InboundMessage {
   chatId: string;
   userId: string;
   text: string;
+  /**
+   * True when the chat has (or may have) more members than the sender: a
+   * group, channel or server. Decisions (approve / deny / review) from a group
+   * need the acting user to be individually authorised. Absent → the router
+   * assumes a group unless `chatId === userId`.
+   */
+  isGroup?: boolean;
   /** Present for button presses: the action string carried by the button. */
   action?: string;
   /** Platform acknowledgement for a button press (toast, message edit). Absent → the router replies with a message. */
@@ -92,6 +99,12 @@ const idList = z.array(z.union([z.string(), z.number()]).transform((v) => String
 export const gatewayConfigSchema = z.looseObject({
   allowedChatIds: idList.default([]),
   allowedUserIds: idList.default([]),
+  /**
+   * Users who may approve / deny / review from a GROUP chat in addition to
+   * `allowedUserIds`. Filled when the owner redeems a pairing code from a
+   * group; being a member of a paired group is not enough to decide.
+   */
+  approverUserIds: idList.default([]),
   /** Notification kinds to deliver (approval, review, digest, budget, takeover, …). Absent = all. */
   notify: z.array(z.string().max(64)).max(50).optional(),
   /** Where notifications go. Absent = every allow-listed chat. */
@@ -108,7 +121,7 @@ export type GatewayConfig = z.infer<typeof gatewayConfigSchema>;
 
 /** Keys the gateway context itself rewrites at runtime; changing them never restarts an adapter. */
 export const VOLATILE_CONFIG_KEYS = [
-  'state', 'pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts', 'allowedChatIds', 'allowedUserIds', 'notify', 'notifyChatIds',
+  'state', 'pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts', 'allowedChatIds', 'allowedUserIds', 'approverUserIds', 'notify', 'notifyChatIds',
 ] as const;
 
 export function parseGatewayConfig(raw: unknown): GatewayConfig {
@@ -116,5 +129,5 @@ export function parseGatewayConfig(raw: unknown): GatewayConfig {
   if (parsed.success) return parsed.data;
   // A malformed allow-list must fail closed: nobody is allowed.
   const loose = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-  return { ...loose, allowedChatIds: [], allowedUserIds: [], notify: undefined, notifyChatIds: undefined, apiBaseUrl: undefined, pairingCodeHash: undefined, pairingExpiresAt: undefined, pairingAttempts: undefined, secretRefs: undefined, state: undefined };
+  return { ...loose, allowedChatIds: [], allowedUserIds: [], approverUserIds: [], notify: undefined, notifyChatIds: undefined, apiBaseUrl: undefined, pairingCodeHash: undefined, pairingExpiresAt: undefined, pairingAttempts: undefined, secretRefs: undefined, state: undefined };
 }

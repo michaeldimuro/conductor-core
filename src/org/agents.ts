@@ -128,6 +128,7 @@ export function persistAgent(
     const base = { orgId: agent.orgId, agentId: agent.id };
     if (meta.event === 'agent.paused') k.bus.emit('agent.paused', { ...base, reason: next.pausedReason ?? '' });
     else k.bus.emit(meta.event, base);
+    if ('budgetUsd' in set) k.bus.emit('budget.updated', { orgId: agent.orgId, scope: 'agent', scopeId: agent.id });
   });
   return next;
 }

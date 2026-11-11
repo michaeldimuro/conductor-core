@@ -14,6 +14,8 @@ import { skillCommands } from './commands/skills.js';
 import { memoryCommands } from './commands/memory.js';
 import { connectorCommands } from './commands/connector.js';
 import { quickstartCommand } from './commands/quickstart.js';
+import { browserCommands } from './commands/browser.js';
+import { playbookCommands } from './commands/playbook.js';
 
 export const CLI_VERSION = '0.1.0';
 
@@ -52,6 +54,8 @@ export function buildProgram(deps: CliDeps): Command {
   skillCommands(program, deps);
   memoryCommands(program, deps);
   connectorCommands(program, deps);
+  browserCommands(program, deps);
+  playbookCommands(program, deps);
   return program;
 }
 

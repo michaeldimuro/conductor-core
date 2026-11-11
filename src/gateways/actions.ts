@@ -1,11 +1,11 @@
 import { and, eq } from 'drizzle-orm';
 import type { Services } from '../daemon/container.js';
 import type { Gateway } from '../contracts/rows.js';
-import { OWNER } from '../contracts/types.js';
+import { OWNER, SYSTEM } from '../contracts/types.js';
 import { approvals, issues } from '../db/schema/index.js';
 import { errorMessage, isConductorError } from '../shared/errors.js';
 import { redact } from '../shared/util.js';
-import type { ActionOutcome } from './types.js';
+import type { ActionOutcome, GatewayConfig } from './types.js';
 import { APPROVAL_ID_RE, ISSUE_ID_RE } from './util.js';
 
 export type ParsedAction =
@@ -30,6 +30,23 @@ export function parseAction(raw: string): ParsedAction | null {
 export interface Via {
   chatId: string;
   userId: string;
+  isGroup: boolean;
+  config: GatewayConfig;
+}
+
+export const GROUP_REFUSAL_TEXT = 'Only the owner can decide this here: in a group chat, approvals and reviews need a user on this gateway\'s allow-list.';
+
+/**
+ * Who may approve / deny / review. In a 1:1 chat the allow-listed chat is the
+ * owner. A group chat is allow-listed as a whole, so membership proves
+ * nothing: the acting user must be named in `allowedUserIds` (or have paired
+ * the group themselves, `approverUserIds`).
+ */
+export function mayDecide(config: GatewayConfig, via: Pick<Via, 'userId' | 'isGroup'>): boolean {
+  if (!via.isGroup) return true;
+  const user = via.userId.toLowerCase();
+  if (!user) return false;
+  return [...config.allowedUserIds, ...config.approverUserIds].some((u) => u.toLowerCase() === user);
 }
 
 const NOT_FOUND: ActionOutcome = { text: 'Not found (it may belong to another organization).', final: false, changed: false };
@@ -49,8 +66,20 @@ export class Decisions {
       : this.review(gateway, action.id, action.outcome, undefined, via);
   }
 
+  /** Refuse (and audit) a decision by a group member who is not individually authorised. */
+  private refused(gateway: Gateway, via: Via, data: Record<string, unknown>): ActionOutcome | null {
+    if (mayDecide(via.config, via)) return null;
+    this.services.kernel.audit.record({
+      orgId: gateway.orgId, actor: SYSTEM, action: 'gateway.action_refused', entityKind: 'gateway', entityId: gateway.id,
+      data: { ...data, gatewayKind: gateway.kind, chatId: via.chatId, userId: via.userId, reason: 'group member is not an authorised approver' },
+    });
+    return { text: GROUP_REFUSAL_TEXT, final: false, changed: false };
+  }
+
   approval(gateway: Gateway, approvalId: string, decision: 'approved' | 'denied', note: string | undefined, via: Via): ActionOutcome {
     const { kernel, governance } = this.services;
+    const refusal = this.refused(gateway, via, { action: 'approval', approvalId, decision });
+    if (refusal) return refusal;
     // An owner-level gateway (orgId null) serves every org; an org's gateway only ever sees its own rows.
     const row = kernel.db
       .select({ orgId: approvals.orgId, title: approvals.title })
@@ -76,6 +105,8 @@ export class Decisions {
 
   review(gateway: Gateway, issueId: string, outcome: 'accepted' | 'rejected', note: string | undefined, via: Via): ActionOutcome {
     const { kernel, work } = this.services;
+    const refusal = this.refused(gateway, via, { action: 'review', issueId, outcome });
+    if (refusal) return refusal;
     const row = kernel.db
       .select({ orgId: issues.orgId, title: issues.title, number: issues.number })
       .from(issues)

@@ -9,14 +9,21 @@ import type { ApprovalService } from '../../src/contracts/services.js';
 import type { OrgService } from '../../src/contracts/org-work.js';
 import type { Agent, Approval } from '../../src/contracts/rows.js';
 import type { ToolCallContext } from '../../src/contracts/tools.js';
-import { agents, approvals, departments, organizations, runs } from '../../src/db/schema/index.js';
+import type { OrgPolicies } from '../../src/contracts/types.js';
+import { agents, approvals, departments, knownRecipients, organizations, runs } from '../../src/db/schema/index.js';
+import { evaluateGate } from '../../src/governance/policy.js';
 import { notFound } from '../../src/shared/errors.js';
 import { newId } from '../../src/shared/ids.js';
 import type { TestKernel } from '../helpers/kernel.js';
 
 export const STDIO_FIXTURE = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url));
 
-/** Governance stand-in backed by the real `approvals` table; `decide` emits `approval.decided` like the real service. */
+/**
+ * Governance stand-in backed by the real `approvals` / `known_recipients`
+ * tables; `decide` emits `approval.decided` like the real service. Gates are
+ * decided by the real policy function over the org's policies (`gated`
+ * forces one answer for every kind).
+ */
 export function fakeApprovals(k: TestKernel, opts: { gated?: boolean } = {}): ApprovalService & { all(): Approval[] } {
   const byKey = (orgId: string, kind: string, matchKey: string) =>
     and(eq(approvals.orgId, orgId), eq(approvals.kind, kind as Approval['kind']), sql`json_extract(${approvals.payload}, '$.matchKey') = ${matchKey}`);
@@ -27,7 +34,8 @@ export function fakeApprovals(k: TestKernel, opts: { gated?: boolean } = {}): Ap
   };
   return {
     all: () => k.db.select().from(approvals).all(),
-    requiresApproval: () => opts.gated ?? true,
+    requiresApproval: (orgId, kind, ctx) =>
+      opts.gated ?? evaluateGate(k.db.select().from(organizations).where(eq(organizations.id, orgId)).get()?.policies, String(kind), ctx),
     request(input) {
       const id = newId('approval');
       k.db.insert(approvals).values({
@@ -55,9 +63,17 @@ export function fakeApprovals(k: TestKernel, opts: { gated?: boolean } = {}): Ap
       const rows = k.db.select().from(approvals).where(byKey(orgId, kind, matchKey)).all();
       return rows.find((r) => r.status === 'pending' || (r.status === 'approved' && r.consumedAt === null)) ?? null;
     },
-    isKnownRecipient: () => false,
-    rememberRecipient: () => undefined,
+    isKnownRecipient: (orgId, address) =>
+      !!k.db.select().from(knownRecipients).where(and(eq(knownRecipients.orgId, orgId), eq(knownRecipients.address, address.trim().toLowerCase()))).get(),
+    rememberRecipient(orgId, address) {
+      k.db.insert(knownRecipients).values({ orgId, address: address.trim().toLowerCase(), firstApprovedAt: k.clock.now() }).onConflictDoNothing().run();
+    },
   };
+}
+
+/** Replace an org's policies (e.g. loosen a default gate the test is not about). */
+export function setPolicies(k: TestKernel, orgId: string, policies: OrgPolicies): void {
+  k.db.update(organizations).set({ policies }).where(eq(organizations.id, orgId)).run();
 }
 
 /** Org-context stand-in implementing capability resolution straight from the rows. */
@@ -95,7 +111,7 @@ export interface FixtureTool {
   description: string;
   inputSchema?: Record<string, unknown>;
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
-  handler?: (args: Record<string, unknown>, headers: IncomingHttpHeaders, url: URL) => { text: string; isError?: boolean };
+  handler?: (args: Record<string, unknown>, headers: IncomingHttpHeaders, url: URL) => { text: string; isError?: boolean; meta?: Record<string, unknown> };
 }
 
 export interface HttpFixture {
@@ -155,7 +171,8 @@ export async function startHttpMcp(tools: FixtureTool[]): Promise<HttpFixture> {
       const args = request.params.arguments ?? {};
       fixture.calls.push({ tool: request.params.name, args, authorization: req.headers.authorization, headers: req.headers, url: req.url ?? '' });
       const r = tool?.handler?.(args, req.headers, url) ?? { text: tool ? `${tool.name} ok` : 'unknown tool', isError: !tool };
-      return { content: [{ type: 'text' as const, text: r.text }], ...(r.isError ? { isError: true } : {}) };
+      const meta = 'meta' in r && r.meta ? { _meta: r.meta } : {};
+      return { content: [{ type: 'text' as const, text: r.text }], ...(r.isError ? { isError: true } : {}), ...meta };
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => void server.close());

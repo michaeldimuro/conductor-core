@@ -1,0 +1,14 @@
+{
+  "id": "example_echo",
+  "name": "Example: Echo",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "prefix": { "type": "string", "description": "Text put in front of the echoed prompt.", "default": "" },
+      "uppercase": { "type": "boolean", "default": false }
+    }
+  },
+  "capabilities": { "tools": false, "mcp": false, "resume": false, "vision": false, "browser": "via_mcp" }
+}

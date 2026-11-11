@@ -5,8 +5,8 @@ import type { Kernel } from '../contracts/kernel.js';
 import type { BrowserSession } from '../contracts/rows.js';
 import type { BrowserInputEvent, BrowserService, RunControl } from '../contracts/services.js';
 import type { ToolCallContext, ToolResult } from '../contracts/tools.js';
-import { SYSTEM } from '../contracts/types.js';
-import { ConductorError, conflict, errorMessage, forbidden, invalid } from '../shared/errors.js';
+import { SYSTEM, type Actor } from '../contracts/types.js';
+import { ConductorError, conflict, errorMessage, forbidden, invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { sha256 } from '../shared/util.js';
 import { mintShareToken, newKey, verifyShareToken } from './crypto.js';
@@ -124,6 +124,40 @@ export class TakeoverManager {
     });
     const base = this.deps.shareBaseUrl().replace(/\/+$/, '');
     return { session: this.row(id)!, shareUrl: `${base}/takeover/${token}`, token };
+  }
+
+  /**
+   * Owner asks for the link again (no messaging gateway, lost notification, or
+   * the wrong device claimed it): mint a fresh single-use token for the same
+   * session. The previous token stops working, any attached viewer is dropped
+   * and the session waits for its one viewer again. The expiry does not move.
+   */
+  async reissue(orgId: string, sessionId: string, actor: Actor): Promise<{ session: BrowserSession; shareUrl: string; token: string }> {
+    const session = this.row(sessionId);
+    if (!session || session.orgId !== orgId) throw notFound('takeover session', sessionId);
+    const t = this.live.get(sessionId);
+    if (t && this.kernel.clock.now() >= t.expiresAt) await this.finish(t, 'expired');
+    if (!t || this.live.get(sessionId) !== t) {
+      const status = this.row(sessionId)?.status ?? session.status;
+      throw conflict(`this takeover is ${status === 'pending' || status === 'active' ? 'no longer live' : status.replace('_', ' ')}; the agent has to ask again`);
+    }
+    const key = await this.ensureKey();
+    if (this.live.get(sessionId) !== t) throw conflict('this takeover ended while the link was being issued');
+    const token = mintShareToken(key);
+    const res = this.kernel.db.update(browserSessions)
+      .set({ tokenHash: sha256(token), status: 'pending', viewerId: null, claimedAt: null })
+      .where(and(eq(browserSessions.id, sessionId), eq(browserSessions.orgId, orgId), inArray(browserSessions.status, ['pending', 'active']))).run();
+    if (res.changes !== 1) throw conflict('this takeover is no longer waiting for a human');
+    t.state = 'pending';
+    const viewer = t.viewer;
+    t.viewer = null;
+    await viewer?.stop().catch(() => {});
+    this.kernel.audit.record({
+      orgId, actor, action: 'browser.takeover_link_reissued', entityKind: 'browser_session', entityId: sessionId, runId: t.runId,
+      issueId: session.issueId ?? undefined, data: { expiresAt: t.expiresAt },
+    });
+    const base = this.deps.shareBaseUrl().replace(/\/+$/, '');
+    return { session: this.row(sessionId)!, shareUrl: `${base}/takeover/${token}`, token };
   }
 
   /** End a live takeover without a hand-back (expiry, run ended, shutdown). */

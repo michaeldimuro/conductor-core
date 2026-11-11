@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { seedAgent, seedDept, seedOrg } from '../helpers/kernel.js';
 import { OWNER } from '../../src/contracts/types.js';
@@ -110,11 +109,11 @@ describe('browser profiles', () => {
     const store = new ProfileStore(h.k, orgLookup(h.k));
     const chrome = store.create(org.id, { name: 'Real Chrome', engine: { kind: 'channel', channel: 'chrome' } }, OWNER);
     expect(store.engine(chrome)).toEqual({ kind: 'channel', channel: 'chrome' });
-    expect(existsSync(join(chrome.userDataDir, 'conductor-engine.json'))).toBe(true);
+    expect(chrome.engine).toBe('channel:chrome'); // the engine is a column of the profile row
     const plain = store.create(org.id, { name: 'Plain' }, OWNER);
     expect(store.engine(plain)).toEqual({ kind: 'chromium' });
     store.update(org.id, plain.id, { engine: { kind: 'cdp', endpoint: 'http://127.0.0.1:9222' } }, OWNER);
-    expect(store.engine(plain)).toEqual({ kind: 'cdp', endpoint: 'http://127.0.0.1:9222' });
+    expect(store.engine(store.get(org.id, plain.id))).toEqual({ kind: 'cdp', endpoint: 'http://127.0.0.1:9222' });
     expect(() => store.update(org.id, plain.id, { engine: { kind: 'cdp', endpoint: 'http://evil.example:9222' } }, OWNER)).toThrow(/localhost/);
   });
 

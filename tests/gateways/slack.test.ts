@@ -55,7 +55,7 @@ describe('gateways / slack (FR-17)', () => {
     await f.k.secrets.set('slack-app', JSON.stringify({ token: BOT_TOKEN, signingSecret: SIGNING_SECRET }));
     acme = seedOrg(f.k, 'Acme');
     ada = seedAgent(f.k, acme.id, seedDept(f.k, acme.id).id, 'Ada');
-    row = insertGateway(f.k, { kind: 'slack', orgId: acme.id, authRef: 'slack-app', config: { apiBaseUrl: slack.url, allowedChatIds: [CHANNEL] } });
+    row = insertGateway(f.k, { kind: 'slack', orgId: acme.id, authRef: 'slack-app', config: { apiBaseUrl: slack.url, allowedChatIds: [CHANNEL], allowedUserIds: [USER] } });
   });
   afterEach(async () => {
     await app?.close();
@@ -231,7 +231,7 @@ describe('gateways / slack (FR-17)', () => {
       await f.k.secrets.set('slack-app-token', 'xapp-1-test-app-token');
       const socketRow = insertGateway(f.k, {
         kind: 'slack', orgId: acme.id, authRef: 'slack-socket',
-        config: { apiBaseUrl: slack.url, allowedChatIds: ['C0SOCKET'], secretRefs: { appToken: 'slack-app-token' } },
+        config: { apiBaseUrl: slack.url, allowedChatIds: ['C0SOCKET'], allowedUserIds: [USER], secretRefs: { appToken: 'slack-app-token' } },
       });
       const g = await start();
       expect(g.status().find((s) => s.id === socketRow.id)).toMatchObject({ status: 'active', lastError: null });

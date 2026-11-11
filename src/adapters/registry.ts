@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
-import type { AdapterCapabilities, AdapterManifest, AdapterRegistry, AgentAdapter } from '../contracts/adapter.js';
+import type { AdapterCapabilities, AdapterManifest, AdapterRescanResult, AgentAdapter, RescannableAdapterRegistry } from '../contracts/adapter.js';
 import { resolveInside } from '../shared/paths.js';
 import type { Logger } from '../shared/util.js';
 import { ClaudeApiAdapter, claudeApiConfigJsonSchema } from './builtin/claude-api.js';
@@ -92,7 +92,7 @@ function pluginFolders(pluginDir: string): string[] {
   };
   for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const dir = join(pluginDir, e.name);
-    if (e.name.startsWith('.') || !isDir(dir)) continue;
+    if (e.name.startsWith('.') || e.name === 'node_modules' || !isDir(dir)) continue;
     if (e.name.startsWith('@')) {
       for (const inner of readdirSync(dir).sort()) {
         const nested = join(dir, inner);
@@ -132,20 +132,58 @@ async function loadPlugin(folder: string): Promise<Entry> {
   return { adapter, name: manifest.name, capabilities: manifest.capabilities, configSchema: manifest.configSchema, builtin: false };
 }
 
+/** Root of the running Conductor package (the folder with package.json), from src/ or dist/ alike. */
+export function conductorPackageRoot(): string {
+  return fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '');
+}
+
+/**
+ * Make `import ... from 'conductor/adapters/sdk'` resolvable from plugin
+ * folders: `<pluginDir>/node_modules/conductor` → this package, whose
+ * `exports` map serves the SDK. Node walks up from `<pluginDir>/<pkg>/` and
+ * finds it, so a plugin needs no install step and no copy of the SDK.
+ * Best effort: a plugin that imports nothing from Conductor works without it.
+ */
+export function linkAdapterSdk(pluginDir: string, packageRoot: string = conductorPackageRoot()): string | null {
+  const link = join(pluginDir, 'node_modules', 'conductor');
+  try {
+    if (!existsSync(join(packageRoot, 'package.json'))) return null;
+    let current: string | null = null;
+    try {
+      current = lstatSync(link).isSymbolicLink() ? readlinkSync(link) : '';
+    } catch {
+      current = null;
+    }
+    if (current === packageRoot) return link;
+    // Only ever replace our own symlink; a real directory there was put by the plugin author.
+    if (current === '') return null;
+    if (current !== null) rmSync(link, { force: true });
+    mkdirSync(join(pluginDir, 'node_modules'), { recursive: true });
+    symlinkSync(packageRoot, link, 'dir');
+    return link;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The adapter registry: the six built-ins plus whatever plugin packages are
  * present in `pluginDir`. Installing a third-party adapter is dropping a
- * folder with a `conductor-adapter.json` there and calling `loadPlugins()`.
+ * folder with a `conductor-adapter.json` there and calling `rescan()` (the
+ * daemon also does that by itself when the directory changes) — no restart,
+ * no core change.
  */
-export function createAdapterRegistry(opts: { pluginDir: string; log?: Logger }): AdapterRegistry {
+export function createAdapterRegistry(opts: { pluginDir: string; log?: Logger; linkSdk?: boolean }): RescannableAdapterRegistry {
   const entries = new Map<string, Entry>();
   for (const e of builtins()) entries.set(e.adapter.id, e);
-  let scan: Promise<void> = Promise.resolve();
+  let scan: Promise<AdapterRescanResult> = Promise.resolve({ loaded: [], added: [], removed: [], skipped: [] });
 
-  const rescan = async (): Promise<void> => {
+  const rescan = async (): Promise<AdapterRescanResult> => {
     const found = new Map<string, Entry>();
-    for (const folder of pluginFolders(opts.pluginDir)) {
-      if (!existsSync(join(folder, MANIFEST_FILE))) continue;
+    const skipped: AdapterRescanResult['skipped'] = [];
+    const folders = pluginFolders(opts.pluginDir).filter((folder) => existsSync(join(folder, MANIFEST_FILE)));
+    if (folders.length > 0 && opts.linkSdk !== false) linkAdapterSdk(opts.pluginDir);
+    for (const folder of folders) {
       try {
         const entry = await loadPlugin(folder);
         const id = entry.adapter.id;
@@ -155,11 +193,29 @@ export function createAdapterRegistry(opts: { pluginDir: string; log?: Logger })
         opts.log?.info({ adapter: id, folder }, 'adapter plugin loaded');
       } catch (e) {
         // A bad plugin is skipped, never fatal.
-        opts.log?.warn({ folder, err: e instanceof Error ? e.message : String(e) }, 'adapter plugin skipped');
+        const error = e instanceof Error ? e.message : String(e);
+        skipped.push({ folder, error });
+        opts.log?.warn({ folder, err: error }, 'adapter plugin skipped');
       }
     }
-    for (const [id, entry] of entries) if (!entry.builtin) entries.delete(id);
+    const before = new Set<string>();
+    for (const [id, entry] of entries) {
+      if (entry.builtin) continue;
+      before.add(id);
+      entries.delete(id);
+    }
     for (const [id, entry] of found) entries.set(id, entry);
+    return {
+      loaded: [...found.keys()],
+      added: [...found.keys()].filter((id) => !before.has(id)),
+      removed: [...before].filter((id) => !found.has(id)),
+      skipped,
+    };
+  };
+  // Serialize scans so concurrent callers never interleave registry updates.
+  const queued = (): Promise<AdapterRescanResult> => {
+    scan = scan.then(rescan, rescan);
+    return scan;
   };
 
   return {
@@ -172,10 +228,9 @@ export function createAdapterRegistry(opts: { pluginDir: string; log?: Logger })
         configSchema: e.configSchema,
         builtin: e.builtin,
       })),
-    loadPlugins: () => {
-      // Serialize scans so concurrent callers never interleave registry updates.
-      scan = scan.then(rescan, rescan);
-      return scan;
+    loadPlugins: async () => {
+      await queued();
     },
+    rescan: queued,
   };
 }

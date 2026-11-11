@@ -8,6 +8,7 @@ import { assertBoard, type Ctx } from './context.js';
 import { insertAgent } from './agents.js';
 import { createDeptCore } from './departments.js';
 import { createOrgCore } from './orgs.js';
+import { recordRevision } from './repo.js';
 import { createDeptSchema, createOrgSchema, fromTemplateSchema, hireAgentSchema, parse } from './schemas.js';
 import { agency } from './templates/agency.js';
 import { contentStudio } from './templates/content-studio.js';
@@ -30,8 +31,9 @@ export function insertGoal(
   const k = ctx.kernel;
   const now = k.clock.now();
   const id = values.id ?? newId('goal');
-  k.db.insert(goals).values({ ...values, id, orgId, createdAt: now, updatedAt: now }).run();
-  k.audit.record({ orgId, actor, action: 'goal.created', entityKind: 'goal', entityId: id, data: { title: values.title } });
+  const row = k.db.insert(goals).values({ ...values, id, orgId, createdAt: now, updatedAt: now }).returning().get();
+  const revision = recordRevision(k, orgId, 'goal', id, row, actor, 'created');
+  k.audit.record({ orgId, actor, action: 'goal.created', entityKind: 'goal', entityId: id, data: { title: values.title, revision } });
   ctx.after(() => k.bus.emit('goal.created', { orgId, goalId: id }));
   return id;
 }

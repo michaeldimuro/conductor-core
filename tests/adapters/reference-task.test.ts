@@ -207,7 +207,8 @@ describe('FR-6: the same reference task completes on every adapter with usage an
     expect(rec.argv.slice(0, 2)).toEqual(['exec', '--json']);
     expect(rec.overrides['mcp_servers.conductor.url']).toBe(JSON.stringify(gateway.url));
     expect(rec.overrides['mcp_servers.conductor.bearer_token_env_var']).toBe('"CONDUCTOR_MCP_BEARER_0"');
-    expect(rec.overrides.sandbox_mode).toBe('"workspace-write"');
+    // Under the Conductor process sandbox (macOS default) Codex's own seatbelt is switched off: profiles do not nest.
+    expect(rec.overrides.sandbox_mode).toBe(process.platform === 'darwin' ? '"danger-full-access"' : '"workspace-write"');
     expect(rec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     // The token travels in the environment, never in argv.
     expect(rec.argv.join(' ')).not.toContain(RUN_TOKEN);

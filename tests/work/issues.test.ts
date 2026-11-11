@@ -131,10 +131,7 @@ describe('work: issues', () => {
     expect(codeOf(() => work.createIssue(f.org.id, { title: 'x', status: 'done' }, OWNER))).toBe('validation');
   });
 
-  it('traces every issue to a goal: parent → assignee → creator → org goal → null', () => {
-    const none = work.createIssue(f.org.id, { title: 'No goals yet' }, OWNER);
-    expect(none.goalId).toBeNull();
-
+  it('traces every issue to a goal: parent → assignee → creator → org goal', () => {
     const orgGoal = work.createGoal(f.org.id, { title: 'Org' }, OWNER);
     const devGoal = work.createGoal(f.org.id, { title: 'Dev', ownerAgentId: f.dev.id }, OWNER);
     const leadGoal = work.createGoal(f.org.id, { title: 'Lead', ownerAgentId: f.lead.id }, OWNER);

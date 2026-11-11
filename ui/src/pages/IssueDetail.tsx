@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { actorName } from '../components/activity.js';
 import { IssueForm, useGoals } from '../components/IssueForm.js';
 import { Button, Chip, Empty, ErrorNote, Field, JsonView, Load, Loading, Panel, Segmented, Status } from '../components/ui.js';
+import { runNow as runAgentNow } from '../lib/run-now.js';
 import { api } from '../lib/api.js';
 import type { Agent, Issue, ReviewRequest, TimelineEntry } from '../lib/api.js';
 import { ago, dateTime, humanize, money, blockedText } from '../lib/format.js';
@@ -111,7 +112,12 @@ function Timeline({ entries, dir, base }: { entries: TimelineEntry[]; dir: Direc
                 <span className="muted">{c.runId ? <><Link to={`${base}/runs/${c.runId}`}>run</Link> </> : null}<time title={dateTime(c.createdAt)}>{ago(c.createdAt)}</time></span>
               </header>
               <Markdown text={c.body} />
-              {c.attachments.length ? <p className="row muted">{c.attachments.map((a) => <Chip key={a.path}>{a.name}</Chip>)}</p> : null}
+              {c.attachments.length ? (
+                <p className="row muted">
+                  <span>Attachments:</span>
+                  {c.attachments.map((a, i) => <a key={`${i}-${a.path}`} className="attachment" href={api.attachmentPath(c.orgId, c.issueId, c.id, i)} download={a.name}>{a.name}</a>)}
+                </p>
+              ) : null}
             </li>
           );
         }
@@ -197,7 +203,7 @@ export function IssueDetail() {
   const patch = useAction((p: Parameters<typeof api.updateIssue>[2]) => api.updateIssue(org.id, issue!.id, p), inv);
   const assign = useAction((agentId: string | null) => api.assignIssue(org.id, issue!.id, agentId), inv);
   const comment = useAction((body: string) => api.addComment(org.id, issue!.id, { body }), inv);
-  const runNow = useAction(() => api.runAgent(org.id, issue!.assigneeAgentId!, { issueId: issue!.id }), { success: 'Run queued', invalidate: [k(org.id, 'runs')] });
+  const runNow = useAction(() => runAgentNow(org.id, issue!.assigneeAgentId!, dir.agentName(issue!.assigneeAgentId, 'The agent'), { issueId: issue!.id }), { invalidate: [k(org.id, 'runs')] });
 
   if (!issue) return <div className="page page-narrow">{issueQ.error ? <ErrorNote error={issueQ.error} retry={issueQ.reload} /> : <Loading lines={5} />}</div>;
   const goal = goals.data?.find((g) => g.id === issue.goalId);

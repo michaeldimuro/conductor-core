@@ -10,6 +10,7 @@ import { assertNoCycle } from './chart.js';
 import { persistDept } from './departments.js';
 import { persistOrg } from './orgs.js';
 import { findAgentRow, findDept, requireAgent, requireDept, requireOrg, type EntityKind } from './repo.js';
+import { rollbackWorkEntity } from './revisions-work.js';
 
 /** Config fields a rollback restores. Identity, slug, status and timestamps are never rolled back. */
 const ORG_FIELDS = [
@@ -29,9 +30,11 @@ function pick<T extends object>(snapshot: Record<string, unknown>, fields: reado
   return out as Partial<T>;
 }
 
+const KINDS: readonly EntityKind[] = ['org', 'dept', 'agent', 'goal', 'playbook', 'project'];
+
 function asKind(entityKind: string): EntityKind {
-  if (entityKind === 'org' || entityKind === 'dept' || entityKind === 'agent') return entityKind;
-  throw invalid(`unsupported entity kind "${entityKind}" (expected org, dept or agent)`);
+  if (KINDS.includes(entityKind as EntityKind)) return entityKind as EntityKind;
+  throw invalid(`unsupported entity kind "${entityKind}" (expected ${KINDS.join(', ')})`);
 }
 
 /** Newest first. Rows of other orgs are never returned. */
@@ -72,6 +75,11 @@ export function rollback(ctx: Ctx, orgId: string, entityKind: string, entityId: 
     if (!rev) throw notFound(`${kind} revision`, `${entityId}@${revision}`);
     const note = `rollback to revision ${revision}`;
     const data = { change: 'rollback', rollbackTo: revision };
+
+    if (kind === 'goal' || kind === 'playbook' || kind === 'project') {
+      rollbackWorkEntity(ctx, orgId, kind, entityId, rev, actor, { note, data });
+      return;
+    }
 
     if (kind === 'org') {
       const org = requireOrg(k, orgId);

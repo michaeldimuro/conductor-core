@@ -50,6 +50,11 @@ export interface OrgPolicies {
   networkAllowlist?: string[];
   /** Preferred toolkit source when both offer the same app. */
   toolkitDefault?: 'composio' | 'arcade';
+  /**
+   * Hours a pending approval stays actionable before it expires (default 72).
+   * 0 disables the default expiry; a requester's explicit `expiresAt` always wins.
+   */
+  approvalExpiryHours?: number;
 }
 
 /** Effective capabilities resolved at run start and snapshotted onto the Run for audit. */
@@ -80,6 +85,37 @@ export interface SkillEvalResult {
   passed: boolean;
   score: number;
   notes?: string;
+  /**
+   * The evaluation could not be decided (a check that cannot be verified, or the judge gave no
+   * usable verdict). `passed` is false, but this is "needs human review", not a failed skill.
+   */
+  needsReview?: boolean;
+}
+
+/** Deterministic expectations of an eval case, checked without a model. */
+export interface EvalExpectations {
+  /** Strings the final answer must contain (case-insensitive). */
+  contains?: string[];
+  /** Strings the final answer must NOT contain (case-insensitive). */
+  notContains?: string[];
+  /** Regular expressions (`/source/flags` or a bare source) the final answer must match. */
+  regex?: string[];
+  /** Workspace-relative files the run must leave behind in its sandbox. */
+  files?: string[];
+}
+
+/** A stored eval case of a skill, decoded. */
+export interface SkillEvalCase {
+  id: string;
+  skillId: string;
+  /** `issue` — replay of an issue; `folder` — from the skill's `evals/cases.*`; `manual` — added through the service. */
+  source: 'issue' | 'folder' | 'manual';
+  issueId: string | null;
+  prompt: string;
+  /** Natural-language success criteria (judged by the utility model when one is configured). */
+  criteria: string;
+  expect: EvalExpectations;
+  createdAt: number;
 }
 
 export interface EvalMetrics {

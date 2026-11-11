@@ -8,6 +8,7 @@ import type { ProviderBinding, UpdateOrgRequest } from '../../lib/api.js';
 import { numOrNull } from '../../lib/format.js';
 import { useOrg } from '../../lib/org.js';
 import { useAction } from '../../lib/query.js';
+import { ArchivedOrgs, MemoryBackendPanel } from './OrgExtras.js';
 
 const GATED: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'hire_agent', label: 'Hiring an agent' }, { id: 'terminate_agent', label: 'Terminating an agent' }, { id: 'budget_raise', label: 'Raising a budget' },
@@ -110,12 +111,14 @@ export function OrgSettings() {
       <ErrorNote error={save.error} />
       <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy}>Save organization</Button></div>
     </form>
+      <MemoryBackendPanel />
       <Panel title="Archive">
         <div className="spread">
           <p className="dim">Archiving stops every agent and hides the organization. Its data stays on disk.</p>
           <ConfirmButton label="Archive organization" danger title={`Archive ${org.name}`} confirmLabel="Archive" phrase={org.slug} message={`Every agent in ${org.name} stops and the organization disappears from the switcher.`} onConfirm={() => archive.run()} />
         </div>
       </Panel>
+      <ArchivedOrgs />
     </div>
   );
 }

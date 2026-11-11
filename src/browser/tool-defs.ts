@@ -60,7 +60,7 @@ export const schemas = {
   }),
   fill_secret: z.strictObject({
     field: z.string().min(1).max(2000).describe('The input to fill: an element ref from `snapshot` or a CSS selector.'),
-    secret_ref: z.string().min(1).max(200).describe('Secret reference (org/<org>/…). The value is never shown to you.'),
+    secret_ref: z.string().min(1).max(500).describe('Secret reference: org/<org>/… from the secret store, or a 1Password reference op://<vault>/<item>/<field> when the owner allowed that vault. The value is never shown to you.'),
   }),
   request_human: z.strictObject({
     reason: z.string().trim().min(1).max(500).describe('What the human needs to do (log in, MFA code, CAPTCHA, consent…).'),

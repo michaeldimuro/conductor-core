@@ -19,7 +19,19 @@ export const runEventSchema = z.discriminatedUnion('type', [
     cacheWriteTokens: count.optional(),
   }),
   z.object({ type: z.literal('session'), sessionId: z.string() }),
-  z.object({ type: z.literal('status'), status: z.string() }),
+  z.object({
+    type: z.literal('status'),
+    status: z.string(),
+    sandbox: z
+      .object({
+        enabled: z.boolean(),
+        reason: z.string().optional(),
+        fallback: z.boolean().optional(),
+        network: z.enum(['on', 'local']).optional(),
+        writable: z.array(z.string()).optional(),
+      })
+      .optional(),
+  }),
   z.object({ type: z.literal('error'), kind, message: z.string(), retryable: z.boolean() }),
 ]);
 

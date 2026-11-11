@@ -30,13 +30,16 @@ const freePort = () =>
 
 describe('end-to-end: an issue goes from assignment to done through the whole stack', () => {
   let home: string;
+  let scratch: string;
   let s: Awaited<ReturnType<typeof createServices>>;
   let api: Awaited<ReturnType<typeof createApiServer>>;
   let trace: string;
 
   beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), 'conductor-e2e-'));
-    trace = join(home, 'trace.json');
+    // The agent process is sandboxed to its workspace + temp dirs; the daemon home itself is off limits.
+    scratch = mkdtempSync(join(tmpdir(), 'conductor-e2e-trace-'));
+    trace = join(scratch, 'trace.json');
     const port = await freePort();
     s = await createServices({
       home, secrets: new MemorySecretStore(), config: { port, host: '127.0.0.1' },
@@ -51,6 +54,7 @@ describe('end-to-end: an issue goes from assignment to done through the whole st
     await api.close();
     await s.close();
     rmSync(home, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   });
 
   const drain = async (ms = 30_000) => {

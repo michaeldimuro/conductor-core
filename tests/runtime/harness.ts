@@ -4,7 +4,7 @@ import { createGovernance } from '../../src/governance/index.js';
 import { createOrgService } from '../../src/org/index.js';
 import { createWorkService } from '../../src/work/index.js';
 import { createRuntime, InProcessSupervisor, type Runtime } from '../../src/runtime/index.js';
-import type { AdapterRegistry, AgentAdapter, RunContext, RunEvent, RunResult } from '../../src/contracts/adapter.js';
+import type { AdapterRegistry, AgentAdapter, ResolvedSkillRef, RunContext, RunEvent, RunResult } from '../../src/contracts/adapter.js';
 import type { MemoryService, SkillService, ConnectorGateway, Governance, WorkerJob } from '../../src/contracts/services.js';
 import type { OrgService, WorkService } from '../../src/contracts/org-work.js';
 import type { Agent, Department, Organization } from '../../src/contracts/rows.js';
@@ -21,6 +21,9 @@ export interface Harness {
   runtime: Runtime;
   memory: { recall: ReturnType<typeof vi.fn>; reflect: ReturnType<typeof vi.fn>; consolidate: ReturnType<typeof vi.fn> };
   skills: { recordUsage: ReturnType<typeof vi.fn> };
+  /** Skills the fake skill service resolves for every agent, and the registry rows behind them. */
+  skillRefs: ResolvedSkillRef[];
+  skillRows: Map<string, { version: number; contentHash: string }>;
   /** Contexts seen by the fake adapter, in order. */
   calls: RunContext[];
   /** What the fake adapter does on its next runs (default: complete with "done"). */
@@ -46,6 +49,8 @@ export async function createHarness(opts: { runtime?: RuntimeOptions; resume?: b
 
   const h = { k, governance, org, work, calls: [] as RunContext[] } as unknown as Harness;
   h.script = () => {};
+  h.skillRefs = [];
+  h.skillRows = new Map();
 
   const cancelled = new Map<string, () => void>();
   const adapter: AgentAdapter = {
@@ -76,7 +81,11 @@ export async function createHarness(opts: { runtime?: RuntimeOptions; resume?: b
     consolidate: vi.fn(async () => ({ merged: 0, decayed: 0, promotedToSkillDrafts: 0, profileTokens: 0 })),
   };
   h.skills = { recordUsage: vi.fn(async () => {}) };
-  const skills = { resolveForAgent: () => [], loadedSkills: () => [], get: () => ({ status: 'active', author: 'human' }), retireStale: async () => [], ...h.skills } as unknown as SkillService;
+  const skills = {
+    resolveForAgent: () => h.skillRefs, loadedSkills: () => [], retireStale: async () => [],
+    get: (id: string) => ({ status: 'active', author: 'human', ...h.skillRows.get(id) }),
+    ...h.skills,
+  } as unknown as SkillService;
   const connectors = { snapshot: async () => [], endRun: async () => {} } as Pick<ConnectorGateway, 'snapshot' | 'endRun'>;
 
   h.runtime = createRuntime(k, {

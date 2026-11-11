@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import type { Kernel } from '../contracts/kernel.js';
+import type { ExternalBackendConfig, ExternalBackendStatus } from '../contracts/services.js';
+import type { Actor } from '../contracts/types.js';
 import { ConductorError, errorMessage } from '../shared/errors.js';
-import { getSetting } from './indexes.js';
+import { deleteSetting, getSetting, setSetting } from './indexes.js';
 
 /** One interface over every optional external memory service. */
 export interface ExternalMemoryBackend {
@@ -233,6 +235,12 @@ export function createExternalBackend(config: BackendConfig, apiKey: string): Ex
   }
 }
 
+/**
+ * Settings key of an org's external memory backend: `memory.backend.<orgId>`.
+ * Value: `{ kind: "honcho" | "mem0" | "zep" | "supermemory", authRef: "<secret ref of the API key>",
+ * baseUrl?: "<override>", options?: { ... } }`. The key itself lives in the secret store.
+ * Written through `MemoryService.setExternalBackend` (validated + audited).
+ */
 export const backendSettingKey = (orgId: string): string => `memory.backend.${orgId}`;
 export const externalRefKey = (memoryId: string): string => `memory.ext.${memoryId}`;
 
@@ -262,4 +270,29 @@ export async function resolveBackend(kernel: Kernel, orgId: string): Promise<Ext
     kernel.log.warn({ orgId, err: errorMessage(e) }, 'could not resolve external memory backend');
     return null;
   }
+}
+
+/** The org's configured backend (no secret) and whether its key is present. Null when none is set or the stored value is invalid. */
+export async function getBackendConfig(kernel: Kernel, orgId: string): Promise<ExternalBackendStatus | null> {
+  const parsed = backendConfigSchema.safeParse(getSetting(kernel.db, backendSettingKey(orgId)));
+  if (!parsed.success) return null;
+  const ready = await kernel.secrets.has(parsed.data.authRef).catch(() => false);
+  return { ...parsed.data, ready };
+}
+
+/** Set (validated) or clear (`null`) the org's backend. The caller has already verified the org exists. */
+export async function setBackendConfig(kernel: Kernel, orgId: string, config: ExternalBackendConfig | null, actor: Actor): Promise<ExternalBackendStatus | null> {
+  const key = backendSettingKey(orgId);
+  if (config === null) {
+    deleteSetting(kernel.db, key);
+    kernel.audit.record({ orgId, actor, action: 'config.changed', entityKind: 'setting', entityId: key, data: { memoryBackend: null } });
+    return null;
+  }
+  const parsed = backendConfigSchema.strict().safeParse(config);
+  if (!parsed.success) {
+    throw new ConductorError('validation', `invalid memory backend: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'config'}: ${i.message}`).join('; ')}`);
+  }
+  setSetting(kernel.db, key, parsed.data, kernel.clock.now());
+  kernel.audit.record({ orgId, actor, action: 'config.changed', entityKind: 'setting', entityId: key, data: { memoryBackend: { kind: parsed.data.kind, baseUrl: parsed.data.baseUrl ?? null, authRef: parsed.data.authRef } } });
+  return getBackendConfig(kernel, orgId);
 }

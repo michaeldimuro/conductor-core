@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Button, Chip, Empty, Field, FormShell, Load, Modal, PageHead, Panel } from '../components/ui.js';
+import { Button, Chip, ConfirmButton, Empty, Field, FormShell, Load, Modal, PageHead, Panel } from '../components/ui.js';
+import { ProjectsPanel } from '../components/projects.js';
 import { api } from '../lib/api.js';
 import type { CreateGoalInput, Goal, GoalNode } from '../lib/api.js';
 import { dateOnly, fromDateInput, humanize, toDateInput } from '../lib/format.js';
@@ -77,6 +78,7 @@ function Node({ node, dir, onEdit, onAdd }: { node: GoalNode; dir: Directory; on
   const g = node.goal;
   const total = node.issueCounts.open + node.issueCounts.done;
   const setStatus = useAction((status: Goal['status']) => api.updateGoal(org.id, g.id, { status }), { invalidate: [k(org.id, 'goal')] });
+  const remove = useAction(() => api.deleteGoal(org.id, g.id), { invalidate: [k(org.id, 'goal'), k(org.id, 'projects'), k(org.id, 'issues')], success: `Deleted goal: ${g.title}` });
   return (
     <li>
       <div className={`goal goal-${g.status}`}>
@@ -105,6 +107,8 @@ function Node({ node, dir, onEdit, onAdd }: { node: GoalNode; dir: Directory; on
           </select>
           <Button small onClick={() => onEdit(g)}>Edit</Button>
           <Button small onClick={() => onAdd(g)}>Add sub-goal</Button>
+          <ConfirmButton small variant="quiet" danger label="Delete" title={`Delete "${g.title}"`} confirmLabel="Delete goal"
+            message="Its sub-goals, projects and issues move up to the parent goal, so no work is lost. To keep the goal for the record, set its status to Abandoned instead." onConfirm={() => remove.run()} />
         </div>
       </div>
       {node.children.length > 0 ? <ul className="tree">{node.children.map((c) => <Node key={c.goal.id} node={c} dir={dir} onEdit={onEdit} onAdd={onAdd} />)}</ul> : null}
@@ -125,6 +129,7 @@ export function Goals() {
           {(nodes) => <ul className="tree tree-root">{nodes.map((n) => <Node key={n.goal.id} node={n} dir={dir} onEdit={(goal) => setForm({ goal })} onAdd={(parent) => setForm({ parent })} />)}</ul>}
         </Load>
       </Panel>
+      <ProjectsPanel goals={flatten(tree.data ?? []).map((n) => n.goal)} />
       <Modal open={form !== null} onClose={() => setForm(null)} title={form?.goal ? 'Edit goal' : form?.parent ? `Sub-goal of ${form.parent.title}` : 'New goal'} wide>
         {form ? <GoalForm key={form.goal?.id ?? form.parent?.id ?? 'new'} onClose={() => setForm(null)} goal={form.goal} parent={form.parent} tree={tree.data ?? []} dir={dir} /> : null}
       </Modal>

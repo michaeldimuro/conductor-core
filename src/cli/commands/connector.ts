@@ -214,6 +214,32 @@ export function connectorCommands(program: Command, deps: CliDeps): void {
     }));
 
   gateway
+    .command('pair <gateway>')
+    .description('mint a one-time pairing code; send it to the bot from the chat that should reach your agents')
+    .action(action(deps, async (ctx, args) => {
+      const g = await resolveGateway(ctx, arg(args, 0, 'gateway'));
+      const { code } = await ctx.client().gatewayPairingCode(g.id);
+      ctx.emit({ gatewayId: g.id, kind: g.kind, code }, () => {
+        ctx.line(`Pairing code for ${g.name} (${g.kind}): ${ctx.style.bold(code)}`);
+        ctx.line(`  send  /pair ${code}  to the bot from the chat you want to pair; the code works once and expires in a few minutes`);
+        ctx.line('  check that it worked: conductor gateway status');
+      });
+    }));
+
+  gateway
+    .command('status')
+    .description('live state of each gateway as the daemon sees it (connected, error, paired)')
+    .action(action(deps, async (ctx) => {
+      const [live, rows] = await Promise.all([ctx.client().gatewayStatus(), ctx.client().listGateways()]);
+      const byId = new Map(rows.map((g) => [g.id, g]));
+      ctx.emit(live, () => ctx.table(
+        ['name', 'kind', 'status', 'last error', 'id'],
+        live.map((s) => [byId.get(s.id)?.name ?? '-', s.kind, s.status, s.lastError ? clip(s.lastError, 60) : '-', s.id]),
+        rows.length ? 'the daemon is not running any gateway right now (are they disabled?)' : 'no gateways yet — add one: conductor gateway add telegram --name "My bot" --secret-ref conductor/telegram-bot-token',
+      ));
+    }));
+
+  gateway
     .command('remove <gateway>')
     .description('remove a gateway')
     .action(action(deps, async (ctx, args) => {

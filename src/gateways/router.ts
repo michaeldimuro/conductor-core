@@ -65,6 +65,8 @@ export class GatewayRouter {
       adapter,
       chatId,
       userId,
+      // Fail closed: an adapter that does not say is only a 1:1 chat when the chat IS the user.
+      isGroup: message.isGroup ?? chatId.toLowerCase() !== userId.toLowerCase(),
       reply: async (replyText, buttons) => {
         try {
           await deliver(adapter, chatId, { text: replyText, buttons });
@@ -101,12 +103,12 @@ export class GatewayRouter {
     const { kernel } = this.d.services;
     const command = message.action === undefined ? parseCommand(text) : null;
     if (command?.name === 'pair') {
-      const result = this.d.store.redeemPairingCode(ctx.gateway.id, ctx.chatId, ctx.userId, command.args);
+      const result = this.d.store.redeemPairingCode(ctx.gateway.id, ctx.chatId, ctx.userId, command.args, ctx.isGroup);
       kernel.audit.record({
         orgId: ctx.gateway.orgId, actor: result === 'paired' ? OWNER : SYSTEM,
         action: result === 'paired' ? 'gateway.paired' : 'gateway.pairing_failed',
         entityKind: 'gateway', entityId: ctx.gateway.id,
-        data: { gatewayKind: ctx.gateway.kind, chatId: ctx.chatId, userId: ctx.userId, result },
+        data: { gatewayKind: ctx.gateway.kind, chatId: ctx.chatId, userId: ctx.userId, isGroup: ctx.isGroup, result },
       });
       if (result === 'paired') return ctx.reply('Paired. This chat can now talk to Conductor — send /help to see what it can do.');
       if (!ctx.adapter.quietRefusals) await ctx.reply('That pairing code is not valid.');

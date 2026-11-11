@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestKernel, type TestKernel } from '../helpers/kernel.js';
 import { OWNER } from '../../src/contracts/types.js';
 import type { OrgBundle, OrgChartNode } from '../../src/contracts/org-work.js';
-import type { Organization } from '../../src/contracts/rows.js';
-import { connectors, goals, memories, playbooks, skills } from '../../src/db/schema/index.js';
+import type { Connector, ConnectorGrant, Organization } from '../../src/contracts/rows.js';
+import type { OrgImportDeps } from '../../src/org/index.js';
+import { connectorGrants, connectors, goals, memories, playbooks, projects, skills } from '../../src/db/schema/index.js';
 import { newId } from '../../src/shared/ids.js';
 import type { OrgContext } from '../../src/org/index.js';
 import { sanitize } from '../../src/org/sanitize.js';
@@ -18,7 +19,27 @@ const SECRETS = {
   bearer: 'Bearer abcdefghijklmnopqrstuvwxyz.0123456789',
   plain: 'hunter2-not-a-pattern',
 };
-const REFS = ['anthropic/main-key', 'openai/fallback-key', 'connectors/github-pat'];
+const REFS = ['anthropic/main-key', 'openai/fallback-key', 'connectors/github-pat', 'connectors/github-sam-account'];
+
+/** Records what the import asks the connector gateway to do, like the real one would persist it. */
+function fakeGateway() {
+  const installed: Connector[] = [];
+  const grants: ConnectorGrant[] = [];
+  const dep: NonNullable<OrgImportDeps['connectors']> = {
+    install: vi.fn(async (orgId, input) => {
+      const row = { id: newId('connector'), orgId, status: 'active', lastError: null, createdAt: 0, updatedAt: 0, scope: 'org', scopeId: null, authRef: null, toolAllowlist: null, templateId: null, ...input } as Connector;
+      installed.push(row);
+      return row;
+    }),
+    update: vi.fn(async (_orgId, connectorId, patch) => Object.assign(installed.find((c) => c.id === connectorId)!, patch)),
+    grant: vi.fn((orgId, connectorId, agentId, input) => {
+      const grant = { id: newId('grant'), orgId, connectorId, agentId, toolAllowlist: null, toolPolicies: {}, defaultPolicy: 'allowed', authRef: null, createdAt: 0, updatedAt: 0, ...input } as ConnectorGrant;
+      grants.push(grant);
+      return { grant };
+    }),
+  };
+  return { dep, installed, grants };
+}
 
 /** Shape of the chart with ids erased: role, dept, lead flag, nested reports. */
 const shape = (nodes: OrgChartNode[]): unknown[] =>
@@ -52,7 +73,8 @@ describe('FR-18: org export / import', () => {
       providerBinding: { adapter: 'openai_api', model: 'gpt', authRef: REFS[1], config: { temperature: 0.2 } },
     }, OWNER).agent!;
     const dev = org.hireAgent(source.id, { deptId: eng.id, name: 'Sam', role: 'Engineer', goal: 'Ship', backstory: 'Pragmatic', reportsTo: lead.id, skills: ['rust'], heartbeatCron: '0 * * * *' }, OWNER).agent!;
-    org.updateAgent(source.id, dev.id, { denySkills: ['house-style'], maxSteps: 25 }, OWNER);
+    org.updateAgent(source.id, dev.id, { denySkills: ['house-style'], maxSteps: 25, connectors: ['con_github', 'con_gone'], denyConnectors: ['con_local'] }, OWNER);
+    org.updateDept(source.id, eng.id, { sharedConnectors: ['con_local'] }, OWNER);
     const fired = org.hireAgent(source.id, { deptId: eng.id, name: 'Gone', role: 'Contractor', reportsTo: lead.id }, OWNER).agent!;
     org.terminateAgent(source.id, fired.id, OWNER);
 
@@ -77,6 +99,24 @@ describe('FR-18: org export / import', () => {
       },
       createdAt: now, updatedAt: now,
     }).run();
+    k.db.insert(connectors).values({
+      id: 'con_local', orgId: source.id, kind: 'mcp_stdio', name: 'Local files', scope: 'dept', scopeId: eng.id,
+      config: { command: 'npx', args: ['files-mcp'] }, toolAllowlist: ['read_file', 'get_token'], createdAt: now, updatedAt: now,
+    }).run();
+    k.db.insert(connectorGrants).values([
+      {
+        id: newId('grant'), orgId: source.id, connectorId: 'con_github', agentId: dev.id, authRef: REFS[3],
+        toolAllowlist: ['search', 'create_issue'], toolPolicies: { create_issue: 'ask', get_token: 'off' }, defaultPolicy: 'allowed', createdAt: now, updatedAt: now,
+      },
+      { id: newId('grant'), orgId: source.id, connectorId: 'con_local', agentId: lead.id, defaultPolicy: 'ask', createdAt: now, updatedAt: now },
+      { id: newId('grant'), orgId: source.id, connectorId: 'con_github', agentId: fired.id, createdAt: now, updatedAt: now },
+    ]).run();
+    k.db.insert(projects).values([
+      { id: newId('project'), orgId: source.id, name: 'Website', goalId: goalChild, budgetUsd: 40, workspacePath: join(k.paths.org(source.slug), 'repos', 'website'), createdAt: now, updatedAt: now },
+      { id: newId('project'), orgId: source.id, name: 'Legacy', status: 'archived', workspacePath: '/Users/someone/code/legacy', createdAt: now, updatedAt: now },
+    ]).run();
+    writeFileSync(k.paths.agentMemoryFile(source.slug, dev.slug), `# Standing rules\n- Always cc ops@ on vendor emails.\n- Deploy token: ${SECRETS.github}\n`);
+    writeFileSync(k.paths.ownerModelFile(source.slug), 'Owner rejects designs with stock photos.\n');
 
     const skillDir = join(k.paths.orgSkills(source.slug), 'house-style');
     mkdirSync(join(skillDir, 'scripts'), { recursive: true });
@@ -123,7 +163,29 @@ describe('FR-18: org export / import', () => {
     expect(b.agents[1]).toMatchObject({ budgetUsd: 50, reportsTo: ids.ceo, providerBinding: { adapter: 'openai_api', model: 'gpt', config: { temperature: 0.2 } } });
     expect(b.goals).toHaveLength(2);
     expect(b.playbooks).toHaveLength(1);
-    expect(b.connectors).toEqual([expect.objectContaining({ name: 'GitHub', kind: 'mcp_http', config: expect.objectContaining({ timeoutMs: 5000 }) })]);
+    expect(b.connectors).toEqual([
+      expect.objectContaining({ name: 'GitHub', kind: 'mcp_http', needsCredential: true, config: expect.objectContaining({ timeoutMs: 5000 }) }),
+      expect.objectContaining({ name: 'Local files', kind: 'mcp_stdio', scope: 'dept', scopeId: ids.eng, needsCredential: false, toolAllowlist: ['read_file', 'get_token'] }),
+    ]);
+    // Grants keep their tool policies (as data, so a tool called get_token is not mistaken for a secret); a terminated agent's grant is dropped.
+    expect(b.grants).toEqual([
+      {
+        connectorId: 'con_github', agentId: ids.dev, toolAllowlist: ['search', 'create_issue'], defaultPolicy: 'allowed', needsCredential: true,
+        policies: [{ tool: 'create_issue', policy: 'ask' }, { tool: 'get_token', policy: 'off' }],
+      },
+      { connectorId: 'con_local', agentId: ids.lead, toolAllowlist: null, policies: [], defaultPolicy: 'ask', needsCredential: false },
+    ]);
+    expect(b.agents[2]).toMatchObject({ connectors: ['con_github', 'con_gone'], denyConnectors: ['con_local'], needsCredential: false });
+    expect(b.agents[1]).toMatchObject({ needsCredential: true });
+    expect(b.org).toMatchObject({ needsCredential: true, defaultConnectors: ['con_github'], policies: { extraGated: ['deploy'] } });
+    // Only a workspace inside the org directory is portable.
+    expect(b.projects).toEqual([
+      expect.objectContaining({ name: 'Website', goalId: ids.goalChild, budgetUsd: 40, status: 'active', workspaceRel: 'repos/website' }),
+      expect.objectContaining({ name: 'Legacy', goalId: null, status: 'archived', workspaceRel: null }),
+    ]);
+    expect(b.profileDocs).toEqual([{ agentId: ids.dev, content: expect.stringContaining('Always cc ops@ on vendor emails.') }]);
+    expect(b.ownerModel).toBe('Owner rejects designs with stock photos.\n');
+    expect(b.skills.map((s) => [s.name, s.status, s.author])).toEqual([['house-style', 'active', 'human'], ['rust', 'draft', 'human']]);
     expect(b.skills.map((s) => [s.scope, s.scopeSlug, s.name, Object.keys(s.files).sort()])).toEqual([
       ['org', null, 'house-style', ['SKILL.md', 'scripts/get_token']],
       ['agent', 'sam', 'rust', ['SKILL.md']],
@@ -165,7 +227,12 @@ describe('FR-18: org export / import', () => {
   it('export → import recreates the org chart under a new name with fresh, remapped ids', async () => {
     const upsert = vi.fn(async () => ({}) as never);
     const write = vi.fn(async () => ({}) as never);
-    org.setImportDeps({ skills: { upsert }, memory: { write } });
+    const setProfileDoc = vi.fn();
+    const setOwnerModel = vi.fn();
+    const gateway = fakeGateway();
+    org.setImportDeps({ skills: { upsert }, memory: { write, setProfileDoc, setOwnerModel }, connectors: gateway.dep });
+    const notifications: Array<Record<string, unknown>> = [];
+    k.bus.on('notification', (n) => void notifications.push(n));
 
     // Round-trip through JSON, as a real bundle file would.
     const bundle = JSON.parse(JSON.stringify(org.exportOrg(source.id))) as OrgBundle;
@@ -199,7 +266,7 @@ describe('FR-18: org export / import', () => {
       if (a.reportsTo) expect(newAgents.map((x) => x.id)).toContain(a.reportsTo);
       expect(a.status).toBe('active');
     }
-    expect(bySlug('sam')).toMatchObject({ goal: 'Ship', backstory: 'Pragmatic', skills: ['rust'], denySkills: ['house-style'], maxSteps: 25, heartbeatCron: '0 * * * *', connectors: [] });
+    expect(bySlug('sam')).toMatchObject({ goal: 'Ship', backstory: 'Pragmatic', skills: ['rust'], denySkills: ['house-style'], maxSteps: 25, heartbeatCron: '0 * * * *' });
     expect(bySlug('riley')).toMatchObject({ autonomyLevel: 3, budgetUsd: 50, providerBinding: { adapter: 'openai_api', model: 'gpt', config: { temperature: 0.2 } } });
     expect(bySlug('riley').providerBinding).not.toHaveProperty('authRef');
     const newEng = newDepts.find((d) => d.slug === 'engineering')!;
@@ -219,23 +286,76 @@ describe('FR-18: org export / import', () => {
       { title: 'Review', description: '', expectedOutput: 'LGTM', agentRole: 'Head of Engineering' },
     ]);
 
-    // Skills and memories are re-created through their own services, remapped to the new scope ids.
+    // Projects come back with their goal remapped; a portable workspace lands inside the NEW org's directory.
+    const newProjects = k.db.select().from(projects).where(eq(projects.orgId, copy.id)).all();
+    expect(newProjects.map((p) => [p.name, p.goalId, p.budgetUsd, p.status, p.workspacePath])).toEqual([
+      ['Website', child.id, 40, 'active', join(k.paths.org(copy.slug), 'repos', 'website')],
+      ['Legacy', null, null, 'archived', null],
+    ]);
+    expect(org.listRevisions(copy.id, 'project', newProjects[0]!.id)).toHaveLength(1);
+    expect(org.listRevisions(copy.id, 'playbook', pb!.id)).toHaveLength(1);
+    expect(org.listRevisions(copy.id, 'goal', root.id)).toHaveLength(1);
+
+    // Skills are re-created through the skills service: an active skill stays active, a draft stays a draft.
     expect(upsert).toHaveBeenCalledTimes(2);
     expect(upsert).toHaveBeenCalledWith(copy.id, expect.objectContaining({
-      scope: 'org', scopeId: copy.id, name: 'house-style', description: 'Write in the house style', status: 'draft',
+      scope: 'org', scopeId: copy.id, name: 'house-style', description: 'Write in the house style', status: 'active',
       body: expect.stringContaining('Always be concise.'), files: { 'scripts/get_token': '#!/bin/sh\necho ok\n' },
     }), OWNER);
-    expect(upsert).toHaveBeenCalledWith(copy.id, expect.objectContaining({ scope: 'agent', scopeId: bySlug('sam').id, name: 'rust', body: 'Prefer iterators.\n' }), OWNER);
+    expect(upsert).toHaveBeenCalledWith(copy.id, expect.objectContaining({ scope: 'agent', scopeId: bySlug('sam').id, name: 'rust', status: 'draft', body: 'Prefer iterators.\n' }), OWNER);
+
+    // Connectors are re-installed through the gateway, without credentials; the one that had a credential is disabled.
+    const [github, local] = gateway.installed;
+    expect(gateway.installed).toHaveLength(2);
+    expect(github).toMatchObject({ orgId: copy.id, name: 'GitHub', kind: 'mcp_http', scope: 'org', authRef: null, status: 'disabled', config: expect.objectContaining({ timeoutMs: 5000 }) });
+    expect(local).toMatchObject({ orgId: copy.id, name: 'Local files', kind: 'mcp_stdio', scope: 'dept', scopeId: newEng.id, status: 'active', toolAllowlist: ['read_file', 'get_token'], config: { command: 'npx', args: ['files-mcp'] } });
+    expect(gateway.dep.update).toHaveBeenCalledTimes(1);
+    expect(oldIds.has(github!.id) || github!.id === 'con_github').toBe(false);
+
+    // Grants and their per-tool policies point at the new connector and agent ids.
+    expect(gateway.grants).toHaveLength(2);
+    expect(gateway.grants[0]).toMatchObject({
+      orgId: copy.id, connectorId: github!.id, agentId: bySlug('sam').id, authRef: null,
+      toolAllowlist: ['search', 'create_issue'], toolPolicies: { create_issue: 'ask', get_token: 'off' }, defaultPolicy: 'allowed',
+    });
+    expect(gateway.grants[1]).toMatchObject({ connectorId: local!.id, agentId: bySlug('riley').id, defaultPolicy: 'ask', toolPolicies: {} });
+    expect(gateway.dep.grant).toHaveBeenCalledWith(copy.id, github!.id, bySlug('sam').id, expect.anything(), OWNER);
+
+    // Connector lists on the org, department and agent follow the new ids; unknown ids are dropped.
+    expect(org.getOrg(copy.id).defaultConnectors).toEqual([github!.id]);
+    expect(org.getDept(copy.id, newEng.id).sharedConnectors).toEqual([local!.id]);
+    expect(org.getAgent(copy.id, bySlug('sam').id)).toMatchObject({ connectors: [github!.id], denyConnectors: [local!.id] });
+    expect(org.resolveCapabilityRefs(copy.id, bySlug('sam').id).connectorIds).toEqual([github!.id]);
+
+    // MEMORY.md and the owner model are restored through the memory service, sanitized.
+    expect(setProfileDoc).toHaveBeenCalledTimes(1);
+    expect(setProfileDoc).toHaveBeenCalledWith(copy.id, bySlug('sam').id, expect.stringContaining('Always cc ops@ on vendor emails.'), OWNER);
+    expect(setProfileDoc.mock.calls[0]?.[2]).toContain('[REDACTED]');
+    expect(setOwnerModel).toHaveBeenCalledWith(copy.id, 'Owner rejects designs with stock photos.\n', OWNER);
     expect(write).toHaveBeenCalledTimes(3);
     expect(write).toHaveBeenCalledWith(copy.id, expect.objectContaining({ scope: 'org', scopeId: copy.id, kind: 'owner_model', content: expect.stringContaining('[REDACTED]') }), OWNER);
     expect(write).toHaveBeenCalledWith(copy.id, expect.objectContaining({ scope: 'agent', scopeId: bySlug('sam').id, kind: 'lesson' }), OWNER);
     expect(write).toHaveBeenCalledWith(copy.id, expect.objectContaining({ scope: 'dept', scopeId: newEng.id, kind: 'semantic' }), OWNER);
-    expect(JSON.stringify([upsert.mock.calls, write.mock.calls])).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    const everything = JSON.stringify([upsert.mock.calls, write.mock.calls, setProfileDoc.mock.calls, gateway.installed, gateway.grants]);
+    expect(everything).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    for (const ref of REFS) expect(everything).not.toContain(ref);
 
     // The source org is untouched and the import is audited.
     expect(org.listAgents(source.id)).toHaveLength(4);
     expect(k.audit.query({ orgId: copy.id, action: 'org.imported' })[0]?.data).toMatchObject({ departments: 2, agents: 3, goals: 2, playbooks: 1 });
-    expect(k.audit.query({ orgId: copy.id, action: 'org.import_completed' })[0]?.data).toMatchObject({ skills: 2, memories: 3, failed: 0 });
+    const completed = k.audit.query({ orgId: copy.id, action: 'org.import_completed' })[0]?.data;
+    expect(completed).toMatchObject({ skills: 2, connectors: 2, grants: 2, memories: 3, profileDocs: 2, skipped: 0, failed: 0 });
+
+    // No credential travelled: everything that needs one is flagged for the owner.
+    const gaps = [
+      { kind: 'provider', name: 'organization default provider / utility model' },
+      { kind: 'provider', name: 'agent riley' },
+      { kind: 'connector', name: 'GitHub' },
+      { kind: 'grant', name: 'GitHub → sam' },
+    ];
+    expect(completed?.needsCredential).toEqual(gaps);
+    expect(notifications).toEqual([expect.objectContaining({ orgId: copy.id, kind: 'org.import_needs_credentials', data: { needsCredential: gaps } })]);
+    expect(String(notifications[0]?.body)).toContain('connector: GitHub');
   });
 
   it('imports structure without the optional deps, and tolerates a failing dep', async () => {
@@ -243,13 +363,27 @@ describe('FR-18: org export / import', () => {
     const first = org.importOrg(bundle, { name: 'No Deps' }, OWNER);
     await org.whenIdle();
     expect(org.listAgents(first.id)).toHaveLength(3);
-    expect(k.audit.query({ orgId: first.id, action: 'org.import_completed' })[0]?.data).toMatchObject({ skills: 0, memories: 0, skipped: 5 });
+    // 2 skills + 2 connectors + 2 grants + 3 memories + MEMORY.md + owner model: nothing to hand them to.
+    expect(k.audit.query({ orgId: first.id, action: 'org.import_completed' })[0]?.data).toMatchObject({ skills: 0, connectors: 0, grants: 0, memories: 0, skipped: 11 });
+    expect(org.getAgent(first.id, org.findAgent(first.id, 'sam')!.id).connectors).toEqual([]);
 
     org.setImportDeps({ memory: { write: vi.fn(async () => { throw new Error('embedder offline'); }) } });
     const second = org.importOrg(bundle, { name: 'Flaky Deps' }, OWNER);
     await org.whenIdle();
     expect(org.listAgents(second.id)).toHaveLength(3);
     expect(k.audit.query({ orgId: second.id, action: 'org.import_completed' })[0]?.data).toMatchObject({ memories: 0, failed: 3 });
+
+    // A gateway that refuses one connector still gets the other, and the refused one's grant is skipped.
+    const gateway = fakeGateway();
+    vi.mocked(gateway.dep.install).mockRejectedValueOnce(new Error('kind not supported'));
+    org.setImportDeps({ connectors: gateway.dep });
+    const third = org.importOrg(bundle, { name: 'Picky Gateway' }, OWNER);
+    await org.whenIdle();
+    expect(gateway.installed.map((c) => c.name)).toEqual(['Local files']);
+    expect(gateway.grants).toHaveLength(1);
+    const data = k.audit.query({ orgId: third.id, action: 'org.import_completed' })[0]?.data as { failures: string[]; connectors: number; grants: number };
+    expect(data).toMatchObject({ connectors: 1, grants: 1 });
+    expect(data.failures).toContainEqual(expect.stringContaining('connector GitHub: kind not supported'));
   });
 
   it('strips secret refs from an untrusted bundle and rejects malformed ones atomically', () => {
@@ -274,6 +408,11 @@ describe('FR-18: org export / import', () => {
     const dangling = structuredClone(bundle);
     dangling.agents[2]!.deptId = 'dept_nowhere';
     expect(codeOf(() => org.importOrg(dangling, { name: 'Dangling' }, OWNER))).toBe('validation');
+    // A project workspace may not climb out of the new org's directory.
+    const escaping = structuredClone(bundle);
+    escaping.projects![0]!.workspaceRel = '../../../../etc';
+    expect(codeOf(() => org.importOrg(escaping, { name: 'Escaping' }, OWNER))).toBe('validation');
+    expect(org.getOrgBySlug('escaping')).toBeNull();
     const badLevel = structuredClone(bundle);
     badLevel.agents[2]!.autonomyLevel = 9;
     expect(codeOf(() => org.importOrg(badLevel, { name: 'Bad Level' }, OWNER))).toBe('validation');

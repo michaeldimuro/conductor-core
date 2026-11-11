@@ -8,7 +8,8 @@ import { activateLocked, diffVersions, readSkill, rollback, setStatus } from './
 import { evaluate } from './evaluate.js';
 import { loadBody, resolveForAgent } from './resolve.js';
 import { autoPromoteToDept, onApprovalDecided, promote } from './promote.js';
-import { recordUsage, retireStale } from './adapt.js';
+import { recordReview, recordUsage, retireStale } from './adapt.js';
+import { addEvalCase, evalCasesOf, removeEvalCase } from './eval-cases.js';
 import { createToolProvider } from './tools.js';
 
 export type { SkillDeps } from './store.js';
@@ -16,8 +17,9 @@ export { scanFiles, scanSkillDir, hasBlockingFinding, type ScanFinding } from '.
 export { parseSkillMd, renderSkillMd, hashSkillDir } from './format.js';
 export { SKILLS_GITIGNORE } from './git.js';
 export { SKILLS_PROVIDER_ID } from './tools.js';
+export { EVAL_CASE_FILES } from './eval-cases.js';
 
-export type SkillsContext = SkillService & {
+export type SkillsContext = SkillService & Required<Pick<SkillService, 'recordReview' | 'evalCases' | 'addEvalCase' | 'removeEvalCase'>> & {
   /** The runtime provides the sandboxed eval runner once it exists. */
   setEvalRunner(runner: EvalRunner): void;
   /** Skill ids the run loaded through `load_skill` (pass to `recordUsage`). */
@@ -67,6 +69,10 @@ export function createSkillService(kernel: Kernel, deps: SkillDeps): SkillsConte
     setStatus: (skillId, status, actor) => setStatus(ctx, skillId, status, actor),
     recordUsage: (input) => recordUsage(ctx, input),
     retireStale: (now) => retireStale(ctx, now),
+    recordReview: (input) => recordReview(ctx, input),
+    evalCases: (skillId) => evalCasesOf(ctx, skillId),
+    addEvalCase: (skillId, input, actor) => addEvalCase(ctx, skillId, input, actor),
+    removeEvalCase: (skillId, caseId, actor) => removeEvalCase(ctx, skillId, caseId, actor),
     toolProvider: () => tools,
     setEvalRunner(runner) {
       ctx.deps.evalRunner = runner;

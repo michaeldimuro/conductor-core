@@ -1,5 +1,11 @@
 {
   "extends": "../tsconfig.json",
-  "compilerOptions": { "noEmit": true, "rootDir": ".." },
-  "include": ["../src/**/*.ts", "../tests/**/*.ts"]
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"]
+  },
+  "include": ["../src/**/*.ts", "../tests/**/*.ts", "../ui/src/**/*.ts", "../ui/src/**/*.tsx", "../ui/vite.config.ts"]
 }

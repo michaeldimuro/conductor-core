@@ -3,6 +3,7 @@ import type { OrgService } from '../contracts/org-work.js';
 import type { ApprovalService, BrowserService, RunControl } from '../contracts/services.js';
 import type { BuiltinToolProvider } from '../contracts/tools.js';
 import { BrowserEngine } from './engine.js';
+import type { OnePasswordOptions } from './onepassword.js';
 import { ProfileStore, type CreateProfileInput, type UpdateProfileInput } from './profiles.js';
 import { ActionGate } from './sensitive.js';
 import { TakeoverManager } from './takeover.js';
@@ -16,6 +17,8 @@ export interface BrowserServiceDeps {
   shareBaseUrl: () => string;
   /** Headless by default; takeover works headless via CDP screencast. */
   headless?: boolean;
+  /** 1Password CLI used for `op://` secret references (default: `op` on PATH, or `$CONDUCTOR_OP_BIN`). */
+  onePassword?: OnePasswordOptions;
 }
 
 /**
@@ -28,7 +31,7 @@ export function createBrowserService(kernel: Kernel, deps: BrowserServiceDeps): 
   const engine = new BrowserEngine(kernel, profiles, { headless: deps.headless ?? true });
   const takeover = new TakeoverManager(kernel, engine, { runControl: deps.runControl, org: deps.org, shareBaseUrl: deps.shareBaseUrl });
   const provider: BuiltinToolProvider = createToolProvider(
-    { kernel, engine, gate: new ActionGate(kernel, deps.approvals), org: deps.org },
+    { kernel, engine, gate: new ActionGate(kernel, deps.approvals), org: deps.org, onePassword: deps.onePassword },
     takeover,
   );
 
@@ -39,14 +42,15 @@ export function createBrowserService(kernel: Kernel, deps: BrowserServiceDeps): 
 
   return {
     ensureProfile: (orgId, agentId) => profiles.ensure(orgId, agentId),
-    // Both accept an optional `engine` ({kind:'chromium'} | {kind:'channel',channel:'chrome'} | {kind:'cdp',endpoint}).
     createProfile: (orgId, input, actor) => profiles.create(orgId, input as CreateProfileInput, actor),
     updateProfile: (orgId, profileId, patch, actor) => profiles.update(orgId, profileId, patch as UpdateProfileInput, actor),
     listProfiles: (orgId) => profiles.list(orgId),
+    profileSettings: (orgId, profileId) => profiles.settings(profiles.get(orgId, profileId)),
     toolProvider: () => provider,
 
     listSessions: (orgId, filter) => takeover.list(orgId, filter),
     createTakeover: (input) => takeover.create(input),
+    reissueShare: (orgId, sessionId, actor) => takeover.reissue(orgId, sessionId, actor),
     claimShare: (token, viewerId) => takeover.claim(token, viewerId),
     attachViewer: (sessionId, viewerId, io) => takeover.attach(sessionId, viewerId, io),
     handBack: (sessionId, viewerId) => takeover.handBack(sessionId, viewerId),

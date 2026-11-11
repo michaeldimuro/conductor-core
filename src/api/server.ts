@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyPluginAsync } from 'fastify'
 import websocket from '@fastify/websocket';
 import type { Services } from '../daemon/container.js';
 import { OriginGuard, authenticate } from './auth.js';
-import { toErrorResponse } from './http.js';
+import { isLoopbackHost, toErrorResponse } from './http.js';
 import { registerUi, securityHeaders } from './static.js';
 import { eventSocket } from './ws.js';
 import { takeoverRoutes } from './takeover.js';
@@ -16,7 +16,7 @@ import { reachRoutes, type GatewayControl } from './routes/reach.js';
 import { agentRoutes, mcpRoute } from './routes/agent.js';
 import { inboundWebhookRoutes } from './webhooks/inbound.js';
 import { startOutboundWebhooks } from './webhooks/outbound.js';
-import { API_PREFIX, type HealthResponse } from './types.js';
+import { API_PREFIX, type BindInfo, type HealthResponse } from './types.js';
 
 export interface ApiServerOptions {
   /** Routes mounted by other contexts (messaging gateways) without the API knowing about them. */
@@ -76,13 +76,27 @@ export async function createApiServer(services: Services, opts: ApiServerOptions
 
   app.get('/healthz', async (): Promise<HealthResponse> => ({ status: 'ok', version: s.version, uptimeMs: Date.now() - startedAt }));
 
+  /** Where the socket is bound; before `listen` (in-process use) the configured base URL stands in. */
+  let boundHost: string | null = null;
+  const bind = (): BindInfo => {
+    let host = boundHost;
+    if (host === null) {
+      try {
+        host = new URL(s.baseUrl()).hostname;
+      } catch {
+        host = '127.0.0.1';
+      }
+    }
+    return { host, loopback: isLoopbackHost(host) };
+  };
+
   const guard = new OriginGuard(s);
   let events: { close(): void } | null = null;
 
   await app.register(async (api) => {
     api.addHook('onRequest', async (req) => authenticate(s, guard, req));
     authRoutes(api, app, s, guard);
-    systemRoutes(api, s);
+    systemRoutes(api, s, bind);
     orgRoutes(api, s);
     workRoutes(api, s);
     runRoutes(api, s);
@@ -104,6 +118,14 @@ export async function createApiServer(services: Services, opts: ApiServerOptions
   return {
     app,
     async listen(host, port) {
+      boundHost = host;
+      if (!isLoopbackHost(host)) {
+        log.warn(
+          { host, port },
+          `SECURITY WARNING: Conductor is listening on ${host}, not on loopback. Every device that can reach this machine on port ${port} can reach the API; `
+          + 'only the owner token stands between the network and your agents. Unset CONDUCTOR_HOST (default 127.0.0.1) and publish through Tailscale or a Cloudflare Tunnel instead.',
+        );
+      }
       await app.listen({ host, port });
     },
     async close() {

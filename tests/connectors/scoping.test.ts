@@ -159,6 +159,7 @@ describe('connector gateway — per-agent scoping over a real stdio MCP server (
     gw.grant(org.id, notes.id, a.id, {}, OWNER);
     const ctx = runCtx(k, a);
     const secretArg = 'sk-ant-supersecretvalue1234567890';
+    fakeApprovals(k).rememberRecipient(org.id, 'eve@example.com'); // not a first send
     await gw.callTool(ctx, 'notes__send_message', { to: 'eve@example.com', body: 'hello', password: 'hunter2-plain', note: secretArg });
 
     const [row] = k.db.select().from(toolCalls).where(eq(toolCalls.runId, ctx.runId)).all();

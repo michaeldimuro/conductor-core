@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Kernel } from '../contracts/kernel.js';
-import type { Approval, Connector, ConnectorGrant } from '../contracts/rows.js';
+import type { Agent, Approval, Connector, ConnectorGrant } from '../contracts/rows.js';
 import type { ApprovalService, GrantInput, InstallConnectorInput } from '../contracts/services.js';
 import type { OrgService } from '../contracts/org-work.js';
 import { SYSTEM, type Actor } from '../contracts/types.js';
@@ -30,6 +30,13 @@ const grantApprovalPayload = z.object({
 
 function assertOperator(actor: Actor, what: string): void {
   if (actor.kind === 'agent') throw forbidden(`agents may not ${what}`);
+}
+
+/** A department-scoped connector belongs to that department: it cannot be granted to an agent of another one. */
+function assertInScope(connector: Connector, agent: Pick<Agent, 'deptId' | 'name'>): void {
+  if (connector.scope === 'dept' && connector.scopeId !== agent.deptId) {
+    throw forbidden(`connector "${connector.name}" is scoped to another department and cannot be granted to ${agent.name}`);
+  }
 }
 
 const snapshotOf = (c: Connector): Record<string, unknown> => ({
@@ -130,10 +137,31 @@ export class ConnectorRegistry {
     if (patch.status !== undefined) set.status = patch.status;
     if (patch.status === 'active') set.lastError = null;
     const row = this.store.patch(orgId, connectorId, set);
+    this.dropOutOfScopeGrants(orgId, row, actor);
     this.store.revision(orgId, 'connector', row.id, snapshotOf(row), actor, 'updated');
     this.k.audit.record({ orgId, actor, action: 'connector.updated', entityKind: 'connector', entityId: row.id, data: { fields: Object.keys(set) } });
     await this.deps.invalidate(connectorId);
     return row;
+  }
+
+  /** After a connector was re-scoped to a department: grants to agents outside it no longer stand. */
+  private dropOutOfScopeGrants(orgId: string, connector: Connector, actor: Actor): void {
+    if (connector.scope !== 'dept') return;
+    for (const grant of this.store.listGrants(orgId, { connectorId: connector.id })) {
+      let deptId: string | null = null;
+      try {
+        deptId = this.deps.org.getAgent(orgId, grant.agentId).deptId;
+      } catch {
+        // The agent is gone: its grant goes too.
+      }
+      if (deptId === connector.scopeId) continue;
+      this.store.revision(orgId, 'connector_grant', grant.id, { connectorId: connector.id, agentId: grant.agentId, revoked: true }, actor, 'out of scope');
+      this.store.deleteGrant(orgId, grant.id);
+      this.k.audit.record({
+        orgId, actor, action: 'connector.grant_revoked', entityKind: 'connector_grant', entityId: grant.id,
+        data: { connectorId: connector.id, agentId: grant.agentId, reason: 'connector re-scoped to another department' },
+      });
+    }
   }
 
   async remove(orgId: string, connectorId: string, actor: Actor): Promise<void> {
@@ -156,6 +184,7 @@ export class ConnectorRegistry {
     const agent = this.deps.org.getAgent(orgId, agentId);
     if (agent.orgId !== orgId) throw notFound('agent', agentId);
     const input = parseWith(grantSchema, rawInput ?? {}, 'grant');
+    assertInScope(connector, agent);
     const needsApproval = actor.kind === 'agent' || (actor.kind !== 'human' && this.deps.approvals.requiresApproval(orgId, 'grant_connector'));
     if (!needsApproval) return { grant: this.applyGrant(orgId, connector, agentId, input, actor) };
 
@@ -182,7 +211,8 @@ export class ConnectorRegistry {
     const consumed = this.deps.approvals.consume(orgId, 'grant_connector', p.matchKey);
     if (!consumed) return;
     const connector = this.store.get(orgId, p.connectorId);
-    this.deps.org.getAgent(orgId, p.agentId);
+    // Re-checked at apply time: the agent may have moved department since the request was filed.
+    assertInScope(connector, this.deps.org.getAgent(orgId, p.agentId));
     this.applyGrant(orgId, connector, p.agentId, p.grant, SYSTEM, consumed.id);
   }
 

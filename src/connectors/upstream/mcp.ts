@@ -5,6 +5,7 @@ import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/s
 import { UnauthorizedError, discoverAuthorizationServerMetadata, discoverOAuthProtectedResourceMetadata } from '@modelcontextprotocol/sdk/client/auth.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContent } from '../../contracts/tools.js';
+import { costFromMeta } from '../actions.js';
 import { AuthRequiredError, type UpstreamClient, type UpstreamResult, type UpstreamTool } from '../types.js';
 
 const CLIENT_INFO = { name: 'conductor-gateway', version: '0.1.0' };
@@ -154,7 +155,8 @@ class McpUpstream implements UpstreamClient {
       const blocks = Array.isArray(r.content) ? (r.content as Array<Record<string, unknown>>) : [];
       const content = blocks.map(toContent);
       if (content.length === 0 && r.structuredContent !== undefined) content.push({ type: 'text', text: JSON.stringify(r.structuredContent, null, 2) });
-      return { content, ...(r.isError === true ? { isError: true } : {}) } satisfies UpstreamResult;
+      const costUsd = costFromMeta(r._meta);
+      return { content, ...(r.isError === true ? { isError: true } : {}), ...(costUsd !== undefined ? { costUsd } : {}) } satisfies UpstreamResult;
     });
     if (this.opts.jitAuth) {
       const auth = detectAuthorizationRequired(result);

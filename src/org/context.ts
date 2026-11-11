@@ -1,11 +1,18 @@
 import type { Kernel } from '../contracts/kernel.js';
 import type { Actor } from '../contracts/types.js';
-import type { ApprovalService, MemoryService, SkillService } from '../contracts/services.js';
+import type { ApprovalService, ConnectorGateway, MemoryService, SkillService } from '../contracts/services.js';
 import { forbidden } from '../shared/errors.js';
 
+/**
+ * Other contexts' contracts used only by `importOrg` (all optional and
+ * late-bound: the org context is constructed before them).
+ */
 export interface OrgImportDeps {
   skills?: Pick<SkillService, 'upsert'>;
-  memory?: Pick<MemoryService, 'write'>;
+  /** `setProfileDoc` / `setOwnerModel` restore MEMORY.md and the owner model. */
+  memory?: Pick<MemoryService, 'write'> & Partial<Pick<MemoryService, 'setProfileDoc' | 'setOwnerModel'>>;
+  /** Re-installs connectors and their grants (never with credentials). */
+  connectors?: Pick<ConnectorGateway, 'install' | 'update' | 'grant'>;
 }
 
 export interface OrgDeps extends OrgImportDeps {

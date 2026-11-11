@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { signComposioWebhook } from '../../src/connectors/composio-webhook.js';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -94,7 +95,7 @@ describe('inbound webhooks', () => {
     expect((await deliver(hook.id, raw, { 'stripe-signature': sig(now) })).statusCode).toBe(401);
   });
 
-  it('verifies generic and Composio hooks via X-Conductor-Signature and applies the events filter', async () => {
+  it('verifies generic and Composio hooks with their own signature schemes and applies the events filter', async () => {
     const hook = await inboundHook('generic', { events: ['deploy.finished'] });
     const raw = JSON.stringify({ event: 'deploy.finished', sha: 'abc' });
     const headers = { 'x-conductor-signature': signSha256Header('generic-signing-secret', raw) };
@@ -109,10 +110,16 @@ describe('inbound webhooks', () => {
     expect(received).toHaveLength(1);
 
     const composio = await inboundHook('composio');
+    const composioTs = Math.floor(h.kernel.clock.now() / 1000);
     const body = 'not json at all';
     const res = await h.api.app.inject({
       method: 'POST', url: `/hooks/${composio.id}`, payload: body,
-      headers: { 'content-type': 'text/plain', 'x-conductor-signature': signSha256Header('composio-signing-secret', body), 'x-conductor-event': 'gmail.new_message' },
+      headers: {
+        'content-type': 'text/plain', 'x-conductor-event': 'gmail.new_message',
+        // Composio signs in the Standard Webhooks format: id.timestamp.body.
+        'webhook-id': 'msg_1', 'webhook-timestamp': String(composioTs),
+        'webhook-signature': signComposioWebhook('composio-signing-secret', Buffer.from(body), 'msg_1', composioTs),
+      },
     });
     expect(res.statusCode).toBe(202);
     expect(received[1]!.payload).toEqual({ source: 'composio', event: 'gmail.new_message', deliveryId: null, body });

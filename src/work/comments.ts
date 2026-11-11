@@ -6,7 +6,8 @@ import type { Comment } from '../contracts/rows.js';
 import { comments } from '../db/schema/index.js';
 import { invalid } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
-import { parse, type WorkCtx } from './context.js';
+import { storeAttachments } from './artifacts.js';
+import { parse, requireOrg, type WorkCtx } from './context.js';
 import { getIssue } from './issues.js';
 import { actingAgent, assertCanTouch } from './permissions.js';
 import { commentInput } from './schemas.js';
@@ -35,7 +36,8 @@ export function addComment(
   actor: Actor,
 ): Comment {
   const input = parse(commentInput, raw);
-  return ctx.tx(() => {
+  let discard: (() => void) | undefined;
+  const write = (): Comment => {
     const issue = getIssue(ctx, orgId, issueId);
     const agent = actingAgent(ctx, orgId, actor);
     // Comments are the channel between agents, so any agent may join a thread —
@@ -52,10 +54,14 @@ export function addComment(
     }
 
     const mentions = parseMentions(ctx, orgId, input.body);
+    const id = newId('comment');
+    // Attached files are copied into the org's artifacts directory (PRD on-disk layout).
+    const stored = storeAttachments(ctx, requireOrg(ctx, orgId), issueId, id, input.attachments ?? []);
+    discard = stored.discard;
     const row = ctx.kernel.db
       .insert(comments)
       .values({
-        id: newId('comment'),
+        id,
         orgId,
         issueId,
         parentCommentId: input.parentCommentId ?? null,
@@ -64,7 +70,7 @@ export function addComment(
         runId: input.runId ?? actor.runId ?? null,
         body: input.body,
         mentions,
-        attachments: input.attachments ?? [],
+        attachments: stored.attachments,
         createdAt: ctx.now(),
       })
       .returning()
@@ -81,7 +87,14 @@ export function addComment(
     });
     ctx.emit('comment.created', { orgId, issueId, commentId: row.id, mentions });
     return row;
-  });
+  };
+  try {
+    return ctx.tx(write);
+  } catch (e) {
+    // The transaction rolled back: do not leave copied files behind.
+    discard?.();
+    throw e;
+  }
 }
 
 export function listComments(ctx: WorkCtx, orgId: string, issueId: string, opts?: { since?: number }): Comment[] {

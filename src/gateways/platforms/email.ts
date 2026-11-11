@@ -80,7 +80,7 @@ export function createEmailAdapter(ctx: AdapterContext): GatewayAdapter {
       const text = inboundText(mail);
       if (!text) continue;
       // The router enforces the sender allow-list (and audits refusals).
-      await ctx.emit({ chatId: mail.from, userId: mail.from, text }).catch((err) => {
+      await ctx.emit({ chatId: mail.from, userId: mail.from, text, isGroup: false }).catch((err) => {
         ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, 'email message handling failed');
       });
     }

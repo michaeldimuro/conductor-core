@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { createTestKernel, seedAgent, seedDept, seedOrg, type TestKernel } from '../helpers/kernel.js';
 import { createConnectorGateway, createFilesToolProvider } from '../../src/connectors/index.js';
 import { buildSandboxProfile, sandboxAvailable } from '../../src/connectors/files/sandbox.js';
+import { hostAllowed } from '../../src/connectors/files/egress-proxy.js';
 import type { ConnectorGateway } from '../../src/contracts/services.js';
 import type { ToolCallContext } from '../../src/contracts/tools.js';
 import type { Agent } from '../../src/contracts/rows.js';
@@ -105,14 +106,26 @@ describe('conductor-files builtin', () => {
   });
 
   it('builds a deny-by-default sandbox profile', () => {
-    const closed = buildSandboxProfile({ workspace: '/w s/"x"', tmp: '/private/tmp/t', network: false });
+    const closed = buildSandboxProfile({ workspace: '/w s/"x"', tmp: '/private/tmp/t' });
     expect(closed).toContain('(deny default)');
     expect(closed).toContain('(subpath "/w s/\\"x\\"")');
     expect(closed).not.toContain('network');
     expect(closed).not.toMatch(/subpath "\/Users"|subpath "\/Volumes"|subpath "\/private\/var\/folders"/);
-    const open = buildSandboxProfile({ workspace: '/w', tmp: '/t', network: true });
-    expect(open).toContain('(allow network-outbound)');
+    // With an allowlist the only reachable destination is the loopback egress proxy — never the open network.
+    const open = buildSandboxProfile({ workspace: '/w', tmp: '/t', proxyPort: 49152 });
+    expect(open).toContain('(allow network-outbound (remote ip "localhost:49152"))');
+    expect(open).not.toContain('(allow network-outbound)');
     expect(open).not.toContain('network-inbound');
+  });
+
+  it('matches network allowlist entries exactly: host, host:port, *.domain and URLs', () => {
+    const list = ['api.github.com', '*.example.org', 'registry.npmjs.org:443', 'https://Docs.Stripe.com/api', '127.0.0.1'];
+    const ok = (host: string, port = 443) => hostAllowed(list, host, port);
+    expect([ok('api.github.com'), ok('API.GitHub.com.'), ok('a.b.example.org'), ok('example.org'), ok('registry.npmjs.org'), ok('docs.stripe.com'), ok('127.0.0.1', 8080)])
+      .toEqual([true, true, true, true, true, true, true]);
+    expect([ok('github.com'), ok('evil-api.github.com.attacker.net'), ok('notexample.org'), ok('registry.npmjs.org', 80), ok('localhost'), ok('')])
+      .toEqual([false, false, false, false, false, false]);
+    expect(hostAllowed([], 'api.github.com', 443)).toBe(false);
   });
 
   describe.runIf(sandboxAvailable())('run_command under sandbox-exec', () => {
@@ -176,6 +189,21 @@ describe('conductor-files builtin', () => {
         const allowed = textOf(await run(cmd));
         expect(allowed).toContain('pong');
         expect(hits).toEqual(['/ping']);
+
+        // The allowlist is per host, not an on/off switch: the same server by a name that is not listed stays unreachable…
+        const port = new URL(server.origin).port;
+        const other = textOf(await run(`curl -s -m 5 http://localhost:${port}/other; echo "rc=$?"`));
+        expect(other).not.toContain('pong');
+        expect(other).toContain("[network blocked by the organization's allowlist: localhost]");
+        // …and so does a direct connection that ignores the proxy.
+        const direct = textOf(await run(`curl -s -m 5 --noproxy '*' ${server.origin}/direct; echo "rc=$?"`));
+        expect(direct).toMatch(/rc=[1-9]/);
+        expect(hits).toEqual(['/ping']);
+
+        // A port-qualified entry admits only that port; a wildcard admits subdomains.
+        k.db.update(organizations).set({ policies: { networkAllowlist: [`localhost:${port}`] } }).where(eq(organizations.id, ctx.orgId)).run();
+        expect(textOf(await run(`curl -s -m 5 http://localhost:${port}/named`))).toContain('pong');
+        expect(hits).toEqual(['/ping', '/named']);
       } finally {
         await server.close();
       }

@@ -54,7 +54,7 @@ export const listMemoryQ = z.object({
   scopeId: idStr.optional(),
   kind: memoryKind.optional(),
   status: memoryStatus.optional(),
-  limit: intQ(1, 1000).optional(),
+  limit: intQ(1, 500).optional(),
   offset: intQ(0, 10_000_000).optional(),
 });
 export const writeMemory = z.strictObject({
@@ -77,6 +77,12 @@ export const updateMemory = z.strictObject({
   kind: memoryKind.optional(),
 });
 export const docContent = z.strictObject({ content: text(200_000) });
+export const memoryBackend = z.strictObject({
+  kind: z.enum(['honcho', 'mem0', 'zep', 'supermemory']),
+  baseUrl: z.url().max(2000).refine((u) => /^https?:\/\//i.test(u), 'must be an http(s) URL').optional(),
+  authRef: secretRef,
+  options: z.record(z.string().min(1).max(100), z.string().max(1000)).optional(),
+});
 export const sessionSearchQ = z.object({ text: z.string().min(1).max(2000), agentId: idStr.optional(), limit: intQ(1, 200).optional() });
 
 /* ── Connectors ── */
@@ -111,14 +117,26 @@ export const listGrantsQ = z.object({ agentId: idStr.optional(), connectorId: id
 
 /* ── Browser ── */
 const domains = z.array(z.string().trim().min(1).max(300)).max(500);
+/** Shape only; the browser service enforces the rules (CDP on loopback, vault names). */
+const browserEngine = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('chromium') }),
+  z.strictObject({ kind: z.literal('channel'), channel: z.enum(['chrome', 'chrome-beta', 'chrome-dev', 'chrome-canary', 'msedge']) }),
+  z.strictObject({ kind: z.literal('cdp'), endpoint: z.string().trim().min(1).max(500) }),
+]);
+const profileSettings = {
+  engine: browserEngine.optional(),
+  headed: z.boolean().nullable().optional(),
+  onePasswordVaults: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+};
 export const createProfile = z.strictObject({
   name: nameStr,
   agentId: idStr.nullable().optional(),
   deptId: idStr.nullable().optional(),
   domainAllowlist: domains.optional(),
   sensitiveDomains: domains.optional(),
+  ...profileSettings,
 });
-export const updateProfile = z.strictObject({ name: nameStr.optional(), domainAllowlist: domains.optional(), sensitiveDomains: domains.optional() });
+export const updateProfile = z.strictObject({ name: nameStr.optional(), domainAllowlist: domains.optional(), sensitiveDomains: domains.optional(), ...profileSettings });
 export const listSessionsQ = z.object({ status: z.enum(['pending', 'active', 'handed_back', 'expired', 'cancelled']).optional() });
 
 /* ── Gateways / webhooks (rows owned by the API; secrets by reference only) ── */
@@ -154,6 +172,7 @@ export const testAdapter = z.strictObject({
   config: jsonRecord.optional(),
   authRef: secretRef.nullable().optional(),
   model: z.string().min(1).max(200).nullable().optional(),
+  orgId: idStr.optional(),
 });
 export const doctorQ = z.object({ orgId: idStr.optional() });
 export const loginCode = z.strictObject({

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { seedAgent, seedDept, seedOrg } from '../helpers/kernel.js';
 import { startGateways, type Gateways } from '../../src/gateways/index.js';
 import type { Gateway, Organization } from '../../src/contracts/rows.js';
-import { createFakeServices, insertGateway, waitFor, type FakeServices } from './fake-services.js';
+import { createFakeServices, insertGateway, updateGateway, waitFor, type FakeServices } from './fake-services.js';
 import { discordKeys, discordSignature, startDiscordMock, type DiscordKeys, type DiscordMock } from './mock-servers.js';
 
 const BOT_TOKEN = 'discord-bot-token-for-tests';
@@ -139,6 +139,24 @@ describe('gateways / discord', () => {
     expect(refused.json()).toEqual({ type: 4, data: { content: 'This chat is not authorized to talk to Conductor.', flags: 64 } });
     const forged = await press('approval:approve:not-an-id');
     expect((forged.json() as { type: number }).type).toBe(4);
+    expect(f.decisions).toHaveLength(1);
+  });
+
+  it('in a server channel (guild_id present) only an allow-listed user can press Approve', async () => {
+    updateGateway(f.k, row.id, { config: { ...row.config, approverUserIds: [USER] } });
+    await start();
+    const approval = f.requestApproval(acme.id, 'Refund order 77');
+    const press = (user: string) => interact({
+      type: 3, guild_id: '4000', channel_id: CHANNEL, member: { user: { id: user } },
+      message: { id: '5001', content: 'Approval needed: Refund order 77' }, data: { custom_id: `approval:approve:${approval.id}`, component_type: 2 },
+    });
+    const refused = (await press('31337')).json() as { type: number; data: { content: string; flags?: number } };
+    expect(refused.data.content).toContain('in a group chat, approvals and reviews need a user on this gateway\'s allow-list');
+    expect(f.decisions).toHaveLength(0);
+    expect(f.k.audit.query({ action: 'gateway.action_refused' })).toHaveLength(1);
+
+    const ok = (await press(USER)).json() as { data: { content: string } };
+    expect(ok.data.content).toContain('Approved: Refund order 77');
     expect(f.decisions).toHaveLength(1);
   });
 });

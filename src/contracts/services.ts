@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Actor, CapabilitySnapshot, RunGrade, SkillEvalResult, ToolPolicy, ProviderBinding } from './types.js';
+import type { Actor, CapabilitySnapshot, EvalExpectations, RunGrade, SkillEvalCase, SkillEvalResult, ToolPolicy, ProviderBinding } from './types.js';
 import type {
   Approval, Skill, SkillVersion, Memory, Connector, ConnectorGrant, BrowserProfile, BrowserSession, Run, Scorecard, LedgerRow,
 } from './rows.js';
@@ -93,6 +93,13 @@ export interface TokenService {
   issueRunToken(orgId: string, agentId: string, runId: string, ttlMs: number): string;
   verify(token: string): Principal | null;
   revokeRunTokens(runId: string): void;
+  /**
+   * Optional: move the expiry of this run's live (unrevoked) run tokens to
+   * `now + ttlMs`. The runtime calls it when a run is paused for a human and
+   * again when it resumes, so paused time never expires the token. When it is
+   * absent the runtime issues run tokens with a pause allowance instead.
+   */
+  extendRunToken?(runId: string, ttlMs: number): void;
   revoke(tokenId: string): void;
   /** Path of the 0600 file holding the local owner token used by the CLI. */
   ownerTokenFile(): string;
@@ -151,11 +158,24 @@ export interface SkillService {
   /** Mark skills unused for 60 days (or superseded) deprecated. Returns retired ids. */
   retireStale(now?: number): Promise<string[]>;
   toolProvider(): BuiltinToolProvider;
+  /**
+   * A review verdict arrived after the run's usage was recorded: correct the outcome of the usages
+   * that run recorded (success, human-edited) and re-check the regression rule (may auto-revert).
+   */
+  recordReview?(input: { orgId: string; runId: string; success: boolean; humanEdited: boolean }): Promise<{ updated: string[]; reverted: string[] }>;
+  /** Stored eval cases of a skill (originating issue, `evals/cases.*` in the skill folder, manual). */
+  evalCases?(skillId: string): SkillEvalCase[];
+  addEvalCase?(skillId: string, input: { prompt: string; criteria?: string; expect?: EvalExpectations; issueId?: string | null }, actor: Actor): SkillEvalCase;
+  removeEvalCase?(skillId: string, caseId: string, actor: Actor): void;
 }
 
 /** Runs a prompt in an isolated sandbox workspace for skill evals. Implemented by the runtime. */
 export interface EvalRunner {
-  run(input: { orgId: string; agentId: string; prompt: string; skills: ResolvedSkillRef[]; label: string }): Promise<{ result: RunResult; wallMs: number; finalText: string }>;
+  /**
+   * `files` (optional): workspace-relative paths present in the sandbox when the run ended, so eval
+   * cases can assert file outputs. When omitted, file expectations are reported as undecidable.
+   */
+  run(input: { orgId: string; agentId: string; prompt: string; skills: ResolvedSkillRef[]; label: string }): Promise<{ result: RunResult; wallMs: number; finalText: string; files?: string[] }>;
 }
 
 /* ───────────────────────── Memory & learning ───────────────────────── */
@@ -238,6 +258,54 @@ export interface MemoryService {
   /** Weekly review: each dept lead's scorecards → proposals filed as issues for the owner. Returns created issue ids. */
   weeklyReview(orgId: string): Promise<string[]>;
   toolProvider(): BuiltinToolProvider;
+  /**
+   * A review verdict landed on an issue: re-grade the run that produced the reviewed work
+   * (review outcome, success), refresh its episodic memory, store the reviewer's correction as a
+   * lesson and re-run the skill check. Idempotent — null when nothing changed.
+   */
+  applyReview?(orgId: string, issueId: string): Promise<ReviewRegrade | null>;
+  /** Which embedder backs semantic search right now (and why). */
+  embedderStatus?(): Promise<EmbedderStatus>;
+  /** The org's optional external memory backend (`settings["memory.backend.<orgId>"]`); never includes the secret. */
+  getExternalBackend?(orgId: string): Promise<ExternalBackendStatus | null>;
+  /** Set (validated) or clear (`null`) the org's external memory backend. */
+  setExternalBackend?(orgId: string, config: ExternalBackendConfig | null, actor: Actor): Promise<ExternalBackendStatus | null>;
+}
+
+export interface ReviewRegrade {
+  runId: string;
+  agentId: string;
+  issueId: string;
+  grade: RunGrade;
+  /** Grade before this review was applied (null when the run had not been reflected yet). */
+  previous: RunGrade | null;
+}
+
+export interface EmbedderStatus {
+  /** `local` = deterministic hash embedder (lexical-ish, offline); `openai` = real embeddings. */
+  provider: 'local' | 'openai' | 'custom';
+  id: string;
+  dims: number;
+  /** True when a real embedding model backs semantic search. */
+  semantic: boolean;
+  /** `auto` (no `embeddings.provider` setting), or the explicit setting. */
+  mode: 'auto' | 'local' | 'openai' | 'fixed';
+  /** Secret ref of the key in use (never the key). */
+  authRef: string | null;
+  reason: string;
+}
+
+export interface ExternalBackendConfig {
+  kind: 'honcho' | 'mem0' | 'zep' | 'supermemory';
+  baseUrl?: string;
+  /** Secret ref of the backend API key. */
+  authRef: string;
+  options?: Record<string, string>;
+}
+
+export interface ExternalBackendStatus extends ExternalBackendConfig {
+  /** False when the secret named by `authRef` is missing (the backend is then skipped). */
+  ready: boolean;
 }
 
 /* ───────────────────────── Connectors ───────────────────────── */
@@ -322,15 +390,23 @@ export interface ConnectorGateway {
 export interface BrowserService {
   /** The agent's profile (own, else its department's shared one), created on demand. */
   ensureProfile(orgId: string, agentId: string): BrowserProfile;
-  createProfile(orgId: string, input: { name: string; agentId?: string | null; deptId?: string | null; domainAllowlist?: string[]; sensitiveDomains?: string[] }, actor: Actor): BrowserProfile;
-  updateProfile(orgId: string, profileId: string, patch: { name?: string; domainAllowlist?: string[]; sensitiveDomains?: string[] }, actor: Actor): BrowserProfile;
+  createProfile(orgId: string, input: { name: string; agentId?: string | null; deptId?: string | null; domainAllowlist?: string[]; sensitiveDomains?: string[] } & Partial<BrowserProfileSettings>, actor: Actor): BrowserProfile;
+  updateProfile(orgId: string, profileId: string, patch: { name?: string; domainAllowlist?: string[]; sensitiveDomains?: string[] } & Partial<BrowserProfileSettings>, actor: Actor): BrowserProfile;
   listProfiles(orgId: string): BrowserProfile[];
+  /** Engine, headed mode and 1Password vault allowlist of a profile (settings without a column). */
+  profileSettings(orgId: string, profileId: string): BrowserProfileSettings;
   /** `conductor-browser` tools: navigate, snapshot, click, type, select, screenshot, extract, download, upload, tabs, evaluate, fill_secret, request_human. */
   toolProvider(): BuiltinToolProvider;
 
   listSessions(orgId: string, filter?: { status?: BrowserSession['status'] }): BrowserSession[];
   /** Create a takeover session + one-time signed share link (15-minute TTL, single viewer). */
   createTakeover(input: { orgId: string; agentId: string; runId: string; issueId: string | null; reason: string }): Promise<{ session: BrowserSession; shareUrl: string; token: string }>;
+  /**
+   * Owner-initiated: mint a fresh single-use share link for a takeover that is still live
+   * (pending, or claimed by a device the owner no longer has). The previous token stops
+   * working and the expiry does not move. Unknown / other-org session → not_found; ended → conflict.
+   */
+  reissueShare(orgId: string, sessionId: string, actor: Actor): Promise<{ session: BrowserSession; shareUrl: string; token: string }>;
   /** Validate + claim a share token for one viewer. Subsequent different viewers are rejected. */
   claimShare(token: string, viewerId: string): BrowserSession;
   /** Live view for the claimed session: frames out, input events in. Returns a disposer. */
@@ -345,6 +421,20 @@ export interface BrowserService {
   /** Release leases held by runs that are no longer alive (crash recovery). */
   recoverLeases(liveRunIds: string[]): void;
   shutdown(): Promise<void>;
+}
+
+/** Which browser backs a profile: Playwright's Chromium, the installed Chrome/Edge, or a running Chrome over CDP (loopback only). */
+export type BrowserEngineConfig =
+  | { kind: 'chromium' }
+  | { kind: 'channel'; channel: 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary' | 'msedge' }
+  | { kind: 'cdp'; endpoint: string };
+
+export interface BrowserProfileSettings {
+  engine: BrowserEngineConfig;
+  /** true = visible window on the Mac, false = headless, null = the daemon default. */
+  headed: boolean | null;
+  /** 1Password vaults the profile's agent may reference directly as `op://<vault>/…` in `fill_secret`. */
+  onePasswordVaults: string[];
 }
 
 export type BrowserInputEvent =
@@ -365,11 +455,36 @@ export interface RunControl {
   isAlive(runId: string): boolean;
 }
 
+/** Why a wake produced no run. */
+export type RunSkipCode =
+  | 'org_archived'
+  | 'kill_switch'
+  | 'agent_paused'
+  | 'agent_terminated'
+  | 'over_budget'
+  | 'rate_limited'
+  | 'capacity'
+  | 'no_work';
+
+export interface RunSkip {
+  code: RunSkipCode;
+  /** Human-readable cause, safe to show the owner. */
+  reason: string;
+  /** True when the cause can clear by itself (pause, budget, rate limit): the wake is retried, not dropped. */
+  temporary: boolean;
+}
+
 export interface RuntimeService extends RunControl {
   start(): Promise<void>;
   stop(): Promise<void>;
-  /** Enqueue an immediate run for an agent (optionally pinned to an issue). */
-  runNow(orgId: string, agentId: string, opts?: { issueId?: string | null; trigger?: RunTrigger; prompt?: string }): Promise<{ jobId: string }>;
+  /**
+   * Enqueue an immediate run for an agent (optionally pinned to an issue).
+   * `skipped` is set when the run cannot start right now: for a temporary
+   * cause the wake stays queued (`jobId` is real) and runs when the cause
+   * clears; for a permanent cause nothing is queued and `jobId` is ''.
+   * A wake that is skipped later (e.g. no work) is reported as `run.skipped` on the bus.
+   */
+  runNow(orgId: string, agentId: string, opts?: { issueId?: string | null; trigger?: RunTrigger; prompt?: string }): Promise<{ jobId: string; skipped?: RunSkip }>;
   cancelRun(orgId: string, runId: string, reason?: string): Promise<void>;
   getRun(orgId: string, runId: string): Run;
   listRuns(orgId: string, filter?: { agentId?: string; issueId?: string; status?: Run['status']; limit?: number }): Run[];

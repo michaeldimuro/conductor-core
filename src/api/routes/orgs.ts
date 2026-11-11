@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Services } from '../../daemon/container.js';
 import type { OrgBundle } from '../../contracts/org-work.js';
 import { OWNER } from '../../contracts/types.js';
-import { body, orgOf, param, query, resolveAgent } from '../http.js';
+import { body, orgOf, param, query, resolveAgent, supported } from '../http.js';
 import * as q from '../schemas/org-work.js';
 import { optionalBody } from '../schemas/common.js';
 import type { AgentActionResponse, ChatResponse, DocResponse, KillSwitchResponse, Ok, RunNowResponse } from '../types.js';
@@ -27,6 +27,12 @@ export function orgRoutes(app: FastifyInstance, s: Services): void {
   app.patch('/orgs/:orgId', async (req) => org.updateOrg(orgOf(s, req).id, body(req, q.updateOrg), OWNER));
   app.post('/orgs/:orgId/archive', async (req) => org.archiveOrg(orgOf(s, req).id, OWNER));
   app.delete('/orgs/:orgId', async (req) => org.archiveOrg(orgOf(s, req).id, OWNER));
+  app.post('/orgs/:orgId/unarchive', async (req) => {
+    const o = orgOf(s, req);
+    const restored = supported(org.unarchiveOrg, 'restoring an archived organization').call(org, o.id, OWNER);
+    s.runtime.syncSchedules();
+    return restored;
+  });
   app.get('/orgs/:orgId/export', async (req) => org.exportOrg(orgOf(s, req).id));
   app.get('/orgs/:orgId/chart', async (req) => org.orgChart(orgOf(s, req).id));
 
@@ -57,6 +63,10 @@ export function orgRoutes(app: FastifyInstance, s: Services): void {
   app.post('/orgs/:orgId/departments', async (req) => org.createDept(orgOf(s, req).id, body(req, q.createDept), OWNER));
   app.get('/orgs/:orgId/departments/:deptId', async (req) => org.getDept(orgOf(s, req).id, param(req, 'deptId')));
   app.patch('/orgs/:orgId/departments/:deptId', async (req) => org.updateDept(orgOf(s, req).id, param(req, 'deptId'), body(req, q.updateDept), OWNER));
+  app.post('/orgs/:orgId/departments/:deptId/archive', async (req) =>
+    supported(org.archiveDept, 'archiving a department').call(org, orgOf(s, req).id, param(req, 'deptId'), OWNER));
+  app.post('/orgs/:orgId/departments/:deptId/unarchive', async (req) =>
+    supported(org.unarchiveDept, 'restoring a department').call(org, orgOf(s, req).id, param(req, 'deptId'), OWNER));
 
   /* ── Agents ── */
   const agentOf = (req: Parameters<typeof orgOf>[1]) => {
@@ -113,7 +123,9 @@ export function orgRoutes(app: FastifyInstance, s: Services): void {
   app.post('/orgs/:orgId/agents/:agentId/run', async (req): Promise<RunNowResponse> => {
     const { o, agent } = agentOf(req);
     const input = body(req, optionalBody(q.runNow));
-    return s.runtime.runNow(o.id, agent.id, { issueId: input.issueId ?? null, prompt: input.prompt, trigger: 'manual' });
+    // `skipped` says why no run starts (paused, over budget, kill switch…) instead of a job id that silently goes nowhere.
+    const r = await s.runtime.runNow(o.id, agent.id, { issueId: input.issueId ?? null, prompt: input.prompt, trigger: 'manual' });
+    return { jobId: r.jobId, ...(r.skipped ? { skipped: r.skipped } : {}) };
   });
   app.post('/orgs/:orgId/agents/:agentId/chat', async (req): Promise<ChatResponse> => {
     const { o, agent } = agentOf(req);

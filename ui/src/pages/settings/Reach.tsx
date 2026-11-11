@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Chip, ConfirmButton, Empty, Field, FormShell, JsonField, Load, Modal, Panel, Segmented, Status, TagInput } from '../../components/ui.js';
 import { api } from '../../lib/api.js';
-import type { CreateWebhookRequest, Gateway, WebhookDto, WebhookSource } from '../../lib/api.js';
+import type { CreateWebhookRequest, Gateway, GatewayStatusDto, WebhookDto, WebhookSource } from '../../lib/api.js';
 import { humanize } from '../../lib/format.js';
 import { k, useDirectory, useOrg } from '../../lib/org.js';
 import { useAction, useQuery } from '../../lib/query.js';
@@ -83,9 +83,81 @@ function GatewayForm({ onClose, gateway }: { onClose: () => void; gateway?: Gate
   );
 }
 
+const PAIRING_TTL_MS = 10 * 60_000;
+/** What the daemon reports for a gateway right now: `active` means its listener is running. */
+const LIVE: Record<string, { tone: 'go' | 'warn' | 'stop' | 'idle'; label: string }> = {
+  active: { tone: 'go', label: 'Connected' }, stopped: { tone: 'warn', label: 'Not connected' }, error: { tone: 'stop', label: 'Error' }, disabled: { tone: 'idle', label: 'Disabled' },
+};
+const liveLabel = (status: string) => LIVE[status] ?? { tone: 'idle' as const, label: humanize(status) };
+
+/**
+ * Pairing: mint a one-time code, show it, and watch the gateway's allow-list
+ * until the chat that sent `/pair <code>` appears in it.
+ */
+function PairGateway({ gateway, live, onClose }: { gateway: Gateway; live: GatewayStatusDto | undefined; onClose: () => void }) {
+  const [code, setCode] = useState<string | null>(null);
+  const [mintedAt, setMintedAt] = useState(0);
+  const [before, setBefore] = useState(0);
+  const [now, setNow] = useState(Date.now());
+  const allowed = strings(gateway.config.allowedChatIds).length;
+  const mint = useAction(async () => {
+    const r = await api.gatewayPairingCode(gateway.id);
+    setBefore(allowed);
+    setSawPending(false);
+    setCode(r.code);
+    setMintedAt(Date.now());
+  });
+  useEffect(() => {
+    void mint.run();
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+    // Mint once when the dialog opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const left = Math.max(0, Math.ceil((mintedAt + PAIRING_TTL_MS - now) / 1000));
+  // The daemon keeps only a hash of the code and drops it once the code is redeemed (or guessed wrong too often).
+  const pendingOnServer = typeof gateway.config.pairingCodeHash === 'string';
+  const [sawPending, setSawPending] = useState(false);
+  useEffect(() => {
+    if (code !== null && pendingOnServer) setSawPending(true);
+  }, [code, pendingOnServer]);
+  const paired = code !== null && allowed > before;
+  const consumed = code !== null && sawPending && !pendingOnServer && !paired;
+  const notRunning = !live || live.status !== 'active';
+  return (
+    <div className="stack">
+      {notRunning ? <p className="note note-warn">This gateway is {live ? liveLabel(live.status).label.toLowerCase() : 'not running'}{live?.lastError ? `: ${live.lastError}` : ''}. It has to be connected before it can receive the code.</p> : null}
+      {paired ? (
+        <p className="note" role="status"><strong>Paired.</strong> That chat can now talk to your agents and receive approvals and takeover links.</p>
+      ) : code === null ? (
+        mint.error ? <p className="note note-stop">Could not create a pairing code. Close this dialog and try again.</p> : <p className="muted">Creating a pairing code</p>
+      ) : consumed ? (
+        <p className="note note-warn">This code is no longer valid. Either a chat that was already paired used it (nothing changed), or it was cancelled after too many wrong attempts. Create a new code to try again.</p>
+      ) : left === 0 ? (
+        <p className="note note-warn">This code has expired.</p>
+      ) : (
+        <>
+          <p>From the chat you want to connect, send this message to the {gateway.kind === 'imessage' ? 'iMessage address' : 'bot'}:</p>
+          <p className="pair-code" aria-label="Pairing command"><code>/pair {code}</code></p>
+          <p className="muted" aria-live="polite">Works once. Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}. Waiting for the message…</p>
+        </>
+      )}
+      <div className="form-actions">
+        {!paired && code !== null ? <Button busy={mint.busy} onClick={() => void mint.run()}>New code</Button> : null}
+        <Button variant="primary" onClick={onClose}>{paired ? 'Done' : 'Close'}</Button>
+      </div>
+    </div>
+  );
+}
+
 export function Gateways() {
   const { org } = useOrg();
-  const gateways = useQuery('gateways', () => api.listGateways());
+  const [pairing, setPairing] = useState<string | null>(null);
+  // While a pairing dialog is open the allow-list is polled so the result shows up on its own.
+  const gateways = useQuery('gateways', () => api.listGateways(), { pollMs: pairing ? 2000 : undefined });
+  const liveQ = useQuery('gateways/status', () => api.gatewayStatus(), { pollMs: pairing ? 2000 : 5000 });
+  const liveOf = (id: string) => liveQ.data?.find((s) => s.id === id);
+  const pairingGateway = (gateways.data ?? []).find((g) => g.id === pairing);
   const [form, setForm] = useState<{ gateway?: Gateway } | null>(null);
   const inv = { invalidate: ['gateways'] };
   const setStatus = useAction((g: Gateway, status: 'active' | 'disabled') => api.updateGateway(g.id, { status }), inv);
@@ -101,11 +173,16 @@ export function Gateways() {
                 <li key={g.id} className="connector">
                   <div className="connector-head">
                     <div className="grow">
-                      <div className="row"><strong>{g.name}</strong><Chip>{g.kind === 'imessage' ? 'iMessage' : humanize(g.kind)}</Chip><Status value={g.status} /><Chip>{g.orgId ? org.name : 'Every organization'}</Chip></div>
-                      {g.lastError ? <p className="note note-stop">{g.lastError}</p> : null}
+                      <div className="row">
+                        <strong>{g.name}</strong><Chip>{g.kind === 'imessage' ? 'iMessage' : humanize(g.kind)}</Chip>
+                        {g.status === 'disabled' ? <Status value="disabled" /> : liveOf(g.id) ? <Chip tone={liveLabel(liveOf(g.id)!.status).tone}>{liveLabel(liveOf(g.id)!.status).label}</Chip> : <Chip tone="warn">{liveQ.loading ? 'Checking' : 'Not running'}</Chip>}
+                        <Chip>{g.orgId ? org.name : 'Every organization'}</Chip>
+                      </div>
+                      {liveOf(g.id)?.lastError ?? g.lastError ? <p className="note note-stop">{liveOf(g.id)?.lastError ?? g.lastError}</p> : null}
                       <p className="muted">{strings(g.config.allowedChatIds).length} allowed chats, {strings(g.config.allowedUserIds).length} allowed users{g.authRef ? '' : ', no credentials set'}</p>
                     </div>
                     <div className="row row-tight">
+                      <Button small variant="primary" disabled={g.status === 'disabled'} title={g.status === 'disabled' ? 'Enable the gateway first' : undefined} onClick={() => setPairing(g.id)}>Pair a chat</Button>
                       <Button small onClick={() => setForm({ gateway: g })}>Edit</Button>
                       <Button small busy={setStatus.busy} onClick={() => void setStatus.run(g, g.status === 'disabled' ? 'active' : 'disabled')}>{g.status === 'disabled' ? 'Enable' : 'Disable'}</Button>
                       <ConfirmButton small variant="quiet" danger label="Remove" title={`Remove ${g.name}`} confirmLabel="Remove gateway" message="Messages from this platform stop reaching your agents." onConfirm={() => remove.run(g)} />
@@ -119,6 +196,9 @@ export function Gateways() {
       </Panel>
       <Modal open={form !== null} onClose={() => setForm(null)} title={form?.gateway ? `Edit ${form.gateway.name}` : 'Add a messaging gateway'} wide>
         {form ? <GatewayForm key={form.gateway?.id ?? 'new'} onClose={() => setForm(null)} gateway={form.gateway} /> : null}
+      </Modal>
+      <Modal open={pairingGateway !== undefined} onClose={() => setPairing(null)} title={pairingGateway ? `Pair a chat with ${pairingGateway.name}` : 'Pair a chat'}>
+        {pairingGateway ? <PairGateway key={pairingGateway.id} gateway={pairingGateway} live={liveOf(pairingGateway.id)} onClose={() => setPairing(null)} /> : null}
       </Modal>
     </div>
   );

@@ -7,21 +7,59 @@ export type StopReason = 'cancelled' | 'timeout' | 'budget' | 'max_steps';
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+/** Live guards by run id, so a pause/resume can reach every guard of a run without knowing its adapter. */
+const LIVE_GUARDS = new Map<string, Set<RunGuard>>();
+/** Runs whose clock is currently paused: a guard created meanwhile (fallback chain) starts paused. */
+const PAUSED_RUNS = new Set<string>();
+
+/**
+ * Stop the wall clock of a run (human takeover): paused time does not count
+ * against `maxWallMs` or seat time. Returns the number of guards reached.
+ */
+export function pauseRunClock(runId: string): number {
+  PAUSED_RUNS.add(runId);
+  const guards = LIVE_GUARDS.get(runId);
+  for (const g of guards ?? []) g.pause();
+  return guards?.size ?? 0;
+}
+
+/** Restart the wall clock of a run with the time it had left when it was paused. */
+export function resumeRunClock(runId: string): number {
+  PAUSED_RUNS.delete(runId);
+  const guards = LIVE_GUARDS.get(runId);
+  for (const g of guards ?? []) g.resume();
+  return guards?.size ?? 0;
+}
+
 /**
  * Per-run stop switch: one AbortSignal that fires on cancel, wall-clock
  * timeout, budget exhaustion or the step limit, and remembers which it was.
+ * The wall clock can be paused; paused time is excluded from every reading.
  */
 export class RunGuard {
   readonly startedAt = Date.now();
   private readonly controller = new AbortController();
-  private readonly timer: NodeJS.Timeout;
+  private timer: NodeJS.Timeout | null = null;
   private stopReason: StopReason | null = null;
+  private pausedAt: number | null = null;
+  private pausedMs = 0;
 
   constructor(
     readonly runId: string,
     readonly maxWallMs: number,
   ) {
-    this.timer = setTimeout(() => this.stop('timeout'), Math.min(Math.max(1, maxWallMs), MAX_TIMER_MS));
+    let set = LIVE_GUARDS.get(runId);
+    if (!set) {
+      set = new Set();
+      LIVE_GUARDS.set(runId, set);
+    }
+    set.add(this);
+    if (PAUSED_RUNS.has(runId)) this.pausedAt = this.startedAt;
+    else this.arm();
+  }
+
+  private arm(): void {
+    this.timer = setTimeout(() => this.stop('timeout'), Math.min(Math.max(1, this.remainingMs()), MAX_TIMER_MS));
     this.timer.unref();
   }
 
@@ -31,19 +69,47 @@ export class RunGuard {
   get reason(): StopReason | null {
     return this.stopReason;
   }
+  get paused(): boolean {
+    return this.pausedAt !== null;
+  }
   stop(reason: StopReason): void {
     if (this.stopReason) return;
     this.stopReason = reason;
     this.controller.abort();
   }
+  /** Suspend the wall-clock timer. Cancel, budget and step limits still apply. */
+  pause(): void {
+    if (this.pausedAt !== null) return;
+    this.pausedAt = Date.now();
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+  /** Re-arm the wall-clock timer with whatever was left at `pause()`. */
+  resume(): void {
+    if (this.pausedAt === null) return;
+    this.pausedMs += Date.now() - this.pausedAt;
+    this.pausedAt = null;
+    if (!this.stopReason) this.arm();
+  }
+  /** Wall time spent running (paused time excluded). */
+  private activeMs(): number {
+    const paused = this.pausedMs + (this.pausedAt !== null ? Date.now() - this.pausedAt : 0);
+    return Math.max(0, Date.now() - this.startedAt - paused);
+  }
   remainingMs(): number {
-    return Math.max(0, this.maxWallMs - (Date.now() - this.startedAt));
+    return Math.max(0, this.maxWallMs - this.activeMs());
   }
   elapsedSeconds(): number {
-    return Math.max(0, (Date.now() - this.startedAt) / 1000);
+    return this.activeMs() / 1000;
   }
   dispose(): void {
-    clearTimeout(this.timer);
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    const set = LIVE_GUARDS.get(this.runId);
+    if (set) {
+      set.delete(this);
+      if (set.size === 0) LIVE_GUARDS.delete(this.runId);
+    }
   }
 }
 

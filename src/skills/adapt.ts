@@ -112,13 +112,20 @@ export async function recordUsage(ctx: SkillCtx, raw: Parameters<SkillService['r
   }
   ctx.loaded.delete(input.runId);
 
-  for (const skillId of recorded) {
+  await revertRegressed(ctx, recorded, input.runId);
+}
+
+/** Re-check the regression rule for each skill; a regressed version is restored to the previous one. Returns reverted ids. */
+async function revertRegressed(ctx: SkillCtx, skillIds: string[], runId: string): Promise<string[]> {
+  const { kernel } = ctx;
+  const reverted: string[] = [];
+  for (const skillId of skillIds) {
     await ctx.git.exclusive(async () => {
       const skill = ctx.store.get(skillId);
       const hit = regression(ctx, skill);
       if (!hit) return;
       try {
-        const reverted = await restoreVersion(ctx, skill, hit.toVersion, SYSTEM, {
+        const restored = await restoreVersion(ctx, skill, hit.toVersion, SYSTEM, {
           change: 'revert',
           message: `auto-revert ${skill.name} v${skill.version} → v${hit.toVersion} (${hit.reason})`,
           extraAudit: { reason: hit.reason, ...hit.data },
@@ -129,14 +136,45 @@ export async function recordUsage(ctx: SkillCtx, raw: Parameters<SkillService['r
           action: 'skill.reverted',
           entityKind: 'skill',
           entityId: skill.id,
-          runId: input.runId,
-          data: { name: skill.name, fromVersion: skill.version, restoredVersion: hit.toVersion, newVersion: reverted.version, reason: hit.reason, ...hit.data },
+          runId,
+          data: { name: skill.name, fromVersion: skill.version, restoredVersion: hit.toVersion, newVersion: restored.version, reason: hit.reason, ...hit.data },
         });
+        reverted.push(skillId);
       } catch (e) {
         kernel.log.error({ skillId, err: errorMessage(e) }, 'skill auto-revert failed');
       }
     });
   }
+  return reverted;
+}
+
+const reviewSchema = z.object({ orgId: z.string().min(1), runId: z.string().min(1), success: z.boolean(), humanEdited: z.boolean() });
+
+/**
+ * The review verdict on a run arrived after its usages were recorded (reflection runs before
+ * review): correct their outcome and re-check the regression rule, so "a human edited the result"
+ * and a post-review success-rate drop can auto-revert the version.
+ */
+export async function recordReview(ctx: SkillCtx, raw: Parameters<NonNullable<SkillService['recordReview']>>[0]): Promise<{ updated: string[]; reverted: string[] }> {
+  const input = parseInput(reviewSchema, raw, 'skill review outcome');
+  const { db } = ctx.kernel;
+  const rows = db
+    .select()
+    .from(skillUsages)
+    .where(and(eq(skillUsages.runId, input.runId), eq(skillUsages.orgId, input.orgId)))
+    .all();
+  const updated = new Set<string>();
+  for (const row of rows) {
+    if (row.success === input.success && row.humanEdited === input.humanEdited) continue;
+    const delta = (input.success ? 1 : 0) - (row.success === true ? 1 : 0);
+    db.transaction((tx) => {
+      tx.update(skillUsages).set({ success: input.success, humanEdited: input.humanEdited }).where(eq(skillUsages.id, row.id)).run();
+      if (delta !== 0) tx.update(skills).set({ successCount: sql`max(0, ${skills.successCount} + ${delta})` }).where(eq(skills.id, row.skillId)).run();
+    });
+    updated.add(row.skillId);
+  }
+  const reverted = await revertRegressed(ctx, [...updated], input.runId);
+  return { updated: [...updated], reverted };
 }
 
 /**

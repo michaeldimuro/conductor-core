@@ -6,10 +6,11 @@ import type { BrowserProfile } from '../contracts/rows.js';
 import { SYSTEM } from '../contracts/types.js';
 import { ConductorError, errorMessage, forbidden } from '../shared/errors.js';
 import { redact } from '../shared/util.js';
+import { scrubPlaintextStores } from './at-rest.js';
 import { decryptJar, encryptJar } from './crypto.js';
 import { hostOf, isUrlAllowed } from './domains.js';
 import { SENSITIVE_VALUES_JS } from './page-scripts.js';
-import type { ProfileStore } from './profiles.js';
+import type { ProfileSettings, ProfileStore } from './profiles.js';
 
 export const COOKIE_JAR_FILE = 'cookies.enc';
 
@@ -77,7 +78,8 @@ export class BrowserEngine {
     this.profiles.acquireLease(id.orgId, profile.id, id.runId);
     try {
       const dir = this.profiles.dir(profile);
-      const engine = this.profiles.engine(profile);
+      const settings = this.profiles.settings(profile);
+      const engine = settings.engine;
       let context: BrowserContext;
       let browser: Browser | null = null;
       if (engine.kind === 'cdp') {
@@ -90,7 +92,8 @@ export class BrowserEngine {
         context = first;
       } else {
         context = await chromium.launchPersistentContext(dir, {
-          headless: this.opts.headless,
+          // Per-profile headed mode wins over the daemon default (a visible window on this Mac).
+          headless: settings.headed === null ? this.opts.headless : !settings.headed,
           viewport: { width: 1280, height: 800 },
           acceptDownloads: true,
           ...(engine.kind === 'channel' ? { channel: engine.channel } : {}),
@@ -128,6 +131,11 @@ export class BrowserEngine {
       this.profiles.releaseLease(id.orgId, profile.id, id.runId);
       throw e;
     }
+  }
+
+  /** Engine / headed / 1Password settings of the run's profile. */
+  settingsOf(rb: RunBrowser): ProfileSettings {
+    return this.profiles.settings(this.profileOf(rb));
   }
 
   /** Current profile row (allowlist / sensitive domains may be edited mid-run). */
@@ -224,7 +232,7 @@ export class BrowserEngine {
 
   /** Export the context's storage state to `<profileDir>/cookies.enc` (AES-256-GCM, key in the secret store). */
   async flushCookies(rb: RunBrowser): Promise<void> {
-    const state = await rb.context.storageState();
+    const state = await rb.context.storageState({ indexedDB: true });
     const key = await this.profiles.cookieKey(this.profileOf(rb), true);
     if (!key) throw new ConductorError('internal', 'could not obtain cookie vault key');
     const file = join(rb.profileDir, COOKIE_JAR_FILE);
@@ -233,14 +241,20 @@ export class BrowserEngine {
     renameSync(tmp, file);
   }
 
-  /** Persist cookies, close the context (or detach from an external Chrome) and release the lease. */
+  /**
+   * Persist the storage state encrypted, close the context (or detach from an
+   * external Chrome), remove Chromium's plaintext stores and release the lease.
+   * At rest the profile directory then holds credentials only inside `cookies.enc`.
+   */
   async close(runId: string): Promise<void> {
     await this.launching.get(runId)?.catch(() => {});
     const rb = this.runs.get(runId);
     if (!rb) return;
     this.runs.delete(runId);
+    let sealed = false;
     try {
       await this.flushCookies(rb);
+      sealed = true;
     } catch (e) {
       this.kernel.log.warn({ err: errorMessage(e), runId }, 'could not persist encrypted cookie jar');
     }
@@ -250,6 +264,13 @@ export class BrowserEngine {
         await rb.browser.close();
       } else {
         await rb.context.close();
+        // Only when the jar was written: otherwise the plaintext store is the last copy of the login.
+        if (sealed) {
+          const { failed } = scrubPlaintextStores(rb.profileDir);
+          if (failed.length > 0) this.kernel.log.warn({ runId, profileId: rb.profileId, failed: failed.length }, 'some plaintext browser stores could not be removed');
+        } else {
+          this.kernel.log.warn({ runId, profileId: rb.profileId }, 'browser profile left unencrypted at rest: the cookie jar could not be written');
+        }
       }
     } catch (e) {
       this.kernel.log.warn({ err: errorMessage(e), runId }, 'browser context did not close cleanly');

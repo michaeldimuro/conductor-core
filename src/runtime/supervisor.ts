@@ -4,6 +4,7 @@ import type { AdapterRegistry, RunEvent, RunResult } from '../contracts/adapter.
 import type { WorkerJob } from '../contracts/services.js';
 import type { Logger } from '../shared/util.js';
 import { errorMessage } from '../shared/errors.js';
+import { pauseRunClock, resumeRunClock } from '../adapters/shared/guard.js';
 import type { ChildMessage, ParentMessage } from './worker.js';
 
 export type SupervisedResult = RunResult & { adapterId: string; model: string | null };
@@ -12,6 +13,10 @@ export interface RunHandle {
   pid: number | null;
   done: Promise<SupervisedResult>;
   cancel(reason?: string): Promise<void>;
+  /** Stop the run's wall clocks (human takeover). Paused time counts against no limit. */
+  pause?(): void;
+  /** Restart the wall clocks with the time that was left at `pause()`. */
+  resume?(): void;
 }
 
 export interface Supervisor {
@@ -20,6 +25,7 @@ export interface Supervisor {
 
 const CANCEL_GRACE_MS = 5_000;
 const HARD_KILL_GRACE_MS = 60_000;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 function failed(job: WorkerJob, message: string, outcome: RunResult['outcome'] = 'failed'): SupervisedResult {
   return {
@@ -58,7 +64,7 @@ export class ProcessSupervisor implements Supervisor {
         execArgv: this.execArgv,
         cwd: job.ctx.workspacePath,
         // Minimal env: the worker gets what it needs over IPC.
-        env: pickEnv(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL', 'NODE_OPTIONS', 'CONDUCTOR_LOG_LEVEL']),
+        env: pickEnv(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL', 'NODE_OPTIONS', 'CONDUCTOR_LOG_LEVEL', 'CONDUCTOR_HOME']),
         stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         serialization: 'advanced',
       });
@@ -68,6 +74,23 @@ export class ProcessSupervisor implements Supervisor {
 
     let settled = false;
     let cancelled = false;
+    // Hard-kill backstop, pausable: `hardLeftMs` is what remains while the timer is not armed.
+    let hardTimer: NodeJS.Timeout | null = null;
+    let hardLeftMs = job.ctx.maxWallMs + HARD_KILL_GRACE_MS;
+    let hardArmedAt = 0;
+    let paused = false;
+    let onHardLimit: () => void = () => {};
+    const armHard = () => {
+      hardArmedAt = Date.now();
+      hardTimer = setTimeout(() => onHardLimit(), Math.min(Math.max(1, hardLeftMs), MAX_TIMER_MS));
+      hardTimer.unref();
+    };
+    const disarmHard = () => {
+      if (!hardTimer) return;
+      clearTimeout(hardTimer);
+      hardTimer = null;
+      hardLeftMs = Math.max(0, hardLeftMs - (Date.now() - hardArmedAt));
+    };
     let stderrTail = '';
     child.stderr?.on('data', (d: Buffer) => {
       stderrTail = (stderrTail + d.toString('utf8')).slice(-2000);
@@ -77,17 +100,17 @@ export class ProcessSupervisor implements Supervisor {
       const finish = (r: SupervisedResult) => {
         if (settled) return;
         settled = true;
-        clearTimeout(hardTimer);
+        disarmHard();
         resolve(r);
       };
 
       // Backstop in case the adapter ignores its own wall-time limit.
-      const hardTimer = setTimeout(() => {
+      onHardLimit = () => {
         this.opts.log.warn({ runId: job.ctx.runId }, 'run exceeded hard wall limit; killing worker');
         child.kill('SIGKILL');
         finish(failed(job, 'run exceeded wall-time limit', 'timeout'));
-      }, job.ctx.maxWallMs + HARD_KILL_GRACE_MS);
-      hardTimer.unref();
+      };
+      armHard();
 
       child.on('message', (raw) => {
         const msg = raw as ChildMessage;
@@ -129,7 +152,20 @@ export class ProcessSupervisor implements Supervisor {
       clearTimeout(t2);
     };
 
-    return { pid: child.pid ?? null, done, cancel };
+    const pause = () => {
+      if (settled || paused) return;
+      paused = true;
+      disarmHard();
+      if (child.connected) child.send({ type: 'pause' } satisfies ParentMessage);
+    };
+    const resume = () => {
+      if (settled || !paused) return;
+      paused = false;
+      armHard();
+      if (child.connected) child.send({ type: 'resume' } satisfies ParentMessage);
+    };
+
+    return { pid: child.pid ?? null, done, cancel, pause, resume };
   }
 }
 
@@ -146,18 +182,24 @@ export class InProcessSupervisor implements Supervisor {
 
   start(job: WorkerJob, onEvent: (e: RunEvent) => void): RunHandle {
     let cancelled = false;
-    const done = this.chain(this.registry, job, onEvent).then(
-      (r) => (cancelled && r.outcome !== 'cancelled' ? { ...r, outcome: 'cancelled' as const } : r),
-      (err) => failed(job, errorMessage(err)),
-    );
+    const runId = job.ctx.runId;
+    const done = this.chain(this.registry, job, onEvent)
+      .then(
+        (r) => (cancelled && r.outcome !== 'cancelled' ? { ...r, outcome: 'cancelled' as const } : r),
+        (err) => failed(job, errorMessage(err)),
+      )
+      .finally(() => void resumeRunClock(runId));
     return {
       pid: null,
       done,
       cancel: async () => {
         cancelled = true;
-        await this.cancelFn(this.registry, job.ctx.runId).catch(() => {});
+        await this.cancelFn(this.registry, runId).catch(() => {});
         await done;
       },
+      // Adapters run in this process, so their guards are reachable directly.
+      pause: () => void pauseRunClock(runId),
+      resume: () => void resumeRunClock(runId),
     };
   }
 }

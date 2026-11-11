@@ -40,20 +40,50 @@ export const engineSchema = z.discriminatedUnion('kind', [
 export type EngineConfig = z.infer<typeof engineSchema>;
 
 const patterns = z.array(z.string().max(253)).max(200);
+/** 1Password vault names (or ids) whose items the profile's agent may fill by a direct `op://` reference. */
+const vaults = z.array(z.string().trim().min(1).max(200).refine((v) => !v.includes('/'), 'a vault name must not contain "/"')).max(50);
+const settingsFields = {
+  engine: engineSchema.optional(),
+  headed: z.boolean().nullable().optional(),
+  onePasswordVaults: vaults.optional(),
+};
 const createSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   agentId: z.string().min(1).nullish(),
   deptId: z.string().min(1).nullish(),
   domainAllowlist: patterns.optional(),
   sensitiveDomains: patterns.optional(),
-  engine: engineSchema.optional(),
+  ...settingsFields,
 });
 const updateSchema = z.strictObject({
   name: z.string().trim().min(1).max(120).optional(),
   domainAllowlist: patterns.optional(),
   sensitiveDomains: patterns.optional(),
-  engine: engineSchema.optional(),
+  ...settingsFields,
 });
+
+export interface ProfileSettings {
+  engine: EngineConfig;
+  /** true = visible window, false = headless, null = follow the daemon default. */
+  headed: boolean | null;
+  onePasswordVaults: string[];
+}
+
+/** What `<profileDir>/conductor-engine.json` may hold: the vault allowlist, and the engine of profiles created before the `engine` column. */
+const fileSchema = z.object({ engine: engineSchema.optional(), onePasswordVaults: vaults.optional() });
+
+/** `browser_profiles.engine`: `bundled`, `channel:<name>` or `cdp:<endpoint>`. */
+export function encodeEngine(e: EngineConfig): string {
+  return e.kind === 'chromium' ? 'bundled' : e.kind === 'channel' ? `channel:${e.channel}` : `cdp:${e.endpoint}`;
+}
+
+export function decodeEngine(column: string): EngineConfig {
+  if (column === 'bundled' || column === 'chromium' || column === '') return { kind: 'chromium' };
+  const i = column.indexOf(':');
+  const kind = i === -1 ? column : column.slice(0, i);
+  const rest = i === -1 ? '' : column.slice(i + 1);
+  return parse(engineSchema, kind === 'channel' ? { kind, channel: rest } : kind === 'cdp' ? { kind, endpoint: rest } : { kind }, 'browser engine');
+}
 
 export type CreateProfileInput = z.input<typeof createSchema>;
 export type UpdateProfileInput = z.input<typeof updateSchema>;
@@ -123,8 +153,13 @@ export class ProfileStore {
       domainAllowlist: normalizePatterns(v.domainAllowlist ?? [], 'domainAllowlist'),
       sensitiveDomains: normalizePatterns(v.sensitiveDomains ?? [], 'sensitiveDomains'),
     }, actor);
-    if (v.engine) this.writeEngine(profile, v.engine);
-    return profile;
+    if (v.engine || v.headed !== undefined) {
+      this.kernel.db.update(browserProfiles)
+        .set({ ...(v.engine ? { engine: encodeEngine(v.engine) } : {}), ...(v.headed !== undefined ? { headed: v.headed } : {}) })
+        .where(and(eq(browserProfiles.orgId, orgId), eq(browserProfiles.id, profile.id))).run();
+    }
+    this.writeFile(profile, v);
+    return this.get(orgId, profile.id);
   }
 
   update(orgId: string, profileId: string, patch: UpdateProfileInput, actor: Actor): BrowserProfile {
@@ -134,9 +169,11 @@ export class ProfileStore {
     if (v.name !== undefined) set.name = v.name;
     if (v.domainAllowlist !== undefined) set.domainAllowlist = normalizePatterns(v.domainAllowlist, 'domainAllowlist');
     if (v.sensitiveDomains !== undefined) set.sensitiveDomains = normalizePatterns(v.sensitiveDomains, 'sensitiveDomains');
+    if (v.engine !== undefined) set.engine = encodeEngine(v.engine);
+    if (v.headed !== undefined) set.headed = v.headed;
     this.kernel.db.update(browserProfiles).set(set)
       .where(and(eq(browserProfiles.orgId, orgId), eq(browserProfiles.id, profileId))).run();
-    if (v.engine) this.writeEngine(before, v.engine);
+    this.writeFile(before, v);
     this.kernel.audit.record({
       orgId, actor, action: 'browser.profile_updated', entityKind: 'browser_profile', entityId: profileId,
       data: { changes: v, previous: { name: before.name, domainAllowlist: before.domainAllowlist, sensitiveDomains: before.sensitiveDomains } },
@@ -194,18 +231,53 @@ export class ProfileStore {
     return key;
   }
 
-  engine(profile: BrowserProfile): EngineConfig {
+  private readFile(profile: BrowserProfile): z.infer<typeof fileSchema> {
     const file = join(this.dir(profile), ENGINE_FILE);
-    if (!existsSync(file)) return { kind: 'chromium' };
+    if (!existsSync(file)) return {};
     try {
-      return parse(engineSchema, JSON.parse(readFileSync(file, 'utf8')), 'browser engine config');
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+      // The oldest files hold the bare engine object.
+      return parse(fileSchema, raw && typeof raw === 'object' && 'kind' in raw ? { engine: raw } : raw, 'browser profile settings');
     } catch (e) {
       throw new ConductorError('validation', `browser profile ${profile.slug} has an invalid engine config: ${(e as Error).message}`);
     }
   }
 
-  private writeEngine(profile: BrowserProfile, engine: EngineConfig): void {
-    writeFileSync(join(this.dir(profile), ENGINE_FILE), JSON.stringify(engine, null, 2), { mode: 0o600 });
+  /**
+   * Engine, headed mode and 1Password vault allowlist of a profile. Engine and
+   * headed mode are columns; the vault allowlist (and the engine of profiles
+   * that predate the column) sits in `<profileDir>/conductor-engine.json`.
+   */
+  settings(profile: BrowserProfile): ProfileSettings {
+    const file = this.readFile(profile);
+    let engine: EngineConfig;
+    try {
+      engine = decodeEngine(profile.engine);
+    } catch (e) {
+      throw new ConductorError('validation', `browser profile ${profile.slug} has an invalid engine config: ${(e as Error).message}`);
+    }
+    if (engine.kind === 'chromium' && file.engine) engine = file.engine;
+    return { engine, headed: profile.headed ?? null, onePasswordVaults: file.onePasswordVaults ?? [] };
+  }
+
+  engine(profile: BrowserProfile): EngineConfig {
+    return this.settings(profile).engine;
+  }
+
+  /** Keep the side file in step: vaults live there, and an engine written to the column supersedes a legacy one. */
+  private writeFile(profile: BrowserProfile, patch: { engine?: EngineConfig; onePasswordVaults?: string[] }): void {
+    if (patch.engine === undefined && patch.onePasswordVaults === undefined) return;
+    let current: z.infer<typeof fileSchema>;
+    try {
+      current = this.readFile(profile);
+    } catch {
+      current = {}; // a corrupt file is replaced by the new, valid settings
+    }
+    const next = {
+      ...(patch.engine === undefined && current.engine ? { engine: current.engine } : {}),
+      onePasswordVaults: patch.onePasswordVaults ?? current.onePasswordVaults ?? [],
+    };
+    writeFileSync(join(this.dir(profile), ENGINE_FILE), JSON.stringify(next, null, 2), { mode: 0o600 });
   }
 
   /** Atomic conditional UPDATE: succeeds only when the profile is free or already leased to this run. */

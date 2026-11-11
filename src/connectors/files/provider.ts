@@ -233,13 +233,15 @@ async function runCommandTool(k: Kernel, ctx: ToolCallContext, raw: unknown): Pr
   const cwd = confine(root, args.cwd ?? '.', ctx.workspacePath);
   if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw notFound('directory', args.cwd ?? '.');
   const org = k.db.select({ policies: organizations.policies }).from(organizations).where(eq(organizations.id, ctx.orgId)).get();
-  const network = (org?.policies.networkAllowlist?.length ?? 0) > 0;
-  const r = await runSandboxed({ command: args.command, workspace: root, cwd, network, timeoutMs: args.timeoutMs ?? 60_000, maxOutputBytes: MAX_OUTPUT_BYTES });
+  // Org policy: no entry = no network; otherwise only these hosts, enforced by the sandbox's egress proxy.
+  const networkAllowlist = Array.isArray(org?.policies?.networkAllowlist) ? org.policies.networkAllowlist.filter((h): h is string => typeof h === 'string') : [];
+  const r = await runSandboxed({ command: args.command, workspace: root, cwd, networkAllowlist, timeoutMs: args.timeoutMs ?? 60_000, maxOutputBytes: MAX_OUTPUT_BYTES });
   const parts = [
     r.timedOut ? `timed out after ${args.timeoutMs ?? 60_000} ms (killed)` : `exit code: ${r.exitCode ?? `signal ${r.signal}`}`,
     r.stdout ? `stdout:\n${r.stdout}` : 'stdout: (empty)',
     r.stderr ? `stderr:\n${r.stderr}` : '',
     r.truncated ? `[output truncated at ${MAX_OUTPUT_BYTES} bytes]` : '',
+    r.blockedHosts.length ? `[network blocked by the organization's allowlist: ${r.blockedHosts.join(', ')}]` : '',
   ].filter(Boolean);
   return textResult(parts.join('\n'), { isError: r.timedOut || r.exitCode !== 0 });
 }

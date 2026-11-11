@@ -7,7 +7,8 @@ import { conflict, invalid, notFound } from '../shared/errors.js';
 import { newId, slugify } from '../shared/ids.js';
 import { actorLabel } from './context.js';
 
-export type EntityKind = 'org' | 'dept' | 'agent';
+/** Config that is revisioned with rollback: the org chart plus the Work context's goals, playbooks and projects. */
+export type EntityKind = 'org' | 'dept' | 'agent' | 'goal' | 'playbook' | 'project';
 
 export function findOrg(k: Kernel, orgId: string): Organization | undefined {
   return k.db.select().from(organizations).where(eq(organizations.id, orgId)).get();

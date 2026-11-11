@@ -34,6 +34,8 @@ export const memories = sqliteTable(
     /** active | review (low-confidence queue) | superseded | forgotten */
     status: text('status', { enum: ['active', 'review', 'superseded', 'forgotten'] }).notNull().default('active'),
     supersededBy: text('superseded_by'),
+    /** Id of this memory in an optional external backend (Honcho, Mem0, Zep, Supermemory). */
+    externalRef: text('external_ref'),
     pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
     useCount: integer('use_count').notNull().default(0),
     lastUsedAt: integer('last_used_at'),

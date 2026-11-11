@@ -252,6 +252,12 @@ export function Shell({ orgs, org, children }: { orgs: Organization[]; org: Orga
             <span className={`badge${pending === 0 ? ' badge-zero' : ''}`}>{pending}</span>
           </Link>
         </header>
+        {status.data?.bind && !status.data.bind.loopback ? (
+          <p className="exposure-banner" role="alert">
+            <strong>Conductor is exposed to your network.</strong> The daemon is listening on {status.data.bind.host}, so any device that can reach this Mac can reach the API.
+            Bind it to 127.0.0.1 and use Tailscale or a Cloudflare Tunnel for remote access, then restart the daemon.
+          </p>
+        ) : null}
         <main id="content" tabIndex={-1}>{children}</main>
       </div>
 

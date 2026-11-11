@@ -11,7 +11,8 @@ import { resolveInside } from '../shared/paths.js';
  *   <skill-name>/scripts/ references/ assets/   optional supporting files
  */
 export const SKILL_FILE = 'SKILL.md';
-export const SKILL_SUBDIRS = ['scripts', 'references', 'assets'] as const;
+/** `evals/` holds the skill's explicit eval cases (`evals/cases.json|yaml`). */
+export const SKILL_SUBDIRS = ['scripts', 'references', 'assets', 'evals'] as const;
 export const MAX_NAME_LEN = 64;
 export const MAX_DESCRIPTION_LEN = 1024;
 export const MAX_BODY_CHARS = 100_000;
@@ -38,7 +39,7 @@ export function assertDescription(description: unknown): string {
 
 /**
  * Validate a supporting-file key (relative path → content). Only files under
- * scripts/, references/ or assets/ are accepted; traversal is rejected.
+ * scripts/, references/, assets/ or evals/ are accepted; traversal is rejected.
  */
 export function assertFileKey(key: string): string {
   if (typeof key !== 'string' || key.length === 0 || key.length > 256 || key.includes('\\') || key.includes('\0') || key.startsWith('/')) {

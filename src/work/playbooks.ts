@@ -1,15 +1,16 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import type { WorkService } from '../contracts/org-work.js';
 import type { Actor } from '../contracts/types.js';
 import { AUTONOMY } from '../contracts/types.js';
 import type { Agent, Issue, Playbook } from '../contracts/rows.js';
-import { playbooks } from '../db/schema/index.js';
+import { issues, playbooks } from '../db/schema/index.js';
 import { conflict, forbidden, invalid, notFound } from '../shared/errors.js';
 import { newId } from '../shared/ids.js';
 import { parse, requireAgent, requireAssignable, requireOrg, type WorkCtx } from './context.js';
 import { applyChanges, createIssue, getIssue } from './issues.js';
 import { actingAgent, assertCanAssign, assertCanTouch, assertMayCreateIssues } from './permissions.js';
-import { playbookInput } from './schemas.js';
+import { recordRevision } from './revisions.js';
+import { playbookInput, playbookPatch } from './schemas.js';
 import { isClosed } from './status.js';
 
 type Step = Playbook['steps'][number];
@@ -43,18 +44,10 @@ export function createPlaybook(
   return ctx.tx(() => {
     requireOrg(ctx, orgId);
     const agent = actingAgent(ctx, orgId, actor);
-    if (agent && agent.autonomyLevel < AUTONOMY.AUTONOMOUS) {
-      throw forbidden(`agent ${agent.slug} needs autonomy 2 or higher to author playbooks`);
-    }
+    assertMayAuthor(agent);
     if (input.managerAgentId) requireAgent(ctx, orgId, input.managerAgentId);
     for (const step of input.steps) if (step.agentId) requireAgent(ctx, orgId, step.agentId);
-
-    const clash = ctx.kernel.db
-      .select({ id: playbooks.id })
-      .from(playbooks)
-      .where(and(eq(playbooks.orgId, orgId), eq(playbooks.name, input.name)))
-      .get();
-    if (clash) throw conflict(`a playbook named "${input.name}" already exists`);
+    assertNameFree(ctx, orgId, input.name);
 
     const now = ctx.now();
     const row = ctx.kernel.db
@@ -72,15 +65,102 @@ export function createPlaybook(
       })
       .returning()
       .get();
+    const revision = recordRevision(ctx, orgId, 'playbook', row.id, row, actor, 'created');
     ctx.kernel.audit.record({
       orgId,
       actor,
       action: 'playbook.created',
       entityKind: 'playbook',
       entityId: row.id,
-      data: { name: row.name, process: row.process, steps: row.steps.length },
+      data: { name: row.name, process: row.process, steps: row.steps.length, revision },
     });
     return row;
+  });
+}
+
+function assertMayAuthor(agent: Agent | null): void {
+  if (agent && agent.autonomyLevel < AUTONOMY.AUTONOMOUS) {
+    throw forbidden(`agent ${agent.slug} needs autonomy 2 or higher to author playbooks`);
+  }
+}
+
+function assertNameFree(ctx: WorkCtx, orgId: string, name: string, exceptId?: string): void {
+  const where = [eq(playbooks.orgId, orgId), eq(playbooks.name, name)];
+  if (exceptId) where.push(ne(playbooks.id, exceptId));
+  const clash = ctx.kernel.db.select({ id: playbooks.id }).from(playbooks).where(and(...where)).get();
+  if (clash) throw conflict(`a playbook named "${name}" already exists`);
+}
+
+/** Edit a playbook. Issues already created by earlier runs are not touched. */
+export function updatePlaybook(
+  ctx: WorkCtx,
+  orgId: string,
+  playbookId: string,
+  raw: Parameters<NonNullable<WorkService['updatePlaybook']>>[2],
+  actor: Actor,
+): Playbook {
+  const patch = parse(playbookPatch, raw);
+  return ctx.tx(() => {
+    const current = getPlaybook(ctx, orgId, playbookId);
+    assertMayAuthor(actingAgent(ctx, orgId, actor));
+    if (patch.managerAgentId) requireAgent(ctx, orgId, patch.managerAgentId);
+    for (const step of patch.steps ?? []) if (step.agentId) requireAgent(ctx, orgId, step.agentId);
+    if (patch.name !== undefined && patch.name !== current.name) assertNameFree(ctx, orgId, patch.name, playbookId);
+
+    const row = ctx.kernel.db
+      .update(playbooks)
+      .set({
+        name: patch.name ?? current.name,
+        description: patch.description ?? current.description,
+        process: patch.process ?? current.process,
+        managerAgentId: patch.managerAgentId !== undefined ? patch.managerAgentId : current.managerAgentId,
+        steps: patch.steps ?? current.steps,
+        updatedAt: ctx.now(),
+      })
+      .where(and(eq(playbooks.orgId, orgId), eq(playbooks.id, playbookId)))
+      .returning()
+      .get();
+    if (!row) throw notFound('playbook', playbookId);
+    const revision = recordRevision(ctx, orgId, 'playbook', playbookId, row, actor, 'updated');
+    ctx.kernel.audit.record({
+      orgId,
+      actor,
+      action: 'playbook.updated',
+      entityKind: 'playbook',
+      entityId: playbookId,
+      data: { name: row.name, fields: Object.keys(patch), steps: row.steps.length, revision },
+    });
+    ctx.emit('playbook.changed', { orgId, playbookId, change: 'updated' });
+    return row;
+  });
+}
+
+/**
+ * Delete a playbook. Child issues it already created stay as they are; only
+ * their link to the playbook is cleared. The last state is kept as a
+ * revision, so `rollback` can restore it.
+ */
+export function deletePlaybook(ctx: WorkCtx, orgId: string, playbookId: string, actor: Actor): void {
+  ctx.tx(() => {
+    const current = getPlaybook(ctx, orgId, playbookId);
+    assertMayAuthor(actingAgent(ctx, orgId, actor));
+    const revision = recordRevision(ctx, orgId, 'playbook', playbookId, current, actor, 'deleted');
+    const unlinked = ctx.kernel.db
+      .update(issues)
+      .set({ playbookId: null })
+      .where(and(eq(issues.orgId, orgId), eq(issues.playbookId, playbookId)))
+      .returning({ id: issues.id })
+      .all();
+    ctx.kernel.db.delete(playbooks).where(and(eq(playbooks.orgId, orgId), eq(playbooks.id, playbookId))).run();
+    ctx.kernel.audit.record({
+      orgId,
+      actor,
+      action: 'playbook.deleted',
+      entityKind: 'playbook',
+      entityId: playbookId,
+      data: { name: current.name, revision, issuesUnlinked: unlinked.length },
+    });
+    ctx.emit('playbook.changed', { orgId, playbookId, change: 'deleted' });
   });
 }
 
@@ -114,7 +194,7 @@ export function runPlaybook(ctx: WorkCtx, orgId: string, playbookId: string, iss
     const parent = getIssue(ctx, orgId, issueId);
     if (isClosed(parent.status)) throw conflict(`issue #${parent.number} is ${parent.status}; reopen it to run a playbook`);
     const agent = actingAgent(ctx, orgId, actor);
-    assertMayCreateIssues(agent);
+    assertMayCreateIssues(agent, parent);
     assertCanTouch(ctx, orgId, agent, parent);
 
     const hierarchical = playbook.process === 'hierarchical';

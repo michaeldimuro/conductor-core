@@ -4,9 +4,10 @@ import type { Issue } from '../../contracts/rows.js';
 import type { IssueFilter } from '../../contracts/org-work.js';
 import { OWNER } from '../../contracts/types.js';
 import { notFound } from '../../shared/errors.js';
-import { body, orgOf, param, query, resolveIssue } from '../http.js';
+import { body, orgOf, param, query, resolveIssue, supported } from '../http.js';
 import * as q from '../schemas/org-work.js';
-import type { Page } from '../types.js';
+import { attachmentRoutes } from './attachments.js';
+import type { Ok, Page } from '../types.js';
 
 const DEFAULT_PAGE = 100;
 
@@ -25,11 +26,17 @@ export function workRoutes(app: FastifyInstance, s: Services): void {
   app.get('/orgs/:orgId/goals/tree', async (req) => work.goalTree(oid(req)));
   app.get('/orgs/:orgId/goals/:goalId', async (req) => work.getGoal(oid(req), param(req, 'goalId')));
   app.patch('/orgs/:orgId/goals/:goalId', async (req) => work.updateGoal(oid(req), param(req, 'goalId'), body(req, q.updateGoal), OWNER));
+  app.delete('/orgs/:orgId/goals/:goalId', async (req): Promise<Ok> => {
+    supported(work.deleteGoal, 'deleting a goal').call(work, oid(req), param(req, 'goalId'), OWNER);
+    return { ok: true };
+  });
 
   /* ── Projects ── */
   app.get('/orgs/:orgId/projects', async (req) => work.listProjects(oid(req)));
   app.post('/orgs/:orgId/projects', async (req) => work.createProject(oid(req), body(req, q.createProject), OWNER));
   app.get('/orgs/:orgId/projects/:projectId', async (req) => work.getProject(oid(req), param(req, 'projectId')));
+  app.patch('/orgs/:orgId/projects/:projectId', async (req) =>
+    supported(work.updateProject, 'editing a project').call(work, oid(req), param(req, 'projectId'), body(req, q.updateProject), OWNER));
 
   /* ── Issues ── */
   app.get('/orgs/:orgId/issues', async (req): Promise<Page<Issue>> => {
@@ -78,6 +85,8 @@ export function workRoutes(app: FastifyInstance, s: Services): void {
     return work.timeline(orgId, issue.id);
   });
 
+  attachmentRoutes(app, s);
+
   /* ── Playbooks ── */
   app.get('/orgs/:orgId/playbooks', async (req) => work.listPlaybooks(oid(req)));
   app.post('/orgs/:orgId/playbooks', async (req) => work.createPlaybook(oid(req), body(req, q.createPlaybook), OWNER));
@@ -86,6 +95,12 @@ export function workRoutes(app: FastifyInstance, s: Services): void {
     const playbook = work.listPlaybooks(oid(req)).find((p) => p.id === id);
     if (!playbook) throw notFound('playbook', id);
     return playbook;
+  });
+  app.patch('/orgs/:orgId/playbooks/:playbookId', async (req) =>
+    supported(work.updatePlaybook, 'editing a playbook').call(work, oid(req), param(req, 'playbookId'), body(req, q.updatePlaybook), OWNER));
+  app.delete('/orgs/:orgId/playbooks/:playbookId', async (req): Promise<Ok> => {
+    supported(work.deletePlaybook, 'deleting a playbook').call(work, oid(req), param(req, 'playbookId'), OWNER);
+    return { ok: true };
   });
   app.post('/orgs/:orgId/playbooks/:playbookId/run', async (req) => {
     const orgId = oid(req);

@@ -101,7 +101,7 @@ export interface Harness {
   runControl: FakeRunControl;
   svc: BrowserService;
   /** A fresh service over the same kernel pieces (what a daemon restart builds). */
-  newService(kernel?: Kernel): BrowserService;
+  newService(kernel?: Kernel, opts?: { opBin?: string; headless?: boolean }): BrowserService;
   ctx(agent: Agent, runId: string, over?: Partial<ToolCallContext>): ToolCallContext;
   call(ctx: ToolCallContext, tool: string, args?: Record<string, unknown>): Promise<ToolResult>;
   dispose(): Promise<void>;
@@ -112,8 +112,12 @@ export function createHarness(): Harness {
   const approvals = new FakeApprovals(() => k.clock.now());
   const runControl = new FakeRunControl();
   const services: BrowserService[] = [];
-  const newService = (kernel: Kernel = k): BrowserService => {
-    const svc = createBrowserService(kernel, { approvals, runControl, org: orgLookup(kernel), shareBaseUrl: () => `${SHARE_BASE}/`, headless: true });
+  const newService = (kernel: Kernel = k, opts: { opBin?: string; headless?: boolean } = {}): BrowserService => {
+    const svc = createBrowserService(kernel, {
+      approvals, runControl, org: orgLookup(kernel), shareBaseUrl: () => `${SHARE_BASE}/`, headless: opts.headless ?? true,
+      // Never the real 1Password CLI in tests: an absent binary unless a fake is supplied.
+      onePassword: { bin: opts.opBin ?? join(k.paths.home, 'no-such-op'), timeoutMs: 5000 },
+    });
     services.push(svc);
     return svc;
   };

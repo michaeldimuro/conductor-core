@@ -120,6 +120,15 @@ export class Tokens implements TokenService {
     }
   }
 
+  /** Keep a paused run's token alive: its expiry becomes now + ttlMs. Revoked tokens stay revoked. */
+  extendRunToken(runId: string, ttlMs: number): void {
+    this.k.db
+      .update(apiTokens)
+      .set({ expiresAt: this.k.clock.now() + Math.max(0, ttlMs) })
+      .where(and(eq(apiTokens.runId, runId), eq(apiTokens.kind, 'run'), isNull(apiTokens.revokedAt)))
+      .run();
+  }
+
   revoke(tokenId: string): void {
     const revoked = this.k.db
       .update(apiTokens)

@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { SANDBOX_EXEC, type SandboxSpec } from './sandbox.js';
 
 const PASSTHROUGH = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'SHELL', 'TERM', 'TZ'];
 
@@ -86,6 +87,8 @@ export interface ProcessOptions {
   killGraceMs?: number;
   /** Bytes of stderr kept for error reporting. */
   stderrLimit?: number;
+  /** Start the command under this macOS sandbox profile (see `agentSandbox`). Omit to run unsandboxed. */
+  sandbox?: SandboxSpec;
 }
 
 export interface ProcessExit {
@@ -106,8 +109,22 @@ export function runProcess(opts: ProcessOptions): Promise<ProcessExit> {
   const limit = opts.stderrLimit ?? 8192;
   return new Promise<ProcessExit>((resolve) => {
     let child: ChildProcess;
+    let command = opts.command;
+    let args = opts.args;
+    if (opts.sandbox) {
+      // sandbox-exec would hide a missing command behind its own exit code; keep the ENOENT contract.
+      const target = opts.command.includes('/') && !isAbsolute(opts.command) ? resolvePath(opts.cwd, opts.command) : opts.command;
+      const resolved = findExecutable(target, opts.env.PATH ?? '');
+      if (!resolved) {
+        const err: NodeJS.ErrnoException = Object.assign(new Error(`spawn ${opts.command} ENOENT`), { code: 'ENOENT' });
+        resolve({ code: null, signal: null, stderr: '', spawnError: err });
+        return;
+      }
+      command = opts.sandbox.exec ?? SANDBOX_EXEC;
+      args = ['-p', opts.sandbox.profile, resolved, ...opts.args];
+    }
     try {
-      child = spawn(opts.command, opts.args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawn(command, args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) {
       resolve({ code: null, signal: null, stderr: '', spawnError: e as NodeJS.ErrnoException });
       return;

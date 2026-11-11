@@ -166,7 +166,7 @@ describe('open and pair', () => {
 
 describe('doctor', () => {
   const doc = (p: Partial<DoctorResponse> = {}): DoctorResponse => ({
-    version: '0.1.0', home: HOME, baseUrl: 'http://127.0.0.1:7420', publicUrl: 'http://127.0.0.1:7420', publicUrlConfigured: false, secretStore: { reachable: true },
+    version: '0.1.0', home: HOME, baseUrl: 'http://127.0.0.1:7420', publicUrl: 'http://127.0.0.1:7420', publicUrlConfigured: false, bind: { host: '127.0.0.1', loopback: true }, secretStore: { reachable: true },
     adapters: [], runtime: { running: 0, queued: 0, perOrg: {}, perProvider: {}, uptimeMs: 1 }, killSwitch: { global: false }, ...p,
   });
   const tailscaleJson = JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.', TailscaleIPs: ['100.64.0.7'] } });

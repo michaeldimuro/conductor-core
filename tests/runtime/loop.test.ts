@@ -91,11 +91,15 @@ describe('heartbeat loop', () => {
 
   it('lets an autonomous agent with goals work proactively on heartbeat', async () => {
     h.work.createGoal(h.acme.id, { title: 'Ship v2', ownerAgentId: h.lead.id, level: 'agent' }, OWNER);
+    await h.drain(); // the new goal wakes its owner to plan it (goal cascade)
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.prompt).toContain('not been broken down');
     h.k.clock.advance(31 * MIN);
     await h.drain();
-    expect(h.calls).toHaveLength(1);
-    expect(h.calls[0]!.agentId).toBe(h.lead.id);
-    expect(h.calls[0]!.prompt).toContain('Ship v2');
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]!.agentId).toBe(h.lead.id);
+    expect(h.calls[1]!.prompt).toContain('Pursue your goals proactively');
+    expect(h.calls[1]!.prompt).toContain('Ship v2');
   });
 
   it('releases a failed issue to todo, then blocks and escalates after repeated failures', async () => {

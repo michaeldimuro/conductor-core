@@ -122,12 +122,14 @@ export function createDiscordAdapter(ctx: AdapterContext): GatewayAdapter {
     const userId = asString(asRecord(asRecord(body.member).user).id) ?? asString(asRecord(body.user).id);
     const data = asRecord(body.data);
     if (!chatId || !userId) return { status: 400, body: { error: 'missing channel or user' } };
+    // Interactions from a server carry `guild_id`; a DM with the bot does not.
+    const isGroup = body.guild_id !== undefined && body.guild_id !== null;
 
     if (body.type === 2) {
       const text = commandText(data);
       if (!text) return { status: 200, body: { type: 4, data: { content: 'Nothing to do.', flags: EPHEMERAL } } };
       // Acknowledge now; the router answers in the channel (an agent reply can take minutes).
-      void ctx.emit({ chatId, userId, text }).catch((err) => ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, 'discord command handling failed'));
+      void ctx.emit({ chatId, userId, text, isGroup }).catch((err) => ctx.log.warn({ gatewayId: ctx.gatewayId, err: errorMessage(err) }, 'discord command handling failed'));
       return { status: 200, body: { type: 4, data: { content: 'On it.', flags: EPHEMERAL } } };
     }
 
@@ -146,7 +148,7 @@ export function createDiscordAdapter(ctx: AdapterContext): GatewayAdapter {
           resolve(null);
         }, waitMs);
         void ctx.emit({
-          chatId, userId, text: '', action,
+          chatId, userId, text: '', action, isGroup,
           respond: async (o) => {
             clearTimeout(timer);
             if (!deferred) return resolve(o);

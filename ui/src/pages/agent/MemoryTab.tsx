@@ -118,7 +118,11 @@ export function MemoryTab({ agent }: { agent: Agent }) {
     () => api.listMemory(org.id, { scope, scopeId, kind: (kind || undefined) as Memory['kind'] | undefined, status, limit }), o);
   const found = useQuery(view === 'browse' && query ? k(org.id, 'memory', 'search', agent.id, query, kind) : null,
     () => api.searchMemory(org.id, { agentId: agent.id, text: query, kinds: kind ? [kind as Memory['kind']] : undefined, limit: 50, includeReview: true }), o);
-  const review = useQuery(k(org.id, 'memory', 'review', agent.id), () => api.listMemory(org.id, { scope: 'agent', scopeId: agent.id, status: 'review', limit: 200 }), o);
+  // Every scope this agent recalls from: its own, its department's and the organization's.
+  const review = useQuery(k(org.id, 'memory', 'review', agent.id, agent.deptId), async () => {
+    const all = await api.listMemory(org.id, { status: 'review', limit: 500 });
+    return all.filter((m) => m.scope === 'org' || (m.scope === 'dept' && m.scopeId === agent.deptId) || (m.scope === 'agent' && m.scopeId === agent.id));
+  }, o);
   const rules = useQuery(view === 'rules' ? k(org.id, 'memory-doc', agent.id) : null, () => api.getAgentMemoryDoc(org.id, agent.id));
   const owner = useQuery(view === 'owner' ? k(org.id, 'owner-model') : null, () => api.getOwnerModel(org.id));
   const reviewCount = review.data?.length ?? 0;
@@ -169,6 +173,7 @@ export function MemoryTab({ agent }: { agent: Agent }) {
 
       {view === 'review' ? (
         <Panel title="Low-confidence memories waiting for you" flush>
+          <p className="panel-body muted">Covers {agent.name}'s own memories and the department and organization memories it recalls from. Each one is labelled with its scope.</p>
           <Load q={review} empty={<Empty title="The review queue is empty"><p>Memories an agent is unsure about land here before they are used.</p></Empty>}>
             {(items) => <ul className="memories">{items.map((m) => <MemoryItem key={m.id} memory={m} onEdit={(memory) => setForm({ memory })} />)}</ul>}
           </Load>

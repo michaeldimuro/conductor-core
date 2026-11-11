@@ -53,6 +53,8 @@ export interface ChatContext {
   adapter: GatewayAdapter;
   chatId: string;
   userId: string;
+  /** More people than the sender can read and write here (group, channel, server). */
+  isGroup: boolean;
   reply(text: string, buttons?: OutboundButton[]): Promise<void>;
 }
 

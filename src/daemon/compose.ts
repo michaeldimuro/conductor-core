@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { createKernel, type KernelOptions } from '../kernel/index.js';
 import { settings } from '../db/schema/index.js';
 import type { RunControl } from '../contracts/services.js';
-import type { AdapterRegistry } from '../contracts/adapter.js';
+import type { AdapterRegistry, AdapterRescanResult } from '../contracts/adapter.js';
 import { createGovernance } from '../governance/index.js';
 import { createOrgService } from '../org/index.js';
 import { createWorkService, createTasksToolProvider } from '../work/index.js';
@@ -14,6 +14,8 @@ import { createAdapterRegistry } from '../adapters/index.js';
 import { createRuntime, type RuntimeOptions } from '../runtime/index.js';
 import type { Supervisor } from '../runtime/supervisor.js';
 import { DEFAULT_PORT, VERSION, type DaemonConfig, type Services } from './container.js';
+import { bounded } from './lifecycle.js';
+import { watchAdapterPlugins } from './plugin-watch.js';
 
 export interface ComposeOptions extends KernelOptions {
   config?: Partial<DaemonConfig>;
@@ -22,14 +24,26 @@ export interface ComposeOptions extends KernelOptions {
   supervisor?: Supervisor;
   registry?: AdapterRegistry;
   browserHeadless?: boolean;
+  /** Watch the plugin directory and load new adapters without a restart (default true with the real registry). */
+  watchPlugins?: boolean;
 }
+
+export interface CloseOptions {
+  /**
+   * Upper bound for the whole close. Runs still in flight when it elapses are
+   * left to the journal (recovered on the next start). Default: wait for everything.
+   */
+  graceMs?: number;
+}
+
+export type ComposedServices = Services & { config: DaemonConfig; close(opts?: CloseOptions): Promise<void> };
 
 /**
  * Composition root: builds every bounded context and wires them through
  * their contract interfaces. Nothing here starts timers or listens on a port;
  * call `services.runtime.start()` and the API server for that.
  */
-export async function createServices(opts: ComposeOptions = {}): Promise<Services & { config: DaemonConfig; close(): Promise<void> }> {
+export async function createServices(opts: ComposeOptions = {}): Promise<ComposedServices> {
   const kernel = createKernel(opts);
 
   const stored = (key: string): unknown => kernel.db.select().from(settings).where(eq(settings.key, key)).get()?.value;
@@ -52,9 +66,23 @@ export async function createServices(opts: ComposeOptions = {}): Promise<Service
   org.setImportDeps({ skills, memory });
 
   const connectors = createConnectorGateway(kernel, { approvals: governance.approvals, org });
+  org.setImportDeps({ skills, memory, connectors });
 
-  const registry = opts.registry ?? createAdapterRegistry({ pluginDir: kernel.paths.ensure(kernel.paths.adapters), log: kernel.log });
-  if (!opts.registry) await registry.loadPlugins();
+  const pluginDir = kernel.paths.ensure(kernel.paths.adapters);
+  const ownRegistry = opts.registry ? null : createAdapterRegistry({ pluginDir, log: kernel.log });
+  const registry: AdapterRegistry = opts.registry ?? ownRegistry!;
+  const rescanAdapters = async (): Promise<AdapterRescanResult> => {
+    if (ownRegistry) return ownRegistry.rescan();
+    // An injected registry only promises loadPlugins(): diff its listing around the scan.
+    const ids = (): string[] => registry.list().filter((a) => !a.builtin).map((a) => a.id);
+    const before = ids();
+    await registry.loadPlugins();
+    const loaded = ids();
+    return { loaded, added: loaded.filter((id) => !before.includes(id)), removed: before.filter((id) => !loaded.includes(id)), skipped: [] };
+  };
+  if (ownRegistry) await ownRegistry.rescan();
+  // Third-party adapters install without a restart: dropping a folder into the plugin dir is enough.
+  const pluginWatch = ownRegistry && opts.watchPlugins !== false ? watchAdapterPlugins({ pluginDir, rescan: rescanAdapters, log: kernel.log }) : null;
 
   const runtime = createRuntime(kernel, {
     org, work, governance, skills, memory, connectors, registry, baseUrl,
@@ -84,11 +112,18 @@ export async function createServices(opts: ComposeOptions = {}): Promise<Service
 
   return {
     kernel, org, work, governance, skills, memory, connectors, browser, runtime, registry, utility, embedder,
-    baseUrl, publicUrl, version: VERSION, config,
-    async close() {
-      await runtime.stop().catch((err) => kernel.log.warn({ err }, 'runtime stop failed'));
-      await browser.shutdown().catch((err) => kernel.log.warn({ err }, 'browser shutdown failed'));
-      await connectors.close().catch((err) => kernel.log.warn({ err }, 'connector close failed'));
+    baseUrl, publicUrl, version: VERSION, config, rescanAdapters,
+    async close(closeOpts: CloseOptions = {}) {
+      const graceMs = closeOpts.graceMs ?? Number.POSITIVE_INFINITY;
+      const deadline = Date.now() + graceMs;
+      const left = (): number => (Number.isFinite(graceMs) ? Math.max(0, deadline - Date.now()) : graceMs);
+      pluginWatch?.close();
+      // Runs get most of the budget to end cleanly (cancel → release their issues); the rest is for teardown.
+      await bounded('runtime', () => runtime.stop(), Number.isFinite(graceMs) ? graceMs * 0.75 : graceMs, kernel.log);
+      await Promise.all([
+        bounded('browser', () => browser.shutdown(), left(), kernel.log),
+        bounded('connectors', () => connectors.close(), left(), kernel.log),
+      ]);
       kernel.close();
     },
   };

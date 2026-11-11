@@ -17,6 +17,10 @@ export const browserProfiles = sqliteTable(
     domainAllowlist: text('domain_allowlist', { mode: 'json' }).$type<string[]>().notNull().default([]),
     /** Hostname patterns where submits/purchases require an Approval before the click. */
     sensitiveDomains: text('sensitive_domains', { mode: 'json' }).$type<string[]>().notNull().default([]),
+    /** Browser engine: 'bundled' (Playwright-managed Chromium) or the user's installed Chrome via CDP. */
+    engine: text('engine').notNull().default('bundled'),
+    /** Force headed (true) / headless (false) for this profile; NULL = decide per run. */
+    headed: integer('headed', { mode: 'boolean' }),
     /** Lease: a profile is used by one run at a time (part of the run journal). */
     leasedRunId: text('leased_run_id'),
     leasedAt: integer('leased_at'),

@@ -2,32 +2,28 @@ import { randomBytes } from 'node:crypto';
 import type { ToolContent, ToolResult, ToolRisk } from '../contracts/tools.js';
 import type { ToolPolicy } from '../contracts/types.js';
 import { redact, sha256, stableStringify, truncate } from '../shared/util.js';
+import { classifyAction, isHighRiskCategory, isInteraction, nameWords, type ActionCategory } from './actions.js';
 import type { UpstreamAnnotations, UpstreamTool } from './types.js';
 
 const RISK_ORDER: ToolRisk[] = ['read', 'write', 'external_read', 'external_write', 'high'];
 const maxRisk = (a: ToolRisk, b: ToolRisk): ToolRisk => (RISK_ORDER.indexOf(a) >= RISK_ORDER.indexOf(b) ? a : b);
 
-const HIGH_WORDS = new Set([
-  'pay', 'purchase', 'buy', 'charge', 'refund', 'delete', 'remove', 'destroy', 'exec', 'execute', 'shell',
-]);
-const WRITE_WORDS = new Set([
-  'send', 'post', 'publish', 'reply', 'create', 'update', 'write', 'edit', 'submit', 'upload', 'put', 'patch', 'insert',
-]);
+export { nameWords };
 
-/** Split snake/kebab/dot/camelCase tool names into lowercase words. */
-export function nameWords(name: string): string[] {
-  return name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-}
-
+/** Risk floor of a tool from what its name says it does. */
 function riskFromName(name: string): ToolRisk {
-  const words = nameWords(name);
-  if (words.some((w) => HIGH_WORDS.has(w))) return 'high';
-  if (words.some((w) => WRITE_WORDS.has(w))) return 'external_write';
-  return 'external_read';
+  switch (classifyAction(name)) {
+    case 'payment':
+    case 'destructive':
+    case 'exec':
+      return 'high';
+    case 'send':
+    case 'publish':
+    case 'write':
+      return 'external_write';
+    default:
+      return 'external_read';
+  }
 }
 
 function riskFromAnnotations(a: UpstreamAnnotations | undefined): ToolRisk {
@@ -84,13 +80,35 @@ export function resolvePolicy(input: {
   return input.risk === 'high' && !input.builtin ? 'ask' : 'allowed';
 }
 
-/** Autonomy and untrusted-content escalation on top of the configured policy. */
-export function escalatePolicy(policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean): ToolPolicy {
-  if (policy === 'off') return 'off';
-  if (!isGuardedRisk(risk)) return policy;
-  if (ingestedUntrusted) return 'ask';
-  if (autonomyLevel <= 1) return 'ask';
-  return policy;
+export type EscalationReason = 'policy' | 'untrusted_content' | 'autonomy';
+
+/**
+ * Autonomy and untrusted-content escalation on top of the configured policy.
+ *
+ * - Untrusted content (PRD security model): once a run has read anything from
+ *   the outside world, genuinely high-risk actions — sends, payments,
+ *   publishes, destructive operations, code execution and anything classed
+ *   `high` — become Ask-first. Ordinary writes and page interaction (click,
+ *   type, select, upload) are NOT escalated: nearly every run reads something,
+ *   and a browser agent that had to ask before every click could not work.
+ * - Autonomy (PRD levels): level 0 asks before every external change; level 1
+ *   asks before external writes but not before plain page interaction, whose
+ *   consequential cases (submits / purchases on sensitive domains) the browser
+ *   service gates itself; level 2+ follows the configured policy.
+ */
+export function escalate(
+  policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean, category: ActionCategory = 'other',
+): { policy: ToolPolicy; reason: EscalationReason | null } {
+  if (policy === 'off') return { policy: 'off', reason: null };
+  if (policy === 'ask') return { policy: 'ask', reason: 'policy' };
+  if (!isGuardedRisk(risk)) return { policy, reason: null };
+  if (ingestedUntrusted && (risk === 'high' || isHighRiskCategory(category))) return { policy: 'ask', reason: 'untrusted_content' };
+  if (autonomyLevel <= 0 || (autonomyLevel <= 1 && !isInteraction(category))) return { policy: 'ask', reason: 'autonomy' };
+  return { policy, reason: null };
+}
+
+export function escalatePolicy(policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean, category: ActionCategory = 'other'): ToolPolicy {
+  return escalate(policy, risk, autonomyLevel, ingestedUntrusted, category).policy;
 }
 
 /** Null allowlist = everything. */

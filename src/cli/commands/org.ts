@@ -5,6 +5,7 @@ import type { Ctx } from '../context.js';
 import { action, arg, compact, flag, num, optArg, parseProvider, str } from '../command.js';
 import { CliError, UsageError } from '../errors.js';
 import { clip, usd } from '../output.js';
+import { resolveDept } from '../resolve.js';
 
 const provider = (o: Organization) => (o.defaultProvider ? `${o.defaultProvider.adapter}${o.defaultProvider.model ? `:${o.defaultProvider.model}` : ''}` : '-');
 
@@ -97,6 +98,14 @@ export function orgCommands(program: Command, deps: CliDeps): void {
     }));
 
   org
+    .command('unarchive <org>')
+    .description('bring an archived organization back (its agents can run again)')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.client().unarchiveOrg(arg(args, 0, 'org'));
+      ctx.emit(o, () => ctx.ok(`restored ${o.slug}`));
+    }));
+
+  org
     .command('templates')
     .description('list organization templates')
     .action(action(deps, async (ctx) => {
@@ -184,5 +193,23 @@ export function orgCommands(program: Command, deps: CliDeps): void {
         ctx.ok(`created department ${d.name} (${d.slug})`);
         ctx.line(`  next: conductor agent hire --dept ${d.slug} --role "…"`);
       });
+    }));
+
+  dept
+    .command('archive <dept>')
+    .description('archive a department (refused while it still has agents that are not terminated)')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.org();
+      const d = await ctx.client().archiveDepartment(o, (await resolveDept(ctx, o, arg(args, 0, 'dept'))).id);
+      ctx.emit(d, () => ctx.ok(`archived department ${d.name}`));
+    }));
+
+  dept
+    .command('unarchive <dept>')
+    .description('bring an archived department back')
+    .action(action(deps, async (ctx, args) => {
+      const o = await ctx.org();
+      const d = await ctx.client().unarchiveDepartment(o, (await resolveDept(ctx, o, arg(args, 0, 'dept'))).id);
+      ctx.emit(d, () => ctx.ok(`restored department ${d.name}`));
     }));
 }

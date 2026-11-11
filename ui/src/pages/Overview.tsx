@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ActivityList } from '../components/activity.js';
+import { TakeoverCallouts, useOpenTakeovers } from '../components/takeover.js';
 import { Empty, Load, Meter, PageHead, Panel, Status } from '../components/ui.js';
 import { api } from '../lib/api.js';
 import type { GoalNode, Issue, Run } from '../lib/api.js';
@@ -45,7 +46,7 @@ export function Overview() {
   }, { ...o, events: ['run.started', 'run.finished', 'run.paused', 'run.resumed'], pollMs: 30_000 });
   const needs = useQuery(k(org.id, 'issues', 'needs-owner'), () => api.listIssues(org.id, { status: ['blocked', 'in_review'], limit: 50 }), { ...o, events: ['issue.'] });
   const approvals = useQuery(k(org.id, 'approvals', 'pending'), () => api.listApprovals(org.id, { status: 'pending', limit: 100 }), { ...o, events: ['approval.'] });
-  const takeovers = useQuery(k(org.id, 'takeovers', 'pending'), () => api.listBrowserSessions(org.id, { status: 'pending' }), { ...o, events: ['browser.'] });
+  const takeovers = useOpenTakeovers(org.id);
   const spend = useQuery(k(org.id, 'budget', 'month'), () => api.budgetSummary(org.id, { since: monthStart() }), { ...o, events: ['run.finished', 'budget.'] });
   const activity = useQuery(k(org.id, 'activity', 'recent'), () => api.activity(org.id, { limit: 40 }), { ...o, events: ['issue.', 'run.started', 'run.finished', 'approval.', 'agent.', 'goal.', 'skill.', 'memory.', 'comment.'] });
   const orgLine = spend.data?.lines.find((l) => l.scope === 'org');
@@ -62,11 +63,7 @@ export function Overview() {
                 <strong>{approvals.data!.length}</strong> {approvals.data!.length === 1 ? 'approval is' : 'approvals are'} waiting for your decision
               </Link>
             ) : null}
-            {(takeovers.data ?? []).map((s) => (
-              <div key={s.id} className="callout callout-stop">
-                <strong>{dir.agentName(s.agentId, 'An agent')}</strong> needs you in its browser: {s.reason || 'no reason given'}. Open the takeover link from your notification.
-              </div>
-            ))}
+            <TakeoverCallouts orgId={org.id} sessions={takeovers.data ?? []} />
             <Load q={needs} lines={2}>
               {() => forOwner.length === 0 && !approvals.data?.length && !takeovers.data?.length
                 ? <Empty title="Nothing is waiting on you" />

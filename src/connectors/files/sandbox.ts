@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConductorError } from '../../shared/errors.js';
+import { startEgressProxy } from './egress-proxy.js';
 
 export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 
@@ -16,10 +17,11 @@ const quote = (p: string): string => `"${p.replace(/\\/g, '\\\\').replace(/"/g, 
 
 /**
  * Seatbelt profile for one command: deny by default; read system paths;
- * read/write only the workspace and a private temp dir; no network unless the
- * org has a network allowlist (then outbound only — never listening sockets).
+ * read/write only the workspace and a private temp dir; no network at all
+ * unless `proxyPort` is given — then exactly one destination, the loopback
+ * egress proxy that enforces the org's network allowlist host by host.
  */
-export function buildSandboxProfile(opts: { workspace: string; tmp: string; network: boolean }): string {
+export function buildSandboxProfile(opts: { workspace: string; tmp: string; proxyPort?: number | null }): string {
   const lines = [
     '(version 1)',
     '(deny default)',
@@ -39,12 +41,11 @@ export function buildSandboxProfile(opts: { workspace: string; tmp: string; netw
     '  (global-name "com.apple.SecurityServer") (global-name "com.apple.trustd.agent"))',
     '(allow ipc-posix-shm-read*)',
   ];
-  if (opts.network) {
+  if (opts.proxyPort) {
     lines.push(
-      '(allow network-outbound)',
+      `(allow network-outbound (remote ip "localhost:${Math.trunc(opts.proxyPort)}"))`,
       '(allow system-socket)',
-      '(allow mach-lookup (global-name "com.apple.dnssd.service") (global-name "com.apple.mDNSResponder")',
-      '  (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.networkd") (global-name "com.apple.trustd"))',
+      '(allow mach-lookup (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.networkd") (global-name "com.apple.trustd"))',
       '(allow file-read* (subpath "/private/var/run"))',
     );
   }
@@ -58,6 +59,8 @@ export interface SandboxRun {
   stderr: string;
   timedOut: boolean;
   truncated: boolean;
+  /** Hosts the command tried to reach that are not on the org's network allowlist. */
+  blockedHosts: string[];
 }
 
 /**
@@ -71,7 +74,8 @@ export async function runSandboxed(opts: {
   workspace: string;
   /** Real directory inside the workspace to start in. */
   cwd: string;
-  network: boolean;
+  /** Hosts the command may reach (org policy `networkAllowlist`). Empty = no network at all. */
+  networkAllowlist: readonly string[];
   timeoutMs: number;
   maxOutputBytes: number;
 }): Promise<SandboxRun> {
@@ -79,8 +83,14 @@ export async function runSandboxed(opts: {
     throw new ConductorError('unavailable', 'run_command is refused: the macOS sandbox (sandbox-exec) is not available, and commands never run unsandboxed');
   }
   const tmp = await mkdtemp(join(realpathSync(tmpdir()), 'conductor-sbx-'));
+  const proxy = opts.networkAllowlist.length > 0 ? await startEgressProxy(opts.networkAllowlist) : null;
+  // Standard proxy variables (both cases: curl only honours lowercase http_proxy). Tools that ignore them get no network.
+  const proxyUrl = proxy ? `http://127.0.0.1:${proxy.port}` : null;
+  const proxyEnv: Record<string, string> = proxyUrl
+    ? { http_proxy: proxyUrl, https_proxy: proxyUrl, all_proxy: proxyUrl, HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, ALL_PROXY: proxyUrl, no_proxy: '', NO_PROXY: '' }
+    : {};
   try {
-    const profile = buildSandboxProfile({ workspace: opts.workspace, tmp, network: opts.network });
+    const profile = buildSandboxProfile({ workspace: opts.workspace, tmp, proxyPort: proxy?.port });
     return await new Promise<SandboxRun>((resolve, reject) => {
       const child = spawn(SANDBOX_EXEC, ['-p', profile, '/bin/sh', '-c', opts.command], {
         cwd: opts.cwd,
@@ -91,6 +101,7 @@ export async function runSandboxed(opts: {
           TMPDIR: tmp,
           LANG: 'en_US.UTF-8',
           SHELL: '/bin/sh',
+          ...proxyEnv,
         },
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -130,10 +141,14 @@ export async function runSandboxed(opts: {
       child.on('close', (code, signal) => {
         clearTimeout(timer);
         killGroup(); // reap anything the command left in its process group
-        resolve({ exitCode: code, signal, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), timedOut, truncated });
+        resolve({
+          exitCode: code, signal, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), timedOut, truncated,
+          blockedHosts: [...(proxy?.denied ?? [])],
+        });
       });
     });
   } finally {
+    await proxy?.close();
     await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
   }
 }

@@ -9,7 +9,11 @@ const secretRef = z.object({ secretRef: z.string().min(1).max(200) }).strict();
 const strOrRef = z.union([z.string().min(1), secretRef]);
 const headerMap = z.record(z.string().min(1), strOrRef);
 
+/** Optional flat price of one call to this connector (USD), logged on every tool call it serves. */
+const metered = { costPerCallUsd: z.number().finite().nonnegative().max(10_000).optional() };
+
 const stdioConfig = z.looseObject({
+  ...metered,
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), strOrRef).optional(),
@@ -26,6 +30,7 @@ const httpAuth = z.object({
 });
 
 const httpConfig = z.looseObject({
+  ...metered,
   url: strOrRef,
   headers: headerMap.optional(),
   auth: httpAuth.optional(),
@@ -34,6 +39,7 @@ const httpConfig = z.looseObject({
 
 const composioConfig = z
   .looseObject({
+    ...metered,
     mcpUrl: strOrRef.optional(),
     toolkit: z.string().min(1).optional(),
     serverId: z.string().min(1).optional(),
@@ -50,6 +56,7 @@ const composioConfig = z
 
 const arcadeConfig = z
   .looseObject({
+    ...metered,
     mcpUrl: strOrRef.optional(),
     gateway: z.string().min(1).optional(),
     toolkit: z.string().min(1).optional(),
@@ -73,6 +80,7 @@ const openapiAuth = z.object({
 
 const openapiConfig = z
   .looseObject({
+    ...metered,
     spec: z.record(z.string(), z.unknown()).optional(),
     specPath: z.string().min(1).optional(),
     specUrl: z.url().optional(),

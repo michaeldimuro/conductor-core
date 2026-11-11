@@ -6,7 +6,7 @@ import type { ConnectorGateway } from '../../src/contracts/services.js';
 import type { Agent, Connector, Organization } from '../../src/contracts/rows.js';
 import { OWNER, SYSTEM } from '../../src/contracts/types.js';
 import { runs, toolCalls, toolPins } from '../../src/db/schema/index.js';
-import { fakeApprovals, fakeOrg, runCtx, startHttpMcp, textOf, type FixtureTool, type HttpFixture } from './helpers.js';
+import { fakeApprovals, fakeOrg, runCtx, setPolicies, startHttpMcp, textOf, type FixtureTool, type HttpFixture } from './helpers.js';
 
 const baseTools = (): FixtureTool[] => [
   { name: 'search_docs', description: 'Search the knowledge base', annotations: { readOnlyHint: true } },
@@ -31,6 +31,8 @@ describe('connector gateway — policy, approvals and trust over Streamable HTTP
     gw = createConnectorGateway(k, { approvals, org: fakeOrg(k) }, { toolCacheTtlMs: 1000 });
     upstream = await startHttpMcp(baseTools());
     org = seedOrg(k);
+    // These tests are about tool policy, autonomy and trust; the default first-send gate has its own suite (gates.test.ts).
+    setPolicies(k, org.id, { approvalOverrides: { external_send: false } });
     agent = seedAgent(k, org.id, seedDept(k, org.id).id, 'Ada', { autonomyLevel: 2 });
     await k.secrets.set('org/acme/crm/token', 'upstream-bearer-token-1');
     crm = await gw.install(org.id, { name: 'crm', kind: 'mcp_http', config: { url: upstream.url, auth: { type: 'bearer' } }, authRef: 'org/acme/crm' }, OWNER);

@@ -23,7 +23,7 @@ export interface GatewayControl {
 }
 
 /** Keys the messaging context writes into a gateway's config at runtime; edits must not drop them. */
-const RUNTIME_CONFIG_KEYS = ['state', 'pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts'];
+const RUNTIME_CONFIG_KEYS = ['state', 'pairingCodeHash', 'pairingExpiresAt', 'pairingAttempts', 'approverUserIds'];
 
 export function reachRoutes(app: FastifyInstance, s: Services, control?: GatewayControl): void {
   const { db, clock, audit } = s.kernel;

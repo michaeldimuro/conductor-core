@@ -119,14 +119,30 @@ export class RunJournal {
     return this.k.db.select().from(runs).where(inArray(runs.status, ['queued', 'running', 'paused'])).all();
   }
 
-  /** Runs started by an agent within the trailing window (runaway-loop guard). */
-  countSince(agentId: string, since: number): number {
+  /**
+   * Runs started by an agent within the trailing window (runaway-loop guard),
+   * per bucket: chat turns (`chat` trigger), skill evals (`system` trigger) and
+   * the heartbeat loop (everything else) each have their own hourly allowance.
+   */
+  countSince(agentId: string, since: number, bucket: 'loop' | 'chat' | 'eval' = 'loop'): number {
+    const inBucket =
+      bucket === 'chat' ? sql`${runs.trigger} = 'chat'` : bucket === 'eval' ? sql`${runs.trigger} = 'system'` : sql`${runs.trigger} not in ('chat', 'system')`;
     const r = this.k.db
       .select({ n: sql<number>`count(*)` })
       .from(runs)
-      .where(and(eq(runs.agentId, agentId), gte(runs.createdAt, since), sql`${runs.outcome} is not 'no_work'`))
+      .where(and(eq(runs.agentId, agentId), gte(runs.createdAt, since), sql`${runs.outcome} is not 'no_work'`, inBucket))
       .get();
     return r?.n ?? 0;
+  }
+
+  /** True when this provider session was journaled by a run of this agent on this issue. */
+  sessionBelongsTo(orgId: string, agentId: string, issueId: string, sessionId: string): boolean {
+    const r = this.k.db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.orgId, orgId), eq(runs.agentId, agentId), eq(runs.issueId, issueId), eq(runs.sessionId, sessionId)))
+      .get();
+    return !!r;
   }
 
   /** Consecutive failed runs on an issue (drives escalation after repeated failures). */

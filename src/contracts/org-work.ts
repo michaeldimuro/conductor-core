@@ -86,20 +86,53 @@ export interface OrgBundle {
   playbooks: Array<Record<string, unknown>>;
   connectors: Array<Record<string, unknown>>;
   /** Skill folders as { scope, scopeSlug, name, files: { relativePath: utf8 content } }. */
-  skills: Array<{ scope: string; scopeSlug: string | null; name: string; files: Record<string, string> }>;
+  skills: Array<{
+    scope: string; scopeSlug: string | null; name: string; files: Record<string, string>;
+    /** Status in the source org; `active` skills stay active on import, everything else is a draft. */
+    status?: string;
+    /** 'human' or 'agent' (never an id). */
+    author?: string;
+  }>;
   memories: Array<Record<string, unknown>>;
+  /** Projects (name, goal, budget; workspace only when it lived inside the org directory, as a relative path). */
+  projects?: Array<Record<string, unknown>>;
+  /**
+   * Connector grants: { connectorId, agentId, toolAllowlist, policies: [{tool, policy}], defaultPolicy, needsCredential }.
+   * Credentials are never exported: `needsCredential: true` marks where one must be re-supplied after import.
+   */
+  grants?: Array<Record<string, unknown>>;
+  /** Each agent's MEMORY.md (standing rules), sanitized: { agentId, content }. */
+  profileDocs?: Array<Record<string, unknown>>;
+  /** The org's owner model (USER.md), sanitized. */
+  ownerModel?: string;
+}
+
+/** A lead's (or the owner's) request to change an agent's or department's monthly budget. */
+export interface BudgetChangeInput {
+  scope: 'agent' | 'dept';
+  /** Agent id or department id. */
+  id: string;
+  /** New monthly cap in USD; null removes the cap. */
+  budgetUsd: number | null;
+  reason?: string;
 }
 
 export interface OrgService {
   createOrg(input: CreateOrgInput, actor: Actor): Organization;
   updateOrg(orgId: string, patch: Partial<CreateOrgInput> & { maxConcurrentRuns?: number; defaultSkills?: string[]; defaultConnectors?: string[] }, actor: Actor): Organization;
+  /** Archive (never delete). Emits `org.archived` so the runtime cancels the org's in-flight runs. */
   archiveOrg(orgId: string, actor: Actor): Organization;
+  /** Bring an archived org back. Emits `org.unarchived`. */
+  unarchiveOrg?(orgId: string, actor: Actor): Organization;
   getOrg(orgId: string): Organization;
   getOrgBySlug(slug: string): Organization | null;
   listOrgs(opts?: { includeArchived?: boolean }): Organization[];
 
   createDept(orgId: string, input: CreateDeptInput, actor: Actor): Department;
   updateDept(orgId: string, deptId: string, patch: Partial<CreateDeptInput> & { leadAgentId?: string | null }, actor: Actor): Department;
+  /** Archive a department (board only). Refused while it still has non-terminated agents. */
+  archiveDept?(orgId: string, deptId: string, actor: Actor): Department;
+  unarchiveDept?(orgId: string, deptId: string, actor: Actor): Department;
   getDept(orgId: string, deptId: string): Department;
   listDepts(orgId: string): Department[];
 
@@ -112,8 +145,14 @@ export interface OrgService {
   updateAgent(orgId: string, agentId: string, patch: Partial<HireAgentInput> & { denySkills?: string[]; denyConnectors?: string[]; maxSteps?: number; maxWallMs?: number; maxRunsPerHour?: number; browserProfileId?: string | null }, actor: Actor): Agent;
   pauseAgent(orgId: string, agentId: string, reason: string, actor: Actor): Agent;
   resumeAgent(orgId: string, agentId: string, actor: Actor): Agent;
-  /** Approval-gated for agent actors, direct for the owner. */
-  terminateAgent(orgId: string, agentId: string, actor: Actor): { agent?: Agent; approval?: Approval };
+  /** Approval-gated for agent actors, direct for the owner. `opts.reason` is shown on the approval. */
+  terminateAgent(orgId: string, agentId: string, actor: Actor, opts?: { reason?: string }): { agent?: Agent; approval?: Approval };
+  /**
+   * Change an agent's or department's budget. Direct for the owner. Agent
+   * actors must be Leads (autonomy 3) acting inside their reporting line and
+   * get a `budget_raise` Approval back; the change executes when the board approves.
+   */
+  proposeBudgetChange?(orgId: string, input: BudgetChangeInput, actor: Actor): { agent?: Agent; department?: Department; approval?: Approval };
   getAgent(orgId: string, agentId: string): Agent;
   /** Lookup by id or slug within an org; null if absent. */
   findAgent(orgId: string, idOrSlug: string): Agent | null;
@@ -137,6 +176,10 @@ export interface OrgService {
   exportOrg(orgId: string): OrgBundle;
   importOrg(bundle: OrgBundle, input: { name: string }, actor: Actor): Organization;
 
+  /**
+   * Revision history of owner-editable config. Kinds: org, dept, agent, goal,
+   * playbook, project. Rolling back a deleted goal/playbook restores it.
+   */
   listRevisions(orgId: string, entityKind: string, entityId: string): ConfigRevision[];
   rollback(orgId: string, entityKind: string, entityId: string, revision: number, actor: Actor): void;
 }
@@ -209,17 +252,26 @@ export interface WorkService {
   updateGoal(orgId: string, goalId: string, patch: Partial<CreateGoalInput> & { status?: Goal['status'] }, actor: Actor): Goal;
   getGoal(orgId: string, goalId: string): Goal;
   listGoals(orgId: string, filter?: { ownerAgentId?: string; deptId?: string; status?: Goal['status'] }): Goal[];
+  /**
+   * Delete a goal (owner, or an agent entitled to set it). Child goals,
+   * projects and issues move to its parent goal; issues of a root goal move to
+   * the org's default goal, so every issue still traces to a goal.
+   */
+  deleteGoal?(orgId: string, goalId: string, actor: Actor): void;
   goalTree(orgId: string): GoalNode[];
 
   createProject(orgId: string, input: { name: string; goalId?: string | null; workspacePath?: string | null; budgetUsd?: number | null }, actor: Actor): Project;
+  updateProject?(orgId: string, projectId: string, patch: { name?: string; goalId?: string | null; workspacePath?: string | null; budgetUsd?: number | null; status?: Project['status'] }, actor: Actor): Project;
   getProject(orgId: string, projectId: string): Project;
   listProjects(orgId: string): Project[];
 
   /**
    * Create an issue. For agent actors the reporting-line rule applies to
    * `assigneeAgentId` and autonomy 0 agents may not create issues.
-   * Every issue should trace to a goal: when goalId is absent it is
-   * inherited from the parent issue, else from the assignee's/creator's goal.
+   * Every issue traces to a goal: when goalId is absent it is inherited from
+   * the parent issue, else the project's goal, else the assignee's/creator's
+   * goal, else the org's default goal (created on first use). Never null.
+   * Autonomy 1 agents may only create sub-issues of their own work.
    */
   createIssue(orgId: string, input: CreateIssueInput, actor: Actor): Issue;
   updateIssue(orgId: string, issueId: string, patch: Partial<CreateIssueInput> & { blockedReason?: string | null }, actor: Actor): Issue;
@@ -248,12 +300,18 @@ export interface WorkService {
   inbox(orgId: string, agentId: string): Inbox;
   markInboxSeen(orgId: string, agentId: string, at?: number): void;
 
+  /**
+   * Attachments whose `path` is an existing file are copied into the org's
+   * `artifacts/<issue>/<comment>/` directory and the stored path points there.
+   */
   addComment(orgId: string, issueId: string, input: { body: string; parentCommentId?: string | null; attachments?: Comment['attachments']; runId?: string }, actor: Actor): Comment;
   listComments(orgId: string, issueId: string, opts?: { since?: number }): Comment[];
   timeline(orgId: string, issueId: string): TimelineEntry[];
 
   createPlaybook(orgId: string, input: { name: string; description?: string; process?: 'sequential' | 'hierarchical'; managerAgentId?: string | null; steps: Playbook['steps'] }, actor: Actor): Playbook;
   listPlaybooks(orgId: string): Playbook[];
+  updatePlaybook?(orgId: string, playbookId: string, patch: { name?: string; description?: string; process?: 'sequential' | 'hierarchical'; managerAgentId?: string | null; steps?: Playbook['steps'] }, actor: Actor): Playbook;
+  deletePlaybook?(orgId: string, playbookId: string, actor: Actor): void;
   /**
    * Run a playbook inside an issue: create one child issue per step.
    * sequential → each step blockedBy the previous; hierarchical → all steps

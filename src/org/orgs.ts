@@ -81,7 +81,12 @@ export function persistOrg(
     entityId: org.id,
     data: { revision, fields: Object.keys(set), ...audit.data },
   });
-  ctx.after(() => k.bus.emit('org.updated', { orgId: org.id }));
+  ctx.after(() => {
+    k.bus.emit('org.updated', { orgId: org.id });
+    if ('budgetMonthlyUsd' in set || 'seatSecondsMonthly' in set) {
+      k.bus.emit('budget.updated', { orgId: org.id, scope: 'org', scopeId: org.id });
+    }
+  });
   return next;
 }
 
@@ -123,7 +128,21 @@ export function archiveOrg(ctx: Ctx, orgId: string, actor: Actor): Organization 
   return ctx.mutate(() => {
     const org = requireOrg(ctx.kernel, orgId);
     if (org.status === 'archived') return org;
-    return persistOrg(ctx, org, { status: 'archived' }, actor, { action: 'org.archived', note: 'archived' });
+    const next = persistOrg(ctx, org, { status: 'archived' }, actor, { action: 'org.archived', note: 'archived' });
+    // The runtime cancels the org's in-flight runs and stops scheduling on this event.
+    ctx.after(() => ctx.kernel.bus.emit('org.archived', { orgId }));
+    return next;
+  });
+}
+
+export function unarchiveOrg(ctx: Ctx, orgId: string, actor: Actor): Organization {
+  assertBoard(actor, 'unarchive organizations');
+  return ctx.mutate(() => {
+    const org = requireOrg(ctx.kernel, orgId);
+    if (org.status === 'active') return org;
+    const next = persistOrg(ctx, org, { status: 'active' }, actor, { action: 'org.unarchived', note: 'unarchived' });
+    ctx.after(() => ctx.kernel.bus.emit('org.unarchived', { orgId }));
+    return next;
   });
 }
 

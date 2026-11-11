@@ -95,6 +95,7 @@ export class ConductorClient {
   putSecret = (ref: string, value: string) => this.put<t.SecretStatus>(this.secretPath(ref), { value });
   deleteSecret = (ref: string) => this.del<t.SecretStatus>(this.secretPath(ref));
   listAdapters = () => this.get<t.AdapterInfo[]>('/adapters');
+  rescanAdapters = () => this.post<{ loaded: string[]; added: string[]; removed: string[]; skipped: Array<{ folder: string; error: string }> }>('/adapters/rescan', {});
   testAdapter = (adapterId: string, input: t.TestAdapterRequest = {}) => this.post<t.AdapterHealth>(`/adapters/${e(adapterId)}/test`, input);
 
   /* ── Auth ── */
@@ -109,6 +110,7 @@ export class ConductorClient {
   getOrg = (org: string) => this.get<t.Organization>(`/orgs/${e(org)}`);
   updateOrg = (org: string, patch: t.UpdateOrgRequest) => this.patch<t.Organization>(`/orgs/${e(org)}`, patch);
   archiveOrg = (org: string) => this.post<t.Organization>(`/orgs/${e(org)}/archive`);
+  unarchiveOrg = (org: string) => this.post<t.Organization>(`/orgs/${e(org)}/unarchive`);
   listOrgTemplates = () => this.get<t.OrgTemplate[]>('/org-templates');
   createOrgFromTemplate = (input: t.FromTemplateRequest) => this.post<t.Organization>('/orgs/from-template', input);
   exportOrg = (org: string) => this.get<t.OrgBundle>(`/orgs/${e(org)}/export`);
@@ -124,6 +126,8 @@ export class ConductorClient {
   createDepartment = (org: string, input: t.CreateDeptInput) => this.post<t.Department>(`/orgs/${e(org)}/departments`, input);
   getDepartment = (org: string, deptId: string) => this.get<t.Department>(`/orgs/${e(org)}/departments/${e(deptId)}`);
   updateDepartment = (org: string, deptId: string, patch: t.UpdateDeptRequest) => this.patch<t.Department>(`/orgs/${e(org)}/departments/${e(deptId)}`, patch);
+  archiveDepartment = (org: string, deptId: string) => this.post<t.Department>(`/orgs/${e(org)}/departments/${e(deptId)}/archive`);
+  unarchiveDepartment = (org: string, deptId: string) => this.post<t.Department>(`/orgs/${e(org)}/departments/${e(deptId)}/unarchive`);
 
   /* ── Agents ── */
   private agent = (org: string, agent: string) => `/orgs/${e(org)}/agents/${e(agent)}`;
@@ -148,9 +152,11 @@ export class ConductorClient {
   goalTree = (org: string) => this.get<t.GoalNode[]>(`/orgs/${e(org)}/goals/tree`);
   getGoal = (org: string, goalId: string) => this.get<t.Goal>(`/orgs/${e(org)}/goals/${e(goalId)}`);
   updateGoal = (org: string, goalId: string, patch: t.UpdateGoalRequest) => this.patch<t.Goal>(`/orgs/${e(org)}/goals/${e(goalId)}`, patch);
+  deleteGoal = (org: string, goalId: string) => this.del<t.Ok>(`/orgs/${e(org)}/goals/${e(goalId)}`);
   listProjects = (org: string) => this.get<t.Project[]>(`/orgs/${e(org)}/projects`);
   createProject = (org: string, input: t.CreateProjectRequest) => this.post<t.Project>(`/orgs/${e(org)}/projects`, input);
   getProject = (org: string, projectId: string) => this.get<t.Project>(`/orgs/${e(org)}/projects/${e(projectId)}`);
+  updateProject = (org: string, projectId: string, patch: t.UpdateProjectRequest) => this.patch<t.Project>(`/orgs/${e(org)}/projects/${e(projectId)}`, patch);
 
   /* ── Issues (id or per-org number) ── */
   private issue = (org: string, issue: string | number) => `/orgs/${e(org)}/issues/${e(String(issue))}`;
@@ -165,11 +171,15 @@ export class ConductorClient {
   listComments = (org: string, issue: string | number, query?: { since?: number }) => this.get<t.Comment[]>(`${this.issue(org, issue)}/comments`, query);
   addComment = (org: string, issue: string | number, input: t.AddCommentRequest) => this.post<t.Comment>(`${this.issue(org, issue)}/comments`, input);
   issueTimeline = (org: string, issue: string | number) => this.get<t.TimelineEntry[]>(`${this.issue(org, issue)}/timeline`);
+  /** Server-relative URL of a comment attachment (a download; needs the session cookie or a bearer token). */
+  attachmentPath = (org: string, issue: string | number, commentId: string, index: number) => `${V1}${this.issue(org, issue)}/comments/${e(commentId)}/attachments/${index}`;
 
   /* ── Playbooks ── */
   listPlaybooks = (org: string) => this.get<t.Playbook[]>(`/orgs/${e(org)}/playbooks`);
   createPlaybook = (org: string, input: t.CreatePlaybookRequest) => this.post<t.Playbook>(`/orgs/${e(org)}/playbooks`, input);
   getPlaybook = (org: string, playbookId: string) => this.get<t.Playbook>(`/orgs/${e(org)}/playbooks/${e(playbookId)}`);
+  updatePlaybook = (org: string, playbookId: string, patch: t.UpdatePlaybookRequest) => this.patch<t.Playbook>(`/orgs/${e(org)}/playbooks/${e(playbookId)}`, patch);
+  deletePlaybook = (org: string, playbookId: string) => this.del<t.Ok>(`/orgs/${e(org)}/playbooks/${e(playbookId)}`);
   runPlaybook = (org: string, playbookId: string, issueId: string) => this.post<t.Issue[]>(`/orgs/${e(org)}/playbooks/${e(playbookId)}/run`, { issueId });
 
   /* ── Runs ── */
@@ -210,6 +220,9 @@ export class ConductorClient {
   forgetMemory = (org: string, memoryId: string) => this.del<t.Ok>(`/orgs/${e(org)}/memory/${e(memoryId)}`);
   getOwnerModel = (org: string) => this.get<t.DocResponse>(`/orgs/${e(org)}/owner-model`);
   putOwnerModel = (org: string, content: string) => this.put<t.DocResponse>(`/orgs/${e(org)}/owner-model`, { content });
+  getMemoryBackend = (org: string) => this.get<t.MemoryBackendResponse>(`/orgs/${e(org)}/memory-backend`);
+  putMemoryBackend = (org: string, config: t.ExternalBackendConfig) => this.put<t.MemoryBackendResponse>(`/orgs/${e(org)}/memory-backend`, config);
+  clearMemoryBackend = (org: string) => this.del<t.MemoryBackendResponse>(`/orgs/${e(org)}/memory-backend`);
   searchSessions = (org: string, query: { text: string; agentId?: string; limit?: number }) => this.get<t.SessionHit[]>(`/orgs/${e(org)}/sessions/search`, query);
 
   /* ── Connectors ── */
@@ -228,9 +241,11 @@ export class ConductorClient {
   revokeGrant = (org: string, connectorId: string, agent: string) => this.del<t.Ok>(`${this.connector(org, connectorId)}/grants/${e(agent)}`);
 
   /* ── Browser ── */
-  listBrowserProfiles = (org: string) => this.get<t.BrowserProfile[]>(`/orgs/${e(org)}/browser/profiles`);
-  createBrowserProfile = (org: string, input: t.CreateProfileRequest) => this.post<t.BrowserProfile>(`/orgs/${e(org)}/browser/profiles`, input);
-  updateBrowserProfile = (org: string, profileId: string, patch: t.UpdateProfileRequest) => this.patch<t.BrowserProfile>(`/orgs/${e(org)}/browser/profiles/${e(profileId)}`, patch);
+  listBrowserProfiles = (org: string) => this.get<t.BrowserProfileDto[]>(`/orgs/${e(org)}/browser/profiles`);
+  createBrowserProfile = (org: string, input: t.CreateProfileRequest) => this.post<t.BrowserProfileDto>(`/orgs/${e(org)}/browser/profiles`, input);
+  updateBrowserProfile = (org: string, profileId: string, patch: t.UpdateProfileRequest) => this.patch<t.BrowserProfileDto>(`/orgs/${e(org)}/browser/profiles/${e(profileId)}`, patch);
+  /** Owner only: a fresh single-use takeover link for a waiting session (the previous link stops working). */
+  takeoverLink = (org: string, sessionId: string) => this.post<t.TakeoverLinkResponse>(`/orgs/${e(org)}/browser/sessions/${e(sessionId)}/share-link`);
   listBrowserSessions = (org: string, query?: { status?: t.BrowserSession['status'] }) => this.get<t.BrowserSessionDto[]>(`/orgs/${e(org)}/browser/sessions`, query);
 
   /* ── Gateways / webhooks ── */
@@ -239,8 +254,8 @@ export class ConductorClient {
   getGateway = (gatewayId: string) => this.get<t.Gateway>(`/gateways/${e(gatewayId)}`);
   updateGateway = (gatewayId: string, patch: t.UpdateGatewayRequest) => this.patch<t.Gateway>(`/gateways/${e(gatewayId)}`, patch);
   deleteGateway = (gatewayId: string) => this.del<t.Ok>(`/gateways/${e(gatewayId)}`);
-  gatewayPairingCode = (gatewayId: string) => this.post<{ code: string }>(`/gateways/${e(gatewayId)}/pairing-code`, {});
-  gatewayStatus = () => this.get<Array<{ id: string; kind: string; status: string; lastError: string | null }>>('/gateways-status');
+  gatewayPairingCode = (gatewayId: string) => this.post<t.PairingCodeResponse>(`/gateways/${e(gatewayId)}/pairing-code`, {});
+  gatewayStatus = () => this.get<t.GatewayStatusDto[]>('/gateways-status');
   listWebhooks = (org: string, query?: { direction?: 'in' | 'out' }) => this.get<t.WebhookDto[]>(`/orgs/${e(org)}/webhooks`, query);
   createWebhook = (org: string, input: t.CreateWebhookRequest) => this.post<t.WebhookDto>(`/orgs/${e(org)}/webhooks`, input);
   getWebhook = (org: string, webhookId: string) => this.get<t.WebhookDto>(`/orgs/${e(org)}/webhooks/${e(webhookId)}`);

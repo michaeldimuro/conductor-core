@@ -7,6 +7,7 @@ import type { PricedUsage } from '../pricing.js';
 import { AdapterError, kindFromMessage, kindFromStatus } from '../shared/errors.js';
 import { ActiveRuns, withRun, type RunEnv } from '../shared/guard.js';
 import { minimalEnv, probeCommand, runJsonLines } from '../shared/proc.js';
+import { agentSandbox, RUN_TMP_PREFIX, sandboxConfigJsonSchema } from '../shared/sandbox.js';
 import { installClaudeSkills } from '../shared/skills.js';
 
 /** Workspace file tools + skill loading. Shell and network tools are NOT allowed unless the binding adds them. */
@@ -46,6 +47,7 @@ export const claudeLocalConfigJsonSchema: Record<string, unknown> = {
     extraArgs: { type: 'array', items: { type: 'string' } },
     env: { type: 'object', additionalProperties: { type: 'string' } },
     pricing: { type: 'object' },
+    sandbox: sandboxConfigJsonSchema,
   },
 };
 
@@ -237,16 +239,19 @@ export class ClaudeLocalAdapter implements AgentAdapter {
       for (const w of installClaudeSkills(ctx.workspacePath, ctx.skills)) env.emit({ type: 'status', status: w });
 
       // The MCP config carries the run token: private temp dir, 0600, removed in `finally`.
-      const tmp = mkdtempSync(join(tmpdir(), 'conductor-claude-'));
+      const tmp = mkdtempSync(join(tmpdir(), RUN_TMP_PREFIX));
       const mcpConfigPath = join(tmp, 'mcp.json');
       const st: StreamState = { model: ctx.model, finalText: '', lastText: '', turns: 0, toolNames: new Map(), perMessage: new Map() };
       try {
         writeFileSync(mcpConfigPath, JSON.stringify(buildClaudeMcpConfig(ctx)), { mode: 0o600 });
+        const childEnv = minimalEnv({ ...cfg.env, ...(metered ? { ANTHROPIC_API_KEY: ctx.secrets.apiKey } : {}) }, ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']);
         const exit = await runJsonLines({
           command: cfg.command,
           args: buildClaudeArgs(ctx, cfg, mcpConfigPath, metered),
           cwd: ctx.workspacePath,
-          env: minimalEnv({ ...cfg.env, ...(metered ? { ANTHROPIC_API_KEY: ctx.secrets.apiKey } : {}) }, ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']),
+          env: childEnv,
+          // Workspace + temp + Claude Code's own state/login; Conductor's home and other secret stores are out of reach.
+          sandbox: agentSandbox(ctx, env.emit, { cli: 'claude', env: childEnv, privateTmp: [tmp] }),
           stdin: ctx.prompt,
           signal: env.guard.signal,
           onJson: (msg) => handleLine(msg, st, env, metered),

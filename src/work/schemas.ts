@@ -38,6 +38,10 @@ export const projectInput = z.strictObject({
   budgetUsd: z.number().finite().nonnegative().nullish(),
 });
 
+export const projectPatch = projectInput.partial().extend({
+  status: z.enum(['active', 'archived']).optional(),
+});
+
 export const issueInput = z.strictObject({
   title: z.string().trim().min(1).max(500),
   body: z.string().max(200_000).optional(),
@@ -107,6 +111,14 @@ export const playbookInput = z.strictObject({
   process: z.enum(['sequential', 'hierarchical']).optional(),
   managerAgentId: id.nullish(),
   steps: z.array(playbookStep).min(1).max(50),
+});
+
+export const playbookPatch = z.strictObject({
+  name: z.string().trim().min(1).max(200).optional(),
+  description: z.string().max(5000).optional(),
+  process: z.enum(['sequential', 'hierarchical']).optional(),
+  managerAgentId: id.nullish(),
+  steps: z.array(playbookStep).min(1).max(50).optional(),
 });
 
 export const reviewOutcome = z.enum(['accepted', 'edited', 'rejected']);
