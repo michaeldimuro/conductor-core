@@ -374,6 +374,8 @@ export interface RuntimeService extends RunControl {
   getRun(orgId: string, runId: string): Run;
   listRuns(orgId: string, filter?: { agentId?: string; issueId?: string; status?: Run['status']; limit?: number }): Run[];
   transcript(orgId: string, runId: string, opts?: { afterSeq?: number }): Array<{ seq: number; ts: number; event: RunEvent }>;
+  /** Tool-call identity for a live run (the API layer builds this from a verified run token). */
+  toolContext(runId: string): ToolCallContext | null;
   /** Re-sync cron heartbeats after agent config changes. */
   syncSchedules(): void;
   status(): { running: number; queued: number; perOrg: Record<string, number>; perProvider: Record<string, number>; uptimeMs: number };

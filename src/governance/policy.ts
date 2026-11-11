@@ -1,0 +1,78 @@
+import { DEFAULT_GATED_ACTIONS, type OrgPolicies } from '../contracts/types.js';
+import { redact, truncate } from '../shared/util.js';
+
+const DEFAULT_GATED = new Set<string>(DEFAULT_GATED_ACTIONS);
+
+/**
+ * Kinds whose gate is decided by the caller's own policy (tool policy "Ask
+ * first", sensitive-domain browser actions, connector OAuth). Callers only ask
+ * when that policy already says ask, so the answer here is always yes.
+ */
+const ALWAYS_ASK = new Set<string>(['tool_call', 'browser_action', 'connector_auth']);
+
+/**
+ * Defaults + org policy. Orgs can tighten freely (`extraGated`, spend
+ * threshold); loosening a default gate needs the explicit per-action owner
+ * toggle `approvalOverrides[kind] === false`. Spend above the threshold is
+ * gated no matter what was loosened.
+ */
+export function evaluateGate(policies: OrgPolicies | null | undefined, kind: string, ctx?: { amountUsd?: number }): boolean {
+  const p = policies ?? {};
+  if (ALWAYS_ASK.has(kind)) return true;
+
+  const threshold = p.approvalSpendThresholdUsd;
+  const amount = ctx?.amountUsd;
+  if (typeof threshold === 'number' && Number.isFinite(threshold) && typeof amount === 'number' && Number.isFinite(amount) && amount > threshold) {
+    return true;
+  }
+
+  if (Array.isArray(p.extraGated) && p.extraGated.includes(kind)) return true;
+
+  if (DEFAULT_GATED.has(kind)) {
+    const overrides = (p.approvalOverrides ?? {}) as Record<string, unknown>;
+    return overrides[kind] !== false;
+  }
+  return false;
+}
+
+const SENSITIVE_KEY = /(secret|password|passwd|passphrase|api[-_]?key|authorization|credential|cookie|private[-_]?key|access[-_]?token|refresh[-_]?token|bearer|^token$|^key$)/i;
+
+/** Deep copy with anything that looks like a credential replaced (pattern-based). */
+export function scrubSecrets<T>(value: T): T {
+  if (typeof value === 'string') return redact(value) as T;
+  if (Array.isArray(value)) return value.map((v) => scrubSecrets(v)) as T;
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = scrubSecrets(v);
+    return out as T;
+  }
+  return value;
+}
+
+function hideSensitiveKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(hideSensitiveKeys);
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SENSITIVE_KEY.test(k) ? '[REDACTED]' : hideSensitiveKeys(v);
+    }
+    return out;
+  }
+  return typeof value === 'string' ? redact(value) : value;
+}
+
+/**
+ * Human-readable one-line-per-field summary of an approval payload for
+ * notifications. Sensitive-looking keys and credential-shaped values are
+ * redacted; `matchKey` (an opaque hash) is omitted.
+ */
+export function summarizePayload(payload: Record<string, unknown>, maxFields = 12): string {
+  const safe = hideSensitiveKeys(payload) as Record<string, unknown>;
+  const entries = Object.entries(safe).filter(([k, v]) => k !== 'matchKey' && v !== undefined && v !== null);
+  const lines = entries.slice(0, maxFields).map(([k, v]) => {
+    const text = typeof v === 'string' ? v : JSON.stringify(v);
+    return `${k}: ${truncate(text ?? '', 160)}`;
+  });
+  if (entries.length > maxFields) lines.push(`… ${entries.length - maxFields} more field(s)`);
+  return lines.join('\n');
+}

@@ -1,0 +1,219 @@
+import { and, eq, gte, sql } from 'drizzle-orm';
+import type { Kernel } from '../contracts/kernel.js';
+import type { ApprovalService } from '../contracts/services.js';
+import { textResult, type ToolCallContext, type ToolDef, type ToolResult } from '../contracts/tools.js';
+import { approvals as approvalsTable, toolCalls } from '../db/schema/index.js';
+import { errorMessage, isConductorError } from '../shared/errors.js';
+import { newId } from '../shared/ids.js';
+import { redact, sha256, stableStringify } from '../shared/util.js';
+import type { AccessResolver } from './access.js';
+import { callToolDef, findToolsDef, searchTools } from './meta.js';
+import { argsPreview, escalatePolicy, isExternalRisk, isGuardedRisk, redactArgs, resultSize, toolMatchKey, wrapUntrusted } from './risk.js';
+import type { ConnectorStore } from './store.js';
+import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER, type ToolEntry } from './types.js';
+
+type CallStatus = 'ok' | 'error' | 'denied' | 'approval_pending';
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** The single enforcement path for every tool call (direct, via `call_tool`, or over the MCP endpoint). */
+export class ToolCalls {
+  /** Runs known to have ingested untrusted content (mirrors runs.ingested_untrusted). */
+  private readonly untrustedRuns = new Set<string>();
+
+  constructor(
+    private readonly k: Kernel,
+    private readonly store: ConnectorStore,
+    private readonly access: AccessResolver,
+    private readonly approvals: ApprovalService,
+    private readonly deniedCooldownMs: number,
+  ) {}
+
+  endRun(runId: string): void {
+    this.untrustedRuns.delete(runId);
+  }
+
+  async listTools(ctx: ToolCallContext): Promise<ToolDef[]> {
+    const { direct, large } = await this.access.entries(ctx);
+    const tools = direct.map((e) => ({ ...e.def, name: e.qualified }));
+    if (large.length > 0) tools.push(findToolsDef([...new Set(large.map((e) => e.serverName))]), callToolDef());
+    return tools;
+  }
+
+  async callTool(ctx: ToolCallContext, name: string, rawArgs: unknown): Promise<ToolResult> {
+    const args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
+    if (typeof name !== 'string' || !name || !isPlainObject(args)) {
+      return this.finish(ctx, { connectorId: META_SERVER, tool: String(name).slice(0, 200), args: {}, status: 'error', started: performance.now() },
+        textResult('Invalid tool call: expected a tool name and an arguments object.', { isError: true }));
+    }
+    if (name === FIND_TOOLS) return this.findTools(ctx, args);
+    if (name === CALL_TOOL) {
+      const inner = args.name;
+      const innerArgs = args.arguments ?? {};
+      if (typeof inner !== 'string' || !inner || inner === CALL_TOOL || inner === FIND_TOOLS || !isPlainObject(innerArgs)) {
+        return this.finish(ctx, { connectorId: META_SERVER, tool: CALL_TOOL, args, status: 'error', started: performance.now() },
+          textResult('call_tool needs { name: "<server>__<tool>", arguments: { … } } with a name returned by find_tools.', { isError: true }));
+      }
+      return this.invoke(ctx, inner, innerArgs);
+    }
+    return this.invoke(ctx, name, args);
+  }
+
+  private async findTools(ctx: ToolCallContext, args: Record<string, unknown>): Promise<ToolResult> {
+    const started = performance.now();
+    const query = typeof args.query === 'string' ? args.query : '';
+    const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : undefined;
+    const { direct, large } = await this.access.entries(ctx);
+    const matches = searchTools([...large, ...direct], query, limit);
+    const text = JSON.stringify({
+      query,
+      matches: matches.map((e) => ({ name: e.qualified, description: e.def.description, inputSchema: e.def.inputSchema, risk: e.def.risk })),
+      hint: matches.length ? 'Run one with call_tool({ name, arguments }).' : 'No matching tools. Try different keywords.',
+    }, null, 2);
+    return this.finish(ctx, { connectorId: META_SERVER, tool: FIND_TOOLS, args, status: 'ok', started }, textResult(text));
+  }
+
+  private ingestedUntrusted(ctx: ToolCallContext): boolean {
+    return this.untrustedRuns.has(ctx.runId) || this.store.runIngestedUntrusted(ctx.orgId, ctx.runId);
+  }
+
+  private recentlyDenied(orgId: string, matchKey: string): string | null {
+    const row = this.k.db
+      .select({ id: approvalsTable.id })
+      .from(approvalsTable)
+      .where(and(
+        eq(approvalsTable.orgId, orgId), eq(approvalsTable.kind, 'tool_call'), eq(approvalsTable.status, 'denied'),
+        gte(approvalsTable.decidedAt, this.k.clock.now() - this.deniedCooldownMs),
+        sql`json_extract(${approvalsTable.payload}, '$.matchKey') = ${matchKey}`,
+      ))
+      .get();
+    return row?.id ?? null;
+  }
+
+  private async invoke(ctx: ToolCallContext, qualified: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const started = performance.now();
+    const base = { tool: qualified.slice(0, 300), args, started };
+    let resolution;
+    try {
+      resolution = await this.access.resolve(ctx, qualified);
+    } catch (e) {
+      return this.finish(ctx, { ...base, connectorId: qualified.split('__')[0]!.slice(0, 100), status: 'error' },
+        textResult(`Tool server unavailable: ${redact(errorMessage(e))}`, { isError: true }));
+    }
+    if (resolution.kind === 'none') {
+      // Unknown, not granted, off, outside the allowlist and quarantined all look the same to the agent.
+      return this.finish(ctx, { ...base, connectorId: resolution.connectorId, status: 'denied' },
+        textResult(`Tool "${qualified}" is not available to you. Use only the tools you were given.`, { isError: true }));
+    }
+    if (resolution.kind === 'auth') {
+      return this.finish(ctx, { ...base, connectorId: resolution.connector.id, status: 'approval_pending', approvalId: resolution.approval.id },
+        this.authPending(resolution.connector.name, resolution.approval.id, resolution.authUrl));
+    }
+    const entry = resolution.entry;
+    const log = { ...base, connectorId: entry.connectorId };
+    const untrustedBefore = this.ingestedUntrusted(ctx);
+    const effective = escalatePolicy(entry.policy, entry.def.risk, ctx.autonomyLevel, untrustedBefore);
+    let approvalId: string | undefined;
+
+    if (effective === 'ask') {
+      const matchKey = toolMatchKey(ctx.agentId, qualified, args);
+      const approved = this.approvals.consume(ctx.orgId, 'tool_call', matchKey);
+      if (approved) {
+        approvalId = approved.id;
+      } else {
+        const open = this.approvals.findOpen(ctx.orgId, 'tool_call', matchKey);
+        if (open) {
+          return this.finish(ctx, { ...log, status: 'approval_pending', approvalId: open.id }, textResult(
+            `Still pending: "${qualified}" with these exact arguments is awaiting board approval (${open.id}). It has NOT run. ` +
+            'Do not retry now — continue with other work or finish; you will be woken when it is decided, then repeat this exact call.'));
+        }
+        const denied = this.recentlyDenied(ctx.orgId, matchKey);
+        if (denied) {
+          return this.finish(ctx, { ...log, status: 'denied', approvalId: denied }, textResult(
+            `The board denied this exact call (${denied}). It was not executed. Do not repeat it; choose a different approach or report back.`, { isError: true }));
+        }
+        const reason = entry.policy === 'ask' ? 'policy' : untrustedBefore && isGuardedRisk(entry.def.risk) ? 'untrusted_content' : 'autonomy';
+        const approval = this.approvals.request({
+          orgId: ctx.orgId,
+          kind: 'tool_call',
+          title: `Tool call: ${qualified}`,
+          payload: { matchKey, tool: qualified, connectorId: entry.connectorId, args: redactArgs(args), risk: entry.def.risk, reason },
+          requesterAgentId: ctx.agentId,
+          runId: ctx.runId,
+          issueId: ctx.issueId,
+        });
+        return this.finish(ctx, { ...log, status: 'approval_pending', approvalId: approval.id }, textResult(
+          `Approval required: "${qualified}" is awaiting board approval (${approval.id}). It has NOT been executed and will not run until approved. ` +
+          'Continue with other work or finish this run. You will be woken when the decision is made; then repeat this exact call with the same arguments to execute it once.'));
+      }
+    }
+
+    let result: ToolResult;
+    let status: CallStatus = 'ok';
+    try {
+      if (entry.builtin) {
+        const r = await entry.builtin.call(ctx, entry.def.name, args);
+        result = r.untrusted ? wrapUntrusted(r, qualified) : r;
+      } else {
+        const r = await this.access.callUpstream(ctx, entry, args);
+        // Anything an external-facing upstream tool returns is outside-world content.
+        result = isExternalRisk(entry.def.risk) ? wrapUntrusted(r, qualified) : { content: r.content, ...(r.isError ? { isError: true } : {}) };
+      }
+      if (result.isError) status = 'error';
+    } catch (e) {
+      if (e instanceof AuthRequiredError && entry.connector) {
+        const approval = this.access.requestAuth(ctx, entry.connector, entry.grant, e);
+        return this.finish(ctx, { ...log, status: 'approval_pending', approvalId: approval.id }, this.authPending(entry.connector.name, approval.id, e.authUrl));
+      }
+      status = 'error';
+      const message = isConductorError(e) ? e.message : `tool failed: ${errorMessage(e)}`;
+      result = textResult(redact(message), { isError: true });
+    }
+    if (result.untrusted) {
+      this.untrustedRuns.add(ctx.runId);
+      this.store.markRunUntrusted(ctx.orgId, ctx.runId);
+    }
+    return this.finish(ctx, { ...log, status, approvalId }, result);
+  }
+
+  private authPending(connectorName: string, approvalId: string, authUrl: string | null): ToolResult {
+    return textResult(
+      `Connector "${connectorName}" needs a human to authorize its account before it can be used (approval ${approvalId}` +
+      `${authUrl ? `, authorization URL sent to the board` : ''}). The call did NOT run. ` +
+      'Continue with other work or finish; you will be woken when it is resolved, then repeat the same call.');
+  }
+
+  /** Log to `tool_calls` and the audit trail (hash + redacted preview only — never raw args). */
+  private finish(
+    ctx: ToolCallContext,
+    call: { connectorId: string; tool: string; args: Record<string, unknown>; status: CallStatus; started: number; approvalId?: string },
+    result: ToolResult,
+  ): ToolResult {
+    const id = newId('toolCall');
+    const argsHash = sha256(stableStringify(call.args));
+    const latencyMs = Math.max(0, Math.round(performance.now() - call.started));
+    const size = resultSize(result.content);
+    try {
+      this.k.db.insert(toolCalls).values({
+        id, orgId: ctx.orgId, runId: ctx.runId, agentId: ctx.agentId, issueId: ctx.issueId, connectorId: call.connectorId, tool: call.tool,
+        argsHash, resultSize: size, latencyMs, costUsd: 0, status: call.status, approvalId: call.approvalId ?? null, ts: this.k.clock.now(),
+      }).run();
+      this.k.audit.record({
+        orgId: ctx.orgId,
+        actor: { kind: 'agent', id: ctx.agentId, runId: ctx.runId },
+        action: 'tool.called',
+        entityKind: 'tool_call',
+        entityId: id,
+        runId: ctx.runId,
+        issueId: ctx.issueId ?? undefined,
+        data: {
+          tool: call.tool, connectorId: call.connectorId, status: call.status, argsHash, argsPreview: argsPreview(call.args),
+          resultSize: size, latencyMs, costUsd: 0, approvalId: call.approvalId ?? null, untrusted: result.untrusted === true,
+        },
+      });
+    } catch (e) {
+      this.k.log.error({ err: errorMessage(e), tool: call.tool }, 'failed to log tool call');
+    }
+    return result;
+  }
+}
