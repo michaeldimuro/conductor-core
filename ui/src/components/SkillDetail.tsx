@@ -50,7 +50,7 @@ function History({ skill, versions }: { skill: Skill; versions: SkillVersion[] }
               <td data-label="When" title={dateTime(v.createdAt)}>{ago(v.createdAt)}</td>
               <td className="num">
                 {v.version !== skill.version ? (
-                  <ConfirmButton small label="Roll back" title={`Roll back to v${v.version}`} confirmLabel="Roll back" message={`The content of v${v.version} becomes a new version. Nothing is deleted.`} onConfirm={() => rollback.run(v.version)} />
+                  <ConfirmButton icon="runs" small label="Roll back" title={`Roll back to v${v.version}`} confirmLabel="Roll back" message={`The content of v${v.version} becomes a new version. Nothing is deleted.`} onConfirm={() => rollback.run(v.version)} />
                 ) : null}
               </td>
             </tr>
@@ -105,10 +105,10 @@ function Detail({ skillId }: { skillId: string }) {
               </ul>
             ) : null}
             <div className="row">
-              {skill.status === 'draft' || skill.status === 'deprecated' ? <Button variant="primary" busy={activate.busy} onClick={() => void activate.run(false)}>Activate</Button> : null}
+              {skill.status === 'draft' || skill.status === 'deprecated' ? <Button icon="check" variant="primary" busy={activate.busy} onClick={() => void activate.run(false)}>Activate</Button> : null}
               <Button busy={evaluate.busy} onClick={() => void evaluate.run()}>{evaluate.busy ? 'Evaluating…' : 'Run eval'}</Button>
-              {skill.status === 'active' ? <ConfirmButton label="Deprecate" title={`Deprecate ${skill.name}`} confirmLabel="Deprecate" message="Agents stop loading this skill. You can activate it again later." onConfirm={() => setStatus.run('deprecated')} /> : null}
-              {skill.status === 'quarantined' ? <Button onClick={() => void setStatus.run('draft')}>Release to draft</Button> : null}
+              {skill.status === 'active' ? <ConfirmButton icon="archive" label="Deprecate" title={`Deprecate ${skill.name}`} confirmLabel="Deprecate" message="Agents stop loading this skill. You can activate it again later." onConfirm={() => setStatus.run('deprecated')} /> : null}
+              {skill.status === 'quarantined' ? <Button icon="archive" onClick={() => void setStatus.run('draft')}>Release to draft</Button> : null}
               {WIDER[skill.scope].length > 0 ? (
                 <select aria-label="Promote to a wider scope" value="" disabled={promote.busy} onChange={(e) => e.target.value && void promote.run(e.target.value as Skill['scope'])} style={{ width: 'auto' }}>
                   <option value="">Promote to…</option>
@@ -119,7 +119,7 @@ function Detail({ skillId }: { skillId: string }) {
             {activate.error ? (
               <div className="note note-stop" role="alert">
                 <ErrorNote error={activate.error} />
-                <Button small onClick={() => void activate.run(true)}>Activate anyway</Button>
+                <Button icon="check" small onClick={() => void activate.run(true)}>Activate anyway</Button>
               </div>
             ) : null}
           </div>

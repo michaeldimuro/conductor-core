@@ -57,7 +57,7 @@ export function MemoryBackendPanel() {
               ) : null}
             </div>
             <ErrorNote error={save.error} />
-            <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save memory backend</Button></div>
+            <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save memory backend</Button></div>
           </form>
         )}
       </Load>
@@ -72,12 +72,12 @@ export function ArchivedOrgs() {
   const archived = (all.data ?? []).filter((o) => o.status === 'archived');
   if (archived.length === 0) return null;
   return (
-    <Panel title="Archived organizations" flush>
+    <Panel icon="archive" title="Archived organizations" flush>
       <ul className="lines">
         {archived.map((o) => (
           <li key={o.id} className="line">
             <span className="grow truncate"><strong>{o.name}</strong> <span className="muted">/o/{o.slug}</span></span>
-            <ConfirmButton small label="Restore" title={`Restore ${o.name}`} confirmLabel="Restore" message={`${o.name} returns to the switcher. Its agents can run again.`} onConfirm={() => restore.run(o.id)} />
+            <ConfirmButton icon="refresh" small label="Restore" title={`Restore ${o.name}`} confirmLabel="Restore" message={`${o.name} returns to the switcher. Its agents can run again.`} onConfirm={() => restore.run(o.id)} />
           </li>
         ))}
       </ul>

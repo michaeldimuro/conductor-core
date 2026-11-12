@@ -58,7 +58,7 @@ function PlaybookForm({ onClose, dir, playbook }: { onClose: () => void; dir: Di
           </li>
         ))}
       </ol>
-      <div><Button small onClick={() => setSteps([...steps, blankStep()])} disabled={steps.length >= 100}>Add a step</Button></div>
+      <div><Button icon="add" small onClick={() => setSteps([...steps, blankStep()])} disabled={steps.length >= 100}>Add a step</Button></div>
     </FormShell>
   );
 }
@@ -77,7 +77,7 @@ function RunPlaybook({ playbook }: { playbook: Playbook }) {
   return (
     <form className="row" onSubmit={(e) => { e.preventDefault(); void run.run().then((t) => t && setLast(t.number)); }}>
       <input aria-label={`Issue number to run ${playbook.name} in`} placeholder="Issue number" inputMode="numeric" value={issue} onChange={(e) => setIssue(e.target.value)} required style={{ width: 130 }} />
-      <Button small type="submit" busy={run.busy}>Run in this issue</Button>
+      <Button icon="play" small type="submit" busy={run.busy}>Run in this issue</Button>
       {last !== null ? <Link to={`${base}/issues/${last}`}>Open #{last}</Link> : null}
     </form>
   );
@@ -91,8 +91,8 @@ export function Playbooks() {
   const remove = useAction((p: Playbook) => api.deletePlaybook(org.id, p.id), { invalidate: [k(org.id, 'playbooks')], success: 'Playbook deleted' });
   return (
     <div className="stack-lg">
-      <Panel title="Playbooks" flush actions={<Button small variant="primary" onClick={() => setForm({})}>New playbook</Button>}>
-        <Load q={playbooks} empty={<Empty title="No playbooks yet"><p>A playbook is a reusable process. Running it inside an issue creates one sub-issue per step.</p></Empty>}>
+      <Panel icon="playbook" title="Playbooks" flush actions={<Button icon="add" small variant="primary" onClick={() => setForm({})}>New playbook</Button>}>
+        <Load q={playbooks} empty={<Empty icon="playbook" title="No playbooks yet"><p>A playbook is a reusable process. Running it inside an issue creates one sub-issue per step.</p></Empty>}>
           {(list) => (
             <ul className="connectors">
               {list.map((p) => (
@@ -101,8 +101,8 @@ export function Playbooks() {
                     <div className="spread">
                       <div className="row"><strong>{p.name}</strong><Chip>{p.process === 'sequential' ? 'One step after another' : `Managed by ${dir.agentName(p.managerAgentId, 'nobody')}`}</Chip></div>
                       <div className="row row-tight">
-                        <Button small onClick={() => setForm({ playbook: p })}>Edit</Button>
-                        <ConfirmButton small variant="quiet" danger label="Delete" title={`Delete ${p.name}`} confirmLabel="Delete playbook" message="Issues this playbook already created are kept. It can no longer be run." onConfirm={() => remove.run(p)} />
+                        <Button icon="edit" small onClick={() => setForm({ playbook: p })}>Edit</Button>
+                        <ConfirmButton icon="remove" small variant="quiet" danger label="Delete" title={`Delete ${p.name}`} confirmLabel="Delete playbook" message="Issues this playbook already created are kept. It can no longer be run." onConfirm={() => remove.run(p)} />
                       </div>
                     </div>
                     {p.description ? <p className="dim">{p.description}</p> : null}
@@ -140,13 +140,13 @@ export function DataSettings() {
   }, { success: (b) => `Exported ${b.agents.length} agents, ${b.skills.length} skills and ${b.memories.length} memories` });
   return (
     <div className="stack-lg page-narrow">
-      <Panel title={`Export ${org.name}`}>
+      <Panel icon="download" title={`Export ${org.name}`}>
         <div className="stack">
           <p className="dim">A portable bundle with the org chart, agent configurations, goals, playbooks, skills and sanitized memory. Secrets are never included.</p>
-          <div><Button variant="primary" busy={download.busy} onClick={() => void download.run()}>Download bundle</Button></div>
+          <div><Button icon="download" variant="primary" busy={download.busy} onClick={() => void download.run()}>Download bundle</Button></div>
         </div>
       </Panel>
-      <Panel title="Import">
+      <Panel icon="upload" title="Import">
         <div className="stack">
           <p className="dim">Importing a bundle creates a new organization from it. Existing organizations are never overwritten.</p>
           <div><Link className="btn btn-default" to="/new-org">Import a bundle as a new organization</Link></div>

@@ -1,0 +1,137 @@
+/* Artifact store and the in-dashboard file viewer. */
+
+/* File-type badge: one hue per kind of file. */
+.type-badge {
+  --tb: var(--ink-3);
+  display: inline-grid; place-items: center; flex: none; min-width: 34px; height: 20px; padding: 0 5px; border-radius: 5px;
+  font: 600 10px/1 var(--font-code); letter-spacing: 0.04em; color: var(--tb);
+  background: color-mix(in srgb, var(--tb) 14%, transparent); border: 1px solid color-mix(in srgb, var(--tb) 32%, transparent);
+}
+.type-badge-lg { min-width: 46px; height: 28px; font-size: 11.5px; border-radius: 7px; }
+.type-pdf, .type-pptx { --tb: var(--stop); }
+.type-docx, .type-markdown, .type-text { --tb: var(--blue); }
+.type-xlsx, .type-csv, .type-json { --tb: var(--go); }
+.type-html { --tb: var(--warn); }
+.type-image, .type-audio, .type-video { --tb: var(--violet-2); }
+:root[data-theme="light"] .type-docx, :root[data-theme="light"] .type-markdown, :root[data-theme="light"] .type-text { --tb: #2563eb; }
+
+.artifact-origin { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; font-size: 12.5px; color: var(--ink-3); }
+.artifact-origin > * { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Chips: a compact list of files under a chat reply, a comment or a run. */
+.artifact-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; padding: 0; list-style: none; }
+.artifact-chips > li { min-width: 0; max-width: 100%; }
+.artifact-chip {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 32px; padding: 4px 10px 4px 5px;
+  border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); color: var(--ink); font-size: 13px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.artifact-chip:hover { border-color: var(--accent); background: var(--accent-wash); }
+.artifact-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.artifact-thumb { width: 34px; height: 24px; flex: none; object-fit: cover; border-radius: 5px; background: var(--sunk); }
+
+/* The store page. */
+.artifact-toolbar { margin-bottom: 14px; }
+.artifact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.artifact-card {
+  display: grid; grid-template-rows: auto 1fr; min-width: 0; overflow: hidden; border: 1px solid var(--line-soft); border-radius: var(--r-2);
+  background: var(--glass), var(--surface); transition: border-color 0.15s, transform 0.15s var(--ease), box-shadow 0.15s;
+}
+.artifact-card:hover { border-color: var(--line); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.artifact-card-open { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; }
+.artifact-card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.artifact-card-thumb { display: grid; place-items: center; aspect-ratio: 16 / 10; background: var(--sunk); border-bottom: 1px solid var(--line-soft); overflow: hidden; }
+.artifact-card-thumb.has-image img { width: 100%; height: 100%; object-fit: cover; }
+.artifact-card-body { display: grid; gap: 4px; align-content: start; min-width: 0; padding: 10px 12px 12px; }
+.artifact-card-name { display: block; padding: 0; border: 0; background: none; color: var(--ink); font: inherit; font-weight: 500; text-align: left; cursor: pointer; }
+.artifact-card-name:hover { color: var(--accent); }
+.artifact-card-meta { display: flex; gap: 10px; font-size: 12px; }
+.artifact-row-name { display: inline-flex; align-items: center; gap: 8px; max-width: min(48ch, 100%); padding: 0; border: 0; background: none; color: var(--ink); font: inherit; cursor: pointer; text-align: left; }
+.artifact-row-name:hover { color: var(--accent); }
+.artifact-table td { vertical-align: middle; }
+
+/* Viewer: a near full-screen window. */
+.modal.viewer { width: min(1280px, calc(100vw - 32px)); height: min(92dvh, 1100px); max-height: none; }
+.viewer-inner { height: 100%; }
+.viewer-head { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-bottom: 1px solid var(--line-soft); }
+.viewer-title { flex: 1 1 auto; min-width: 0; }
+.viewer-title h2 { font-size: 16px; }
+.viewer-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 2px 0 0; font-size: 12.5px; }
+.viewer-actions { flex: none; gap: 6px; }
+.viewer-count { font: 12px var(--font-code); }
+.viewer-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--bg); display: flex; flex-direction: column; }
+.viewer-body > * { flex: 1 1 auto; }
+.viewer-stack { display: flex; flex-direction: column; min-height: 0; }
+.viewer-fill { height: 100%; }
+.viewer-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 8px 14px; background: var(--chrome); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line-soft); font-size: 12.5px; }
+.viewer-note { margin: 10px 14px 0; }
+.viewer-pad { padding: 16px; }
+.viewer-empty { display: grid; place-content: center; justify-items: center; gap: 12px; min-height: 240px; padding: 24px; color: var(--ink-2); text-align: center; }
+.viewer-frame { display: block; width: 100%; height: 100%; min-height: 60dvh; border: 0; background: #fff; }
+.viewer-frame-page { flex: 1 1 auto; }
+.viewer-media { display: grid; place-items: center; padding: 16px; min-height: 100%; }
+.viewer-media img, .viewer-media video { max-width: 100%; max-height: calc(92dvh - 110px); object-fit: contain; border-radius: 6px; background: repeating-conic-gradient(#ffffff0d 0% 25%, transparent 0% 50%) 50% / 18px 18px; }
+.viewer-media audio { width: min(560px, 100%); }
+
+.viewer-code { margin: 0; padding: 12px 0; overflow: auto; font: 12.5px/1.6 var(--font-code); color: var(--ink); background: none; border: 0; tab-size: 4; }
+.viewer-code code { display: block; min-width: max-content; }
+.code-line { display: block; padding-right: 16px; white-space: pre; }
+.code-line:hover { background: var(--panel); }
+.code-no { display: inline-block; width: 5ch; margin-right: 14px; padding-right: 10px; text-align: right; color: var(--ink-3); border-right: 1px solid var(--line-soft); user-select: none; }
+
+.viewer-doc { width: min(78ch, 100%); margin: 0 auto; padding: 24px 20px 40px; line-height: 1.65; }
+.viewer-doc h2, .viewer-doc h3, .viewer-doc h4 { margin: 1.2em 0 0.4em; }
+.viewer-doc p { margin: 0 0 0.75em; white-space: pre-wrap; }
+.viewer-page { margin-top: 16px; margin-bottom: 24px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line-soft); padding: 40px 48px; }
+.doc-li { position: relative; padding-left: 1.2em; }
+.doc-li::before { content: "•"; position: absolute; left: 0.2em; color: var(--ink-3); }
+
+.viewer-table-wrap { overflow: auto; }
+.viewer-table { border-collapse: collapse; font-size: 12.5px; min-width: 100%; }
+.viewer-table th, .viewer-table td { padding: 5px 10px; border: 1px solid var(--line-soft); text-align: left; vertical-align: top; white-space: pre-wrap; max-width: 48ch; overflow-wrap: anywhere; }
+.viewer-table thead th { position: sticky; top: 0; background: var(--raised); font-weight: 600; }
+.viewer-table .row-no { width: 1%; color: var(--ink-3); font: 11px var(--font-code); text-align: right; background: var(--surface); }
+.viewer-tabs { gap: 4px; }
+.viewer-tabs button { min-height: 28px; padding: 0 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: none; color: var(--ink-2); cursor: pointer; font-size: 12.5px; }
+.viewer-tabs button.on { background: var(--accent-wash); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+.viewer-slides { display: grid; gap: 14px; width: min(860px, 100%); margin: 0 auto; padding: 16px; list-style: none; }
+.viewer-slide { display: grid; gap: 6px; aspect-ratio: 16 / 9; align-content: start; overflow: auto; padding: 24px 32px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface); }
+.viewer-slide h3 { font-size: 20px; }
+.viewer-slide p { margin: 0; color: var(--ink-2); }
+.viewer-slide-no { font: 11px var(--font-code); color: var(--ink-3); }
+
+@media (max-width: 640px) {
+  .modal.viewer { width: 100vw; height: 100dvh; }
+  .viewer-head { flex-wrap: wrap; padding: 10px 10px 10px 12px; }
+  .viewer-actions { width: 100%; justify-content: flex-end; }
+  .viewer-page { padding: 20px; margin: 0; border-radius: 0; border-inline: 0; }
+  .artifact-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+}
+
+/* Attaching files: drop zones, files waiting to upload, removable chips. */
+.file-drop { position: relative; }
+.file-drop.is-over { outline: 2px dashed var(--accent); outline-offset: -3px; background: var(--accent-wash); border-radius: var(--r-2); }
+.file-drop-hint {
+  position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--accent); font-weight: 600; pointer-events: none;
+}
+.file-drop.is-over > :not(.file-drop-hint) { opacity: 0.35; }
+.task-files { display: grid; gap: 8px; padding: 10px; margin: 0 -10px -10px; }
+.task-files h3 { margin: 0; }
+.pending-chip { cursor: default; padding-right: 4px; }
+.pending-chip:hover { border-color: var(--line-soft); background: var(--panel); }
+.pending-chip.is-failed { border-color: var(--stop); background: var(--stop-wash); }
+.chip-remove {
+  display: grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+  background: none; color: var(--ink-3); cursor: pointer;
+}
+.chip-remove:hover { background: var(--sunk); color: var(--ink); }
+.chip-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.artifact-chips > li.has-remove { position: relative; }
+.chip-remove-float {
+  position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; border: 1px solid var(--line); border-radius: 50%;
+  background: var(--raised); opacity: 0; transition: opacity 0.15s;
+}
+.artifact-chips > li.has-remove:hover .chip-remove-float, .chip-remove-float:focus-visible { opacity: 1; }
+@media (hover: none) { .chip-remove-float { opacity: 1; } }

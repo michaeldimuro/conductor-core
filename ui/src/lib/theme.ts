@@ -4,12 +4,15 @@ export type Theme = 'system' | 'light' | 'dark';
 const KEY = 'conductor.theme';
 const listeners = new Set<() => void>();
 
+/** Dark is the console's reference look, so it is the default until the owner picks something else. */
+const DEFAULT: Theme = 'dark';
+
 function read(): Theme {
   try {
     const v = localStorage.getItem(KEY);
-    return v === 'light' || v === 'dark' ? v : 'system';
+    return v === 'light' || v === 'dark' || v === 'system' ? v : DEFAULT;
   } catch {
-    return 'system';
+    return DEFAULT;
   }
 }
 
@@ -24,7 +27,7 @@ apply();
 export function setTheme(t: Theme): void {
   current = t;
   try {
-    if (t === 'system') localStorage.removeItem(KEY);
+    if (t === DEFAULT) localStorage.removeItem(KEY);
     else localStorage.setItem(KEY, t);
   } catch {
     /* private mode: the choice lasts for this page only */

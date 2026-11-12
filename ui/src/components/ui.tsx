@@ -5,6 +5,7 @@ import { humanize } from '../lib/format.js';
 import { STATUS_LABEL } from '../lib/org.js';
 import type { QueryResult } from '../lib/query.js';
 import { dismissToast, useToasts } from '../lib/toast.js';
+import { Icon, type IconName } from './icons.js';
 
 export type Tone = 'go' | 'warn' | 'stop' | 'info' | 'idle';
 
@@ -40,11 +41,14 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'default' | 'primary' | 'danger' | 'quiet';
   small?: boolean;
   busy?: boolean;
+  /** Leading icon. */
+  icon?: IconName;
 }
 
-export function Button({ variant = 'default', small, busy, className, children, disabled, type = 'button', ...rest }: ButtonProps) {
+export function Button({ variant = 'default', small, busy, className, children, disabled, type = 'button', icon, ...rest }: ButtonProps) {
   return (
-    <button type={type} className={`btn btn-${variant}${small ? ' btn-sm' : ''}${className ? ` ${className}` : ''}`} disabled={disabled || busy} aria-busy={busy || undefined} {...rest}>
+    <button type={type} className={`btn btn-${variant}${small ? ' btn-sm' : ''}${icon ? ' btn-icon' : ''}${className ? ` ${className}` : ''}`} disabled={disabled || busy} aria-busy={busy || undefined} {...rest}>
+      {icon ? <Icon name={icon} size={small ? 14 : 15} /> : null}
       {children}
     </button>
   );
@@ -76,15 +80,17 @@ export function ErrorNote({ error, retry }: { error: unknown; retry?: () => void
   if (!error) return null;
   return (
     <div className="note note-stop" role="alert">
-      <span>{errorText(error)}</span>
-      {retry ? <Button small onClick={retry}>Try again</Button> : null}
+      <Icon name="error" className="note-icon" />
+      <span className="grow">{errorText(error)}</span>
+      {retry ? <Button icon="refresh" small onClick={retry}>Try again</Button> : null}
     </div>
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+export function Empty({ title, children, icon = 'empty' }: { title: string; children?: ReactNode; icon?: IconName }) {
   return (
     <div className="empty">
+      <span className="empty-icon"><Icon name={icon} size={20} /></span>
       <p className="empty-title">{title}</p>
       {children ? <div className="empty-body">{children}</div> : null}
     </div>
@@ -111,12 +117,12 @@ export function Load<T>({ q, children, empty, lines }: { q: QueryResult<T>; chil
   );
 }
 
-export function Panel({ title, actions, children, flush, className }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; flush?: boolean; className?: string }) {
+export function Panel({ title, actions, children, flush, className, icon }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; flush?: boolean; className?: string; icon?: IconName }) {
   return (
     <section className={`panel${className ? ` ${className}` : ''}`}>
       {title || actions ? (
         <header className="panel-head">
-          <h2>{title}</h2>
+          <h2>{icon ? <Icon name={icon} className="panel-icon" /> : null}{title}</h2>
           {actions ? <div className="row">{actions}</div> : null}
         </header>
       ) : null}
@@ -125,11 +131,33 @@ export function Panel({ title, actions, children, flush, className }: { title?: 
   );
 }
 
-export function PageHead({ title, sub, actions }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode }) {
+/** The Conductor mark: the violet→blue→cyan gradient tile with a baton tip over three voices. */
+export function Logo({ size = 24 }: { size?: number }) {
+  const id = useId();
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#a78bfa" />
+          <stop offset=".5" stopColor="#3b82f6" />
+          <stop offset="1" stopColor="#22d3ee" />
+        </linearGradient>
+      </defs>
+      <rect x="3" y="3" width="34" height="34" rx="11" fill={`url(#${id})`} />
+      <rect x="11" y="18" width="4" height="11" rx="2" fill="#0b0820" />
+      <rect x="18" y="12.5" width="4" height="16.5" rx="2" fill="#0b0820" />
+      <rect x="25" y="21" width="4" height="8" rx="2" fill="#0b0820" />
+      <circle cx="28.5" cy="12.5" r="2.6" fill="#fff" />
+    </svg>
+  );
+}
+
+export function PageHead({ title, sub, actions, eyebrow, icon }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode; eyebrow?: ReactNode; icon?: IconName }) {
   return (
     <header className="page-head">
       <div className="page-head-text">
-        <h1>{title}</h1>
+        {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+        <h1 className={icon ? 'page-title-icon' : undefined}>{icon ? <span className="page-icon"><Icon name={icon} size={20} /></span> : null}{title}</h1>
         {sub ? <p>{sub}</p> : null}
       </div>
       {actions ? <div className="row page-actions">{actions}</div> : null}
@@ -160,9 +188,7 @@ export function Modal({ open, onClose, title, children, wide }: { open: boolean;
         <div className="modal-inner">
           <header className="modal-head">
             <h2 id={titleId}>{title}</h2>
-            <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
-              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" /></svg>
-            </button>
+            <button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>
           </header>
           <div className="modal-body">{children}</div>
         </div>
@@ -193,9 +219,9 @@ export function FormShell({ onSubmit, onCancel, busy, error, submitLabel, childr
 }
 
 /** A button that asks before acting. `phrase` adds a typed confirmation for destructive actions. */
-export function ConfirmButton({ label, title, message, confirmLabel, onConfirm, danger, small, phrase, disabled, variant }: {
+export function ConfirmButton({ label, title, message, confirmLabel, onConfirm, danger, small, phrase, disabled, variant, icon }: {
   label: ReactNode; title: string; message: ReactNode; confirmLabel: string; onConfirm: () => Promise<unknown> | void;
-  danger?: boolean; small?: boolean; phrase?: string; disabled?: boolean; variant?: ButtonProps['variant'];
+  danger?: boolean; small?: boolean; phrase?: string; disabled?: boolean; variant?: ButtonProps['variant']; icon?: IconName;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -215,7 +241,7 @@ export function ConfirmButton({ label, title, message, confirmLabel, onConfirm, 
   };
   return (
     <>
-      <Button small={small} variant={variant ?? (danger ? 'danger' : 'default')} onClick={() => setOpen(true)} disabled={disabled}>{label}</Button>
+      <Button small={small} icon={icon} variant={variant ?? (danger ? 'danger' : 'default')} onClick={() => setOpen(true)} disabled={disabled}>{label}</Button>
       <Modal open={open} onClose={close} title={title}>
         <form
           className="form"

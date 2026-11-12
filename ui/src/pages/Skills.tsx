@@ -80,16 +80,16 @@ export function Skills() {
   const drafts = (skills.data ?? []).filter((s) => s.status === 'draft').length;
   return (
     <div className="page">
-      <PageHead title="Skills" sub="Reusable procedures agents load when a task calls for them. Agents write their own as drafts; you decide what becomes active." actions={<Button variant="primary" onClick={() => setCreating(true)}>New skill</Button>} />
-      {drafts > 0 && status !== 'draft' ? <p className="note note-warn"><span>{drafts} {drafts === 1 ? 'draft is' : 'drafts are'} waiting for review.</span><Button small onClick={() => setStatus('draft')}>Show drafts</Button></p> : null}
+      <PageHead icon="skills" eyebrow="Library" title="Skills" sub="Reusable procedures agents load when a task calls for them. Agents write their own as drafts; you decide what becomes active." actions={<Button icon="add" variant="primary" onClick={() => setCreating(true)}>New skill</Button>} />
+      {drafts > 0 && status !== 'draft' ? <p className="note note-warn"><span>{drafts} {drafts === 1 ? 'draft is' : 'drafts are'} waiting for review.</span><Button icon="review" small onClick={() => setStatus('draft')}>Show drafts</Button></p> : null}
       <div className="toolbar" role="search">
         <input className="toolbar-search" type="search" data-search placeholder="Search skills" aria-label="Search skills" value={search} onChange={(e) => setSearch(e.target.value)} />
         <select aria-label="Filter by scope" value={scope} onChange={(e) => setScope(e.target.value)}><option value="">Any scope</option>{SCOPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select>
         <select aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Any status</option>{STATUSES.map((s) => <option key={s} value={s}>{humanize(s)}</option>)}</select>
       </div>
       <Panel flush>
-        <Load q={skills} empty={<Empty title="No skills yet"><p>Write one, import a folder, or let agents distill their own from repeated work.</p></Empty>}>
-          {() => (shown.length === 0 ? <Empty title="No skills match these filters" /> : <SkillTable skills={shown} onOpen={setOpen} dir={dir} />)}
+        <Load q={skills} empty={<Empty icon="skills" title="No skills yet"><p>Write one, import a folder, or let agents distill their own from repeated work.</p></Empty>}>
+          {() => (shown.length === 0 ? <Empty icon="skills" title="No skills match these filters" /> : <SkillTable skills={shown} onOpen={setOpen} dir={dir} />)}
         </Load>
       </Panel>
       <SkillModal skill={open} onClose={() => setOpen(null)} />

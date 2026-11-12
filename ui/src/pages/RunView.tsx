@@ -9,6 +9,10 @@ import { k, useDirectory, useOrg } from '../lib/org.js';
 import { useAction, useQuery } from '../lib/query.js';
 import { Markdown } from '../components/markdown.js';
 import { OrgTakeovers } from '../components/takeover.js';
+import { ArtifactChips, ArtifactViewer } from '../components/artifacts.js';
+import { fromArtifact, type ViewerFile } from '../lib/artifacts.js';
+import { Icon } from '../components/icons.js';
+import { ARTIFACT_EVENTS } from './Artifacts.js';
 
 const LIVE_STATUSES = new Set(['queued', 'running', 'paused']);
 
@@ -145,7 +149,7 @@ export function Transcript({ orgId, runId, isLive }: { orgId: string; runId: str
       {isLive ? (
         <label className="check transcript-follow"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /><span>Follow new events</span></label>
       ) : null}
-      {rows.length === 0 ? <Empty title={isLive ? 'Waiting for the first event' : 'This run recorded no events'} /> : (
+      {rows.length === 0 ? <Empty icon="approvals" title={isLive ? 'Waiting for the first event' : 'This run recorded no events'} /> : (
         <ol className="transcript" aria-live={isLive ? 'polite' : 'off'} aria-relevant="additions">
           {rows.map((r) => <TranscriptRow key={r.seq} row={r} />)}
         </ol>
@@ -163,6 +167,9 @@ export function RunView() {
   const run = runQ.data;
   const issue = useQuery(run?.issueId ? k(org.id, 'issue', run.issueId) : null, () => api.getIssue(org.id, run!.issueId!), { orgId: org.id });
   const cancel = useAction(() => api.cancelRun(org.id, runId, 'Cancelled by the owner'), { invalidate: [k(org.id, 'run')], success: 'Cancelling run' });
+  const saved = useQuery(runId ? k(org.id, 'artifacts', 'run', runId) : null, () => api.listArtifacts(org.id, { runId }), { events: ARTIFACT_EVENTS, orgId: org.id });
+  const files = useMemo(() => (saved.data ?? []).map(fromArtifact), [saved.data]);
+  const [viewing, setViewing] = useState<ViewerFile | null>(null);
   if (!run) return <div className="page page-narrow">{runQ.error ? <ErrorNote error={runQ.error} retry={runQ.reload} /> : <Loading lines={5} />}</div>;
   const isLive = LIVE_STATUSES.has(run.status);
   const agent = dir.agent(run.agentId);
@@ -179,23 +186,27 @@ export function RunView() {
           {issue.data ? <p>Working on <Link to={`${base}/issues/${issue.data.number}`}>#{issue.data.number} {issue.data.title}</Link></p> : null}
         </div>
         {isLive ? (
-          <ConfirmButton label="Cancel run" danger title="Cancel this run" confirmLabel="Cancel run" message="The agent stops at the next step and the issue it holds is released." onConfirm={() => cancel.run()} />
-        ) : <Button onClick={runQ.reload}>Refresh</Button>}
+          <ConfirmButton icon="stop" label="Cancel run" danger title="Cancel this run" confirmLabel="Cancel run" message="The agent stops at the next step and the issue it holds is released." onConfirm={() => cancel.run()} />
+        ) : <Button icon="refresh" onClick={runQ.reload}>Refresh</Button>}
       </header>
       {run.error ? <p className="note note-stop">{run.error}</p> : null}
       {isLive ? <OrgTakeovers org={org} runId={run.id} /> : null}
       <div className="tiles">
-        <div className="tile"><span className="tile-label">Started</span><span className="tile-sub">{dateTime(run.startedAt ?? run.createdAt)}</span></div>
-        <div className="tile"><span className="tile-label">Duration</span><span className="tile-value">{run.startedAt ? duration((run.endedAt ?? Date.now()) - run.startedAt) : 'Queued'}</span></div>
-        <div className="tile"><span className="tile-label">Steps</span><span className="tile-value">{run.steps}</span></div>
-        <div className="tile"><span className="tile-label">Tokens</span><span className="tile-value">{tokens(run.tokensIn + run.tokensOut)}</span><span className="tile-sub">{tokens(run.tokensIn)} in, {tokens(run.tokensOut)} out</span></div>
-        <div className="tile"><span className="tile-label">Cost</span><span className="tile-value">{run.subscription ? 'Seat time' : money(run.costUsd)}</span><span className="tile-sub">{run.subscription ? duration(run.seatSeconds * 1000) : `${run.provider ?? 'No provider'}${run.model ? `, ${run.model}` : ''}`}</span></div>
-        <div className="tile"><span className="tile-label">Outcome</span><span className="tile-sub">{run.outcome ? humanize(run.outcome) : 'In progress'}{run.grade ? `, graded ${run.grade.success ? 'a success' : 'a miss'}` : ''}</span></div>
+        <div className="tile"><span className="tile-label"><Icon name="calendar" size={14} />Started</span><span className="tile-sub">{dateTime(run.startedAt ?? run.createdAt)}</span></div>
+        <div className="tile"><span className="tile-label"><Icon name="duration" size={14} />Duration</span><span className="tile-value">{run.startedAt ? duration((run.endedAt ?? Date.now()) - run.startedAt) : 'Queued'}</span></div>
+        <div className="tile"><span className="tile-label"><Icon name="steps" size={14} />Steps</span><span className="tile-value">{run.steps}</span></div>
+        <div className="tile"><span className="tile-label"><Icon name="tokens" size={14} />Tokens</span><span className="tile-value">{tokens(run.tokensIn + run.tokensOut)}</span><span className="tile-sub">{tokens(run.tokensIn)} in, {tokens(run.tokensOut)} out</span></div>
+        <div className="tile"><span className="tile-label"><Icon name="budget" size={14} />Cost</span><span className="tile-value">{run.subscription ? 'Seat time' : money(run.costUsd)}</span><span className="tile-sub">{run.subscription ? duration(run.seatSeconds * 1000) : `${run.provider ?? 'No provider'}${run.model ? `, ${run.model}` : ''}`}</span></div>
+        <div className="tile"><span className="tile-label"><Icon name="outcome" size={14} />Outcome</span><span className="tile-sub">{run.outcome ? humanize(run.outcome) : 'In progress'}{run.grade ? `, graded ${run.grade.success ? 'a success' : 'a miss'}` : ''}</span></div>
       </div>
-      {run.ingestedUntrusted ? <p className="note note-warn">This run read content from outside Conductor. External writes after that point were escalated for approval.</p> : null}
+      {run.ingestedUntrusted ? <p className="note note-warn">This run read content from outside Conductor. High-risk actions after that point (sends, payments, publishing, destructive commands, data uploads) were escalated for approval.</p> : null}
       <div className="split">
-        <Panel title="Transcript"><Transcript orgId={org.id} runId={run.id} isLive={isLive} /></Panel>
-        <Panel title="What it could use">
+        <Panel icon="log" title="Transcript"><Transcript orgId={org.id} runId={run.id} isLive={isLive} /></Panel>
+        <div className="stack-lg">
+        <Panel icon="artifacts" title="Files it saved">
+          {files.length ? <ArtifactChips label="Files this run saved" files={files} onOpen={setViewing} /> : <p className="muted">{isLive ? 'Nothing saved yet.' : 'This run saved no files.'}</p>}
+        </Panel>
+        <Panel icon="tool" title="What it could use">
           {snap ? (
             <div className="stack">
               <dl className="kv">
@@ -208,7 +219,9 @@ export function RunView() {
             </div>
           ) : <p className="muted">Capabilities are recorded when the run starts.</p>}
         </Panel>
+        </div>
       </div>
+      <ArtifactViewer file={viewing} files={files} onOpen={setViewing} onClose={() => setViewing(null)} />
     </div>
   );
 }

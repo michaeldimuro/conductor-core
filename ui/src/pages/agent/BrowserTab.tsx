@@ -44,7 +44,7 @@ function ProfileEditor({ profile, own }: { profile: BrowserProfileDto; own: bool
   const dirty = name !== profile.name || allow.join() !== profile.domainAllowlist.join() || sensitive.join() !== profile.sensitiveDomains.join()
     || JSON.stringify(nextEngine) !== JSON.stringify(profile.engine) || win !== windowChoice(profile.headed) || vaults.join() !== profile.onePasswordVaults.join();
   return (
-    <Panel title={<>{profile.name} {own ? null : <Chip>Shared by the department</Chip>} {profile.leasedRunId ? <Chip tone="go">In use</Chip> : null}</>}>
+    <Panel icon="browser" title={<>{profile.name} {own ? null : <Chip>Shared by the department</Chip>} {profile.leasedRunId ? <Chip tone="go">In use</Chip> : null}</>}>
       <form className="form" onSubmit={(e) => { e.preventDefault(); void save.run(); }}>
         {profile.leasedRunId ? <p className="muted">Leased by <Link to={`${base}/runs/${profile.leasedRunId}`}>a live run</Link> since {dateTime(profile.leasedAt)}.</p> : null}
         <Field label="Profile name"><input value={name} onChange={(e) => setName(e.target.value)} required /></Field>
@@ -77,7 +77,7 @@ function ProfileEditor({ profile, own }: { profile: BrowserProfileDto; own: bool
         <Field label="1Password vaults" hint="The agent may fill fields from op:// references in these vaults using the 1Password CLI on this Mac. The value goes straight into the page and is never shown to the agent. Empty means no direct 1Password access.">
           <TagInput label="1Password vaults" value={vaults} onChange={setVaults} placeholder="Work" />
         </Field>
-        <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save profile</Button></div>
+        <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save profile</Button></div>
       </form>
     </Panel>
   );
@@ -95,16 +95,16 @@ export function BrowserTab({ agent }: { agent: Agent }) {
       <Load q={profiles} lines={3}>
         {() => (mine.length === 0 ? (
           <Panel>
-            <Empty title={`${agent.name} has no browser profile yet`}>
+            <Empty icon="agent" title={`${agent.name} has no browser profile yet`}>
               <p>A profile keeps this agent's cookies and logins apart from every other agent. One is created automatically the first time it browses; create it now to set domain rules first.</p>
-              <Button variant="primary" busy={create.busy} onClick={() => void create.run()}>Create browser profile</Button>
+              <Button icon="add" variant="primary" busy={create.busy} onClick={() => void create.run()}>Create browser profile</Button>
             </Empty>
           </Panel>
         ) : <>{mine.map((p) => <ProfileEditor key={p.id} profile={p} own={p.agentId === agent.id} />)}</>)}
       </Load>
-      <Panel title="Human takeovers" flush>
+      <Panel icon="hand" title="Human takeovers" flush>
         <Load q={sessions} lines={2}>
-          {() => (takeovers.length === 0 ? <Empty title="This agent has never asked for a human"><p>When it hits a login, CAPTCHA or consent screen it pauses and sends you a one-time link to its browser.</p></Empty> : (
+          {() => (takeovers.length === 0 ? <Empty icon="agent" title="This agent has never asked for a human"><p>When it hits a login, CAPTCHA or consent screen it pauses and sends you a one-time link to its browser.</p></Empty> : (
             <table className="table">
               <thead><tr><th>Status</th><th>Reason</th><th>Asked</th><th>Handed back</th><th><span className="sr-only">Actions</span></th></tr></thead>
               <tbody>

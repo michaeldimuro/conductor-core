@@ -116,7 +116,7 @@ export function BindingEditor({ value, onChange, inheritLabel, legend = 'Model p
             </div>
           ))}
           <div>
-            <Button small onClick={() => setFallback([...fallback, { adapter: '' }])} disabled={fallback.length >= 10}>Add a fallback</Button>
+            <Button icon="add" small onClick={() => setFallback([...fallback, { adapter: '' }])} disabled={fallback.length >= 10}>Add a fallback</Button>
             <span className="field-hint">Fallbacks are tried in order on a rate limit, auth failure or outage.</span>
           </div>
         </>

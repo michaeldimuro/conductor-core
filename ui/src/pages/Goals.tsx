@@ -6,6 +6,7 @@ import { api } from '../lib/api.js';
 import type { CreateGoalInput, Goal, GoalNode } from '../lib/api.js';
 import { dateOnly, fromDateInput, humanize, toDateInput } from '../lib/format.js';
 import { k, useDirectory, useOrg, type Directory } from '../lib/org.js';
+import { Icon } from '../components/icons.js';
 import { useAction, useQuery } from '../lib/query.js';
 
 const GOAL_STATUSES = ['proposed', 'active', 'achieved', 'abandoned'] as const;
@@ -84,6 +85,7 @@ function Node({ node, dir, onEdit, onAdd }: { node: GoalNode; dir: Directory; on
       <div className={`goal goal-${g.status}`}>
         <div className="goal-main">
           <div className="row">
+            <Icon name="goals" size={16} className={`goal-icon goal-icon-${g.status}`} />
             <strong className="goal-title">{g.title}</strong>
             <Chip>{LEVELS.find((l) => l.value === g.level)?.label}</Chip>
             {g.deptId ? <Chip>{dir.dept(g.deptId)?.name ?? 'Department'}</Chip> : null}
@@ -105,9 +107,9 @@ function Node({ node, dir, onEdit, onAdd }: { node: GoalNode; dir: Directory; on
           <select aria-label={`Status of ${g.title}`} value={g.status} disabled={setStatus.busy} onChange={(e) => void setStatus.run(e.target.value as Goal['status'])} style={{ width: 'auto' }}>
             {GOAL_STATUSES.map((s) => <option key={s} value={s}>{humanize(s)}</option>)}
           </select>
-          <Button small onClick={() => onEdit(g)}>Edit</Button>
-          <Button small onClick={() => onAdd(g)}>Add sub-goal</Button>
-          <ConfirmButton small variant="quiet" danger label="Delete" title={`Delete "${g.title}"`} confirmLabel="Delete goal"
+          <Button icon="edit" small onClick={() => onEdit(g)}>Edit</Button>
+          <Button icon="add" small onClick={() => onAdd(g)}>Add sub-goal</Button>
+          <ConfirmButton icon="remove" small variant="quiet" danger label="Delete" title={`Delete "${g.title}"`} confirmLabel="Delete goal"
             message="Its sub-goals, projects and issues move up to the parent goal, so no work is lost. To keep the goal for the record, set its status to Abandoned instead." onConfirm={() => remove.run()} />
         </div>
       </div>
@@ -123,9 +125,9 @@ export function Goals() {
   const [form, setForm] = useState<{ goal?: Goal; parent?: Goal } | null>(null);
   return (
     <div className="page">
-      <PageHead title="Goals" sub="Organization goals cascade into department and agent goals. Every issue traces back to one of them." actions={<Button variant="primary" onClick={() => setForm({})}>New goal</Button>} />
+      <PageHead icon="goals" eyebrow="Direction" title="Goals" sub="Organization goals cascade into department and agent goals. Every issue traces back to one of them." actions={<Button icon="add" variant="primary" onClick={() => setForm({})}>New goal</Button>} />
       <Panel>
-        <Load q={tree} empty={<Empty title="No goals yet"><p>Set an organization goal and the lead agents break it down into department goals and issues.</p><Button variant="primary" onClick={() => setForm({})}>Set the first goal</Button></Empty>}>
+        <Load q={tree} empty={<Empty icon="goals" title="No goals yet"><p>Set an organization goal and the lead agents break it down into department goals and issues.</p><Button icon="add" variant="primary" onClick={() => setForm({})}>Set the first goal</Button></Empty>}>
           {(nodes) => <ul className="tree tree-root">{nodes.map((n) => <Node key={n.goal.id} node={n} dir={dir} onEdit={(goal) => setForm({ goal })} onAdd={(parent) => setForm({ parent })} />)}</ul>}
         </Load>
       </Panel>

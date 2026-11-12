@@ -27,26 +27,26 @@ export function SkillsTab({ agent }: { agent: Agent }) {
   return (
     <div className="stack-lg">
       {drafts.length > 0 ? (
-        <Panel title={`Drafts awaiting your review (${drafts.length})`} flush>
+        <Panel icon="review" title={`Drafts awaiting your review (${drafts.length})`} flush>
           <SkillTable skills={drafts} onOpen={setOpen} dir={dir} />
         </Panel>
       ) : null}
-      <Panel title="Effective skills" flush>
-        <Load q={skills} empty={<Empty title="No skills exist in this organization yet" />}>
-          {() => (effective.length === 0 ? <Empty title="This agent loads no skills"><p>It inherits organization and department skills, plus any named below.</p></Empty> : <SkillTable skills={effective} onOpen={setOpen} dir={dir} />)}
+      <Panel icon="skills" title="Effective skills" flush>
+        <Load q={skills} empty={<Empty icon="skills" title="No skills exist in this organization yet" />}>
+          {() => (effective.length === 0 ? <Empty icon="skills" title="This agent loads no skills"><p>It inherits organization and department skills, plus any named below.</p></Empty> : <SkillTable skills={effective} onOpen={setOpen} dir={dir} />)}
         </Load>
       </Panel>
-      <Panel title="Assignments">
+      <Panel icon="link" title="Assignments">
         <form className="form" onSubmit={(e) => { e.preventDefault(); void save.run(); }}>
           <div className="form-grid">
             <Field label="This agent's own skills" hint="Skill names it loads in addition to what it inherits."><TagInput label="Own skills" value={own} onChange={setOwn} placeholder="Type a skill name and press Enter" /></Field>
             <Field label="Never load" hint="Inherited skills this agent must not use."><TagInput label="Denied skills" value={deny} onChange={setDeny} placeholder="Type a skill name and press Enter" /></Field>
           </div>
-          <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save assignments</Button></div>
+          <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save assignments</Button></div>
         </form>
       </Panel>
       {other.length > 0 ? (
-        <Panel title="In scope but not loaded" flush>
+        <Panel icon="docs" title="In scope but not loaded" flush>
           <SkillTable skills={other} onOpen={setOpen} dir={dir} />
         </Panel>
       ) : null}

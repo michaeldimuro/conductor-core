@@ -3,6 +3,7 @@ import type { DragEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { IssueForm, useGoals } from '../components/IssueForm.js';
 import { Button, Chip, ErrorNote, Loading, PageHead } from '../components/ui.js';
+import { Icon, PriorityIcon, StatusIcon } from '../components/icons.js';
 import { api } from '../lib/api.js';
 import type { Issue, ListIssuesQuery } from '../lib/api.js';
 import { ISSUE_STATUSES, STATUS_LABEL, k, priorityName, useDirectory, useOrg, type Directory, type IssueStatus } from '../lib/org.js';
@@ -10,6 +11,7 @@ import { invalidate, setQueryData, useQuery } from '../lib/query.js';
 import { errorText } from '../lib/api.js';
 import { toast } from '../lib/toast.js';
 import { blockedText } from '../lib/format.js';
+import { IssueTree } from './IssueTree.js';
 
 const PAGE = 40;
 const API_MAX = 500;
@@ -40,13 +42,16 @@ function Card({ issue, dir, onMove, onAssign }: { issue: Issue; dir: Directory; 
   };
   return (
     <li className={`card card-p${Math.min(issue.priority, 3)}`} draggable onDragStart={onDragStart}>
-      <Link className="card-title" to={`${base}/issues/${issue.number}`}><span className="muted">#{issue.number}</span> {issue.title}</Link>
+      <Link className="card-title" to={`${base}/issues/${issue.number}`}>
+        <span className="card-glyphs" title={`${priorityName(issue.priority)} priority, ${STATUS_LABEL[issue.status]}`}><PriorityIcon priority={issue.priority} /><StatusIcon status={issue.status} /></span>
+        <span><span className="muted">#{issue.number}</span> {issue.title}</span>
+      </Link>
       {issue.blockedReason && issue.status === 'blocked' ? <p className="card-blocked">{blockedText(issue.blockedReason)}</p> : null}
       <div className="row row-tight">
         {issue.priority < 2 ? <Chip tone={issue.priority === 0 ? 'stop' : 'warn'}>{priorityName(issue.priority)}</Chip> : null}
-        {issue.checkoutLock ? <Chip tone="go">Agent working</Chip> : null}
-        {issue.reworkCount > 0 ? <Chip tone="warn">Rework {issue.reworkCount}</Chip> : null}
-        {issue.labels.map((l) => <Chip key={l}>{l}</Chip>)}
+        {issue.checkoutLock ? <Chip tone="go"><Icon name="agent" size={12} />Agent working</Chip> : null}
+        {issue.reworkCount > 0 ? <Chip tone="warn"><Icon name="refresh" size={12} />Rework {issue.reworkCount}</Chip> : null}
+        {issue.labels.map((l) => <Chip key={l}><Icon name="label" size={12} />{l}</Chip>)}
       </div>
       <div className="card-controls">
         <select aria-label={`Assignee of issue ${issue.number}`} value={issue.assigneeAgentId ?? ''} onChange={(e) => onAssign(issue, e.target.value || null)}>
@@ -100,7 +105,7 @@ function Column({ status, filter, filterKey, dir, register, onMove, onAssign }: 
       onDrop={onDrop}
     >
       <header className={`column-head column-${status}`}>
-        <h2>{STATUS_LABEL[status]}</h2>
+        <h2><StatusIcon status={status} />{STATUS_LABEL[status]}</h2>
         <span className="muted">{data ? `${data.items.length}${data.more ? '+' : ''}` : ''}</span>
       </header>
       <div className="column-body">
@@ -155,6 +160,26 @@ export function Board() {
   }), [params]);
   const filterKey = JSON.stringify(filter);
   const filtered = Object.values(filter).some(Boolean);
+  const view = params.get('view') === 'tree' ? 'tree' : 'board';
+  const setView = (v: 'board' | 'tree') => {
+    setParam('view', v === 'tree' ? 'tree' : '');
+    try {
+      window.localStorage.setItem('conductor.issues.view', v);
+    } catch {
+      // Storage blocked: the address bar still carries the choice.
+    }
+  };
+  useEffect(() => {
+    // Reopen the view you used last, unless the link already names one.
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage.getItem('conductor.issues.view');
+    } catch {
+      // ignore
+    }
+    if (saved === 'tree' && !params.has('view')) setParam('view', 'tree');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = () => invalidate(k(org.id, 'issues'), k(org.id, 'issue'));
   const onMove = (issue: Issue, to: IssueStatus) => {
@@ -190,8 +215,12 @@ export function Board() {
 
   return (
     <div className="page board-page">
-      <PageHead title="Issues" actions={<Button variant="primary" onClick={() => setCreating(true)}>New issue</Button>} />
+      <PageHead icon="issues" eyebrow="Work" title="Issues" actions={<Button variant="primary" icon="add" onClick={() => setCreating(true)}>New issue</Button>} />
       <div className="toolbar" role="search">
+        <div className="segmented segmented-sm" role="group" aria-label="Issue view">
+          <button type="button" className={view === 'board' ? 'on' : undefined} aria-pressed={view === 'board'} onClick={() => setView('board')}><Icon name="grid" size={13} /> Board</button>
+          <button type="button" className={view === 'tree' ? 'on' : undefined} aria-pressed={view === 'tree'} onClick={() => setView('tree')}><Icon name="list" size={13} /> Tree</button>
+        </div>
         <input className="toolbar-search" type="search" data-search placeholder="Search titles and descriptions" aria-label="Search issues" value={search} onChange={(e) => setSearch(e.target.value)} />
         <select aria-label="Filter by assignee" value={filter.assigneeAgentId ?? ''} onChange={(e) => setParam('assignee', e.target.value)}>
           <option value="">Any assignee</option>
@@ -202,17 +231,19 @@ export function Board() {
           {(goals.data ?? []).map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
         </select>
         <input aria-label="Filter by label" placeholder="Label" value={filter.label ?? ''} onChange={(e) => setParam('label', e.target.value.trim())} autoCapitalize="none" />
-        {filtered ? <Button variant="quiet" onClick={() => { setSearch(''); setParams({}, { replace: true }); }}>Clear filters</Button> : null}
-        <select className="board-jump" aria-label="Jump to column" value="" onChange={(e) => document.getElementById(`col-${e.target.value}`)?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' })}>
+        {filtered ? <Button variant="quiet" icon="close" onClick={() => { setSearch(''); setParams(view === 'tree' ? { view: 'tree' } : {}, { replace: true }); }}>Clear filters</Button> : null}
+        {view === 'board' ? <select className="board-jump" aria-label="Jump to column" value="" onChange={(e) => document.getElementById(`col-${e.target.value}`)?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' })}>
           <option value="" disabled>Jump to column</option>
           {ISSUE_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-        </select>
+        </select> : null}
       </div>
-      <div className="board">
-        {ISSUE_STATUSES.map((s) => (
-          <Column key={s} status={s} filter={filter} filterKey={filterKey} dir={dir} register={(st, key) => keys.current.set(st, key)} onMove={onMove} onAssign={onAssign} />
-        ))}
-      </div>
+      {view === 'tree' ? <IssueTree filter={filter} filterKey={filterKey} dir={dir} /> : (
+        <div className="board">
+          {ISSUE_STATUSES.map((s) => (
+            <Column key={s} status={s} filter={filter} filterKey={filterKey} dir={dir} register={(st, key) => keys.current.set(st, key)} onMove={onMove} onAssign={onAssign} />
+          ))}
+        </div>
+      )}
       <IssueForm open={creating} onClose={() => setCreating(false)} defaults={{ goalId: filter.goalId, assigneeAgentId: filter.assigneeAgentId }} />
     </div>
   );

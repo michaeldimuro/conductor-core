@@ -1,0 +1,123 @@
+/* Icons: the lucide set, placed through components/icons.tsx. Stroke icons inherit currentColor. */
+.icon { flex: none; display: inline-block; vertical-align: -0.16em; }
+
+/* Sidebar: an icon per place, replacing the old dots; the current place is lit cyan. */
+.rail-main a::before, .rail-global a::before { content: none; }
+.nav-icon { color: var(--ink-3); transition: color 0.15s; }
+.rail-nav a:hover .nav-icon { color: var(--ink-2); }
+.rail-nav a.active .nav-icon { color: var(--cyan); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--cyan) 55%, transparent)); }
+.rail-foot-btn { display: flex; align-items: center; gap: 9px; }
+.switcher-new { display: flex !important; align-items: center; gap: 8px; }
+.rail-dept-icon { color: var(--ink-3); }
+.agent-glyph { position: relative; display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none; color: var(--ink-3); }
+.agent-glyph .lamp { position: absolute; right: -2px; bottom: -1px; width: 6px; height: 6px; box-shadow: 0 0 0 2px var(--surface); }
+.rail-nav a.active .agent-glyph { color: var(--ink); }
+
+/* Headings. */
+.page-title-icon { display: flex; align-items: center; gap: 14px; }
+.page-icon {
+  display: inline-grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 12px; color: var(--accent);
+  background: linear-gradient(140deg, #8b5cf62e, #22d3ee1f); border: 1px solid color-mix(in srgb, var(--violet-2) 30%, transparent);
+  box-shadow: 0 8px 24px -12px var(--glow-a);
+}
+.page-icon-agent { color: var(--violet-2); }
+.panel-head h2 { display: flex; align-items: center; gap: 9px; }
+.panel-icon { color: var(--ink-3); }
+.tabs a { display: inline-flex; align-items: center; gap: 7px; }
+.tabs a .icon { color: var(--ink-3); }
+.tabs a.active .icon { color: var(--accent); }
+.tile-label { display: inline-flex; align-items: center; gap: 7px; }
+.tile-label .icon { color: var(--accent); opacity: 0.85; }
+
+/* Empty and error states. */
+.empty-title::before { content: none; }
+.empty-icon {
+  display: grid; place-items: center; width: 44px; height: 44px; margin: 0 auto 12px; border-radius: 14px; color: var(--ink-2);
+  background: radial-gradient(circle at 50% 30%, #8b5cf626, transparent 70%), var(--panel); border: 1px solid var(--line-soft);
+}
+.note-icon { color: var(--stop); }
+
+/* Issue status and priority glyphs. */
+.status-icon { color: var(--ink-3); }
+.si-todo { color: var(--ink-2); }
+.si-in_progress { color: var(--warn); }
+.si-in_review { color: var(--info); }
+.si-done { color: var(--go); }
+.si-blocked { color: var(--stop); }
+.si-cancelled { color: var(--idle); }
+.priority-icon { color: var(--ink-3); }
+.pi-0 { color: var(--stop); }
+.pi-1 { color: var(--warn); }
+.pi-3 { opacity: 0.6; }
+.column-head h2::before { content: none; }
+.card-title { display: flex; align-items: flex-start; gap: 8px; }
+.card-glyphs { display: inline-flex; gap: 3px; padding-top: 2px; flex: none; }
+.issue-title { display: flex; align-items: center; gap: 12px; }
+.issue-sub { margin-top: 8px; font-size: 13px; }
+.line-agent { display: inline-flex; align-items: center; gap: 7px; }
+.line-agent .icon { color: var(--ink-3); }
+
+/* Activity: a round badge per kind of event. */
+.action-badge {
+  --ab: var(--ink-3);
+  display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%; align-self: center;
+  color: var(--ab); background: color-mix(in srgb, var(--ab) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ab) 28%, transparent);
+}
+.ab-tool, .ab-skill { --ab: var(--info); }
+.ab-run, .ab-chat, .ab-comment { --ab: var(--cyan); }
+.ab-issue, .ab-goal, .ab-artifact { --ab: var(--blue); }
+.ab-approval, .ab-budget { --ab: var(--warn); }
+.ab-agent, .ab-hire { --ab: var(--go); }
+.ab-kill, .ab-browser { --ab: var(--stop); }
+:root[data-theme="light"] .ab-issue, :root[data-theme="light"] .ab-goal, :root[data-theme="light"] .ab-artifact { --ab: #2563eb; }
+.feed > li { grid-template-columns: auto minmax(70px, 120px) minmax(0, 1fr) auto; align-items: center; }
+.audit summary { align-items: center; }
+.tl-tool summary > span:first-child::before { content: none; }
+.tl-line { display: inline-flex; align-items: center; gap: 9px; min-width: 0; }
+.tl-activity summary { align-items: center; }
+
+/* People and agents. */
+.avatar { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-soft); }
+.avatar-agent { color: var(--violet-2); background: color-mix(in srgb, var(--violet) 16%, transparent); }
+.avatar-human { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 14%, transparent); }
+.avatar-system { color: var(--ink-2); background: var(--panel-2); }
+.tl-author { display: inline-flex; align-items: center; gap: 8px; }
+.chat-meta { align-items: center; }
+.chat-run { display: inline-flex; align-items: center; gap: 5px; }
+.chat-working { display: inline-flex; align-items: center; gap: 7px; }
+.agent-avatar {
+  display: grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 12px; color: var(--violet-2);
+  background: linear-gradient(140deg, #8b5cf633, #22d3ee14); border: 1px solid color-mix(in srgb, var(--violet-2) 30%, transparent);
+}
+.meta-item { display: inline-flex; align-items: center; gap: 5px; }
+.meta-item .icon { color: var(--ink-3); }
+.goal-icon { color: var(--ink-3); }
+.goal-icon-active { color: var(--accent); }
+.goal-icon-achieved { color: var(--go); }
+.goal-icon-proposed { color: var(--warn); }
+.tile-glyph { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 8px; color: var(--accent); background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+.catalog > li { align-items: center; }
+
+/* Files. */
+.file-icon { color: var(--tb, var(--ink-2)); }
+.artifact-card-glyph { display: grid; justify-items: center; gap: 8px; }
+.artifact-card-glyph .file-icon { --tb: var(--ink-2); }
+.artifact-card-glyph .file-icon.type-pdf, .artifact-card-glyph .file-icon.type-pptx { color: var(--stop); }
+.artifact-card-glyph .file-icon.type-docx, .artifact-card-glyph .file-icon.type-markdown, .artifact-card-glyph .file-icon.type-text { color: var(--blue); }
+.artifact-card-glyph .file-icon.type-xlsx, .artifact-card-glyph .file-icon.type-csv, .artifact-card-glyph .file-icon.type-json { color: var(--go); }
+.artifact-card-glyph .file-icon.type-html { color: var(--warn); }
+.artifact-card-glyph .file-icon.type-audio, .artifact-card-glyph .file-icon.type-video { color: var(--violet-2); }
+
+/* Search fields get a magnifier. */
+input[type="search"], input.toolbar-search {
+  padding-left: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='%238a93c2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 12px 50%;
+}
+
+/* Phone tab bar: icon over label. */
+@media (max-width: 860px) {
+  .tabbar a, .tabbar button { flex-direction: column; gap: 3px; font-size: 11px; }
+  .tabbar a.active .icon { color: var(--accent); }
+}
+.card-glyphs .pi-2 { display: none; }

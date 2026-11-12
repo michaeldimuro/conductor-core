@@ -2,6 +2,15 @@ import { Link } from 'react-router-dom';
 import type { AuditRecord } from '../lib/api.js';
 import { ago, dateTime, humanize, shortId } from '../lib/format.js';
 import type { Directory } from '../lib/org.js';
+import { Icon, activityIcon, type IconName } from './icons.js';
+
+/** Who did it, as an icon: you, an agent, or Conductor itself. */
+export const actorIcon = (kind: string): IconName => (kind === 'human' ? 'user' : kind === 'system' ? 'server' : 'agent');
+
+/** The round icon badge for one audit record (what kind of thing happened). */
+export function ActionBadge({ action }: { action: string }) {
+  return <span className={`action-badge ab-${action.split('.')[0]}`}><Icon name={activityIcon(action)} size={13} /></span>;
+}
 
 export function actorName(rec: AuditRecord, dir: Directory): string {
   if (rec.actor.kind === 'human') return 'You';
@@ -39,6 +48,7 @@ export function ActivityList({ items, base, dir }: { items: AuditRecord[]; base:
         const subject = activitySubject(rec, dir);
         return (
           <li key={rec.id}>
+            <ActionBadge action={rec.action} />
             <span className="feed-actor">{actorName(rec, dir)}</span>
             <span className="feed-what">
               {humanize(rec.action).toLowerCase()}

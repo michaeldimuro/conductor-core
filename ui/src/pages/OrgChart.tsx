@@ -7,6 +7,7 @@ import type { Agent, Department, OrgChartNode } from '../lib/api.js';
 import { describeCron, money, numOrNull } from '../lib/format.js';
 import { autonomyName, k, useDirectory, useOrg, type Directory } from '../lib/org.js';
 import { useAction, useQuery } from '../lib/query.js';
+import { Icon } from '../components/icons.js';
 import { toast } from '../lib/toast.js';
 
 /** Pause, resume and terminate: the same controls on the chart and on the agent page. */
@@ -22,11 +23,11 @@ export function AgentActions({ agent, onEdit }: { agent: Agent; onEdit?: () => v
   if (agent.status === 'terminated') return null;
   return (
     <div className="row row-tight">
-      {onEdit ? <Button small onClick={onEdit}>Edit</Button> : null}
+      {onEdit ? <Button icon="edit" small onClick={onEdit}>Edit</Button> : null}
       {agent.status === 'paused'
-        ? <Button small busy={resume.busy} onClick={() => void resume.run()}>Resume</Button>
-        : <Button small busy={pause.busy} onClick={() => void pause.run()}>Pause</Button>}
-      <ConfirmButton small label="Terminate" variant="quiet" danger title={`Terminate ${agent.name}`} confirmLabel="Terminate agent"
+        ? <Button icon="play" small busy={resume.busy} onClick={() => void resume.run()}>Resume</Button>
+        : <Button icon="pause" small busy={pause.busy} onClick={() => void pause.run()}>Pause</Button>}
+      <ConfirmButton icon="fire" small label="Terminate" variant="quiet" danger title={`Terminate ${agent.name}`} confirmLabel="Terminate agent"
         message={`${agent.name} stops for good and its open issues become unassigned. Its history, memory and skills stay on record.`}
         onConfirm={() => terminate.run()} />
     </div>
@@ -37,18 +38,19 @@ function AgentCard({ agent, dept, isLead, onEdit }: { agent: Agent; dept?: Depar
   const { base } = useOrg();
   return (
     <div className="agent-card">
+      <span className="agent-avatar" aria-hidden="true"><Icon name="agent" size={18} /></span>
       <div className="agent-card-main">
         <div className="row">
           <Link className="agent-name" to={`${base}/agents/${agent.slug}`}>{agent.name}</Link>
           {isLead ? <Chip tone="info">Lead</Chip> : null}
-          {dept ? <Chip>{dept.name}</Chip> : null}
+          {dept ? <Chip><Icon name="dept" size={12} />{dept.name}</Chip> : null}
         </div>
         <p className="dim">{agent.role}</p>
         <p className="muted agent-card-meta">
           <Status value={agent.status} label={agent.status === 'paused' && agent.pausedReason ? `Paused: ${agent.pausedReason}` : undefined} />
-          <span>{autonomyName(agent.autonomyLevel)}</span>
-          <span>{agent.heartbeatCron ? describeCron(agent.heartbeatCron).text : 'No heartbeat'}</span>
-          <span>{agent.budgetUsd == null ? 'No budget cap' : `${money(agent.budgetUsd)} a month`}</span>
+          <span className="meta-item"><Icon name="gauge" size={13} />{autonomyName(agent.autonomyLevel)}</span>
+          <span className="meta-item"><Icon name="time" size={13} />{agent.heartbeatCron ? describeCron(agent.heartbeatCron).text : 'No heartbeat'}</span>
+          <span className="meta-item"><Icon name="budget" size={13} />{agent.budgetUsd == null ? 'No budget cap' : `${money(agent.budgetUsd)} a month`}</span>
         </p>
       </div>
       <AgentActions agent={agent} onEdit={onEdit} />
@@ -136,35 +138,36 @@ export function OrgChart() {
 
   return (
     <div className="page">
-      <PageHead
+      <PageHead icon="chart"
+        eyebrow="Team"
         title="Org chart"
         sub="Who does what, and who answers to whom. Agents can only assign work down their own reporting line."
         actions={<>
           <Segmented label="View" value={view} onChange={setView} options={[{ value: 'lines', label: 'Reporting lines' }, { value: 'departments', label: 'Departments' }]} />
-          <Button onClick={() => setDeptForm({})}>New department</Button>
-          <Button variant="primary" onClick={() => setHire({})} disabled={dir.departments.length === 0}>Hire agent</Button>
+          <Button icon="add" onClick={() => setDeptForm({})}>New department</Button>
+          <Button icon="hire" variant="primary" onClick={() => setHire({})} disabled={dir.departments.length === 0}>Hire agent</Button>
         </>}
       />
       {view === 'lines' ? (
-        <Panel title="Reports to you">
-          <Load q={chart} empty={<Empty title="No agents yet">{dir.departments.length === 0 ? <p>Create a department, then hire the first agent into it.</p> : <Button variant="primary" onClick={() => setHire({})}>Hire the first agent</Button>}</Empty>}>
+        <Panel icon="reports" title="Reports to you">
+          <Load q={chart} empty={<Empty icon="agent" title="No agents yet">{dir.departments.length === 0 ? <p>Create a department, then hire the first agent into it.</p> : <Button icon="hire" variant="primary" onClick={() => setHire({})}>Hire the first agent</Button>}</Empty>}>
             {(nodes) => <Tree nodes={nodes} onEdit={setEditAgent} />}
           </Load>
         </Panel>
       ) : null}
       {view === 'departments' || (chart.data?.length === 0 && dir.departments.length > 0) ? (
-        <Load q={{ ...chart, data: dir.loading ? undefined : dir.departments }} empty={<Panel><Empty title="No departments yet"><Button variant="primary" onClick={() => setDeptForm({})}>Create the first department</Button></Empty></Panel>}>
+        <Load q={{ ...chart, data: dir.loading ? undefined : dir.departments }} empty={<Panel><Empty icon="dept" title="No departments yet"><Button icon="add" variant="primary" onClick={() => setDeptForm({})}>Create the first department</Button></Empty></Panel>}>
           {(depts) => (
             <div className="stack-lg">
               {depts.map((d) => {
                 const members = dir.agents.filter((a) => a.deptId === d.id && a.status !== 'terminated');
                 return (
                   <Panel key={d.id} title={<>{d.name} {d.status === 'archived' ? <Chip>Archived</Chip> : null}</>} actions={d.status === 'archived'
-                    ? <Button small busy={deptStatus.busy} onClick={() => void deptStatus.run(d, false)}>Restore department</Button>
+                    ? <Button icon="refresh" small busy={deptStatus.busy} onClick={() => void deptStatus.run(d, false)}>Restore department</Button>
                     : <>
-                      <Button small onClick={() => setDeptForm({ dept: d })}>Edit department</Button>
+                      <Button icon="edit" small onClick={() => setDeptForm({ dept: d })}>Edit department</Button>
                       <Button small onClick={() => setHire({ deptId: d.id })}>Hire into {d.name}</Button>
-                      <ConfirmButton small variant="quiet" danger label="Archive" title={`Archive ${d.name}`} confirmLabel="Archive department" disabled={members.length > 0}
+                      <ConfirmButton icon="archive" small variant="quiet" danger label="Archive" title={`Archive ${d.name}`} confirmLabel="Archive department" disabled={members.length > 0}
                         message="The department is hidden from hiring and assignment. Its goals, issues and history are kept, and you can restore it later." onConfirm={() => deptStatus.run(d, true)} />
                     </>}>
                     <div className="stack">

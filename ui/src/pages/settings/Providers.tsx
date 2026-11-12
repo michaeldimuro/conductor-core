@@ -58,7 +58,7 @@ function Embeddings() {
     setDraft({});
   }, { invalidate: ['settings'], success: 'Embedding settings saved' });
   return (
-    <Panel title="Memory embeddings">
+    <Panel icon="database" title="Memory embeddings">
       <Load q={settings} lines={2}>
         {() => (
           <form className="form" onSubmit={(e) => { e.preventDefault(); void save.run(); }}>
@@ -70,7 +70,7 @@ function Embeddings() {
               <Field label="API base URL"><input type="url" value={current('embeddings.baseUrl')} onChange={(e) => setDraft({ ...draft, 'embeddings.baseUrl': e.target.value })} placeholder="https://api.openai.com/v1" /></Field>
             </div>
             <ErrorNote error={save.error} />
-            <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy} disabled={!EMBEDDING_KEYS.some((key) => draft[key] !== undefined)}>Save embedding settings</Button></div>
+            <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={!EMBEDDING_KEYS.some((key) => draft[key] !== undefined)}>Save embedding settings</Button></div>
           </form>
         )}
       </Load>
@@ -86,7 +86,7 @@ export function Providers() {
   return (
     <div className="stack-lg">
       <ProviderAccounts orgId={org.id} />
-      <Panel title={`Bindings used by ${org.name}`} actions={<Button small busy={doctor.fetching} onClick={() => (checking ? doctor.reload() : setChecking(true))}>{doctor.fetching ? 'Testing…' : 'Test all bindings'}</Button>}>
+      <Panel icon="link" title={`Bindings used by ${org.name}`} actions={<Button small busy={doctor.fetching} onClick={() => (checking ? doctor.reload() : setChecking(true))}>{doctor.fetching ? 'Testing…' : 'Test all bindings'}</Button>}>
         {!checking ? <p className="dim">Runs a live connection test for the organization default and every agent's own binding. This can take a few seconds per provider.</p> : (
           <Load q={doctor} lines={3}>
             {(d) => (d.bindings?.length ? (
@@ -102,12 +102,12 @@ export function Providers() {
                   ))}
                 </tbody>
               </table>
-            ) : <Empty title="No provider is bound yet"><p>Set a default provider under Organization.</p></Empty>)}
+            ) : <Empty icon="model" title="No provider is bound yet"><p>Set a default provider under Organization.</p></Empty>)}
           </Load>
         )}
       </Panel>
-      <Panel title="Installed adapters" flush>
-        <Load q={adapters} empty={<Empty title="No adapters are installed" />}>
+      <Panel icon="model" title="Installed adapters" flush>
+        <Load q={adapters} empty={<Empty icon="model" title="No adapters are installed" />}>
           {(list) => <ul className="connectors">{list.map((a) => <AdapterRow key={a.id} adapter={a} orgId={org.id} />)}</ul>}
         </Load>
       </Panel>
@@ -139,13 +139,13 @@ function SecretRow({ secretRef, usedBy, onGone }: { secretRef: string; usedBy?: 
       {editing ? (
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (value) void save.run(); }}>
           <input type="password" aria-label={`New value for ${secretRef}`} autoComplete="off" value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 200 }} autoFocus />
-          <Button small type="submit" variant="primary" busy={save.busy} disabled={!value}>Store</Button>
+          <Button icon="lock" small type="submit" variant="primary" busy={save.busy} disabled={!value}>Store</Button>
           <Button small onClick={() => setEditing(false)}>Cancel</Button>
         </form>
       ) : (
         <div className="row row-tight">
           <Button small onClick={() => setEditing(true)}>{status.data?.exists ? 'Replace' : 'Set'}</Button>
-          {status.data?.exists ? <ConfirmButton small variant="quiet" danger label="Delete" title="Delete this secret" confirmLabel="Delete secret" message={<>Anything that uses <code>{secretRef}</code> stops working until you set it again.</>} onConfirm={() => remove.run()} /> : null}
+          {status.data?.exists ? <ConfirmButton icon="remove" small variant="quiet" danger label="Delete" title="Delete this secret" confirmLabel="Delete secret" message={<>Anything that uses <code>{secretRef}</code> stops working until you set it again.</>} onConfirm={() => remove.run()} /> : null}
         </div>
       )}
     </li>
@@ -176,11 +176,11 @@ export function Secrets() {
   const valid = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,200}$/.test(draft.trim()) && !draft.includes('..');
   return (
     <div className="stack-lg page-narrow">
-      <Panel title="Secrets" flush>
+      <Panel icon="lock" title="Secrets" flush>
         <p className="panel-body dim">Secrets live in the Mac's keychain, never in the database. They are write-only here: you can set, replace or delete a value, but nothing can read it back. Connector credentials are managed on the Connectors page.</p>
         <ul className="tool-list">{[...refs.entries()].map(([ref, usedBy]) => <SecretRow key={ref} secretRef={ref} usedBy={usedBy} onGone={() => setExtra((x) => x.filter((r) => r !== ref))} />)}</ul>
       </Panel>
-      <Panel title="Another secret">
+      <Panel icon="key" title="Another secret">
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (valid) { setExtra([...extra, draft.trim()]); setDraft(''); } else toast('Secret names use letters, digits and . _ : / @ - only.', 'error'); }}>
           <input className="grow mono" aria-label="Secret name" placeholder={`org/${org.slug}/my-secret`} value={draft} onChange={(e) => setDraft(e.target.value)} autoCapitalize="none" spellCheck={false} style={{ width: 'auto' }} />
           <Button type="submit" disabled={!draft.trim()}>Check or set</Button>
@@ -209,7 +209,7 @@ export function RemoteAccess() {
   const copy = (text: string) => navigator.clipboard.writeText(text).then(() => toast('Copied', 'ok'), () => toast('Copy failed. Select the text and copy it by hand.', 'error'));
   return (
     <div className="stack-lg page-narrow">
-      <Panel title="Daemon">
+      <Panel icon="server" title="Daemon">
         <Load q={doctor} lines={3}>
           {(d) => (
             <dl className="kv">
@@ -222,7 +222,7 @@ export function RemoteAccess() {
           )}
         </Load>
       </Panel>
-      <Panel title="Public address (tunnel)">
+      <Panel icon="link" title="Public address (tunnel)">
         <form className="form" onSubmit={(e) => { e.preventDefault(); void save.run(); }}>
           <p className="dim">The address your phone uses to reach this Mac, for example a Tailscale or Cloudflare Tunnel hostname. Takeover links, pairing links and inbound webhook addresses are built from it. Nothing is exposed on a public port by default.</p>
           <Field label="Public URL" hint="Empty means links use the local address and only work on this Mac. Changes apply when the daemon restarts.">
@@ -230,23 +230,23 @@ export function RemoteAccess() {
           </Field>
           <ErrorNote error={save.error ?? setting.error} />
           {pendingRestart ? <p className="note note-warn" role="status"><span>{stored ? <>Saved as <code>{stored}</code>, but the running daemon has not picked it up.</> : 'The public address was cleared, but the running daemon still uses the old one.'} Run <code>conductor restart</code> on the Mac to apply it.</span></p> : null}
-          <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy} disabled={url === null || url === stored}>Save public address</Button></div>
+          <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={url === null || url === stored}>Save public address</Button></div>
         </form>
       </Panel>
-      <Panel title="Pair a phone or another device">
+      <Panel icon="phone" title="Pair a phone or another device">
         <form className="form" onSubmit={(e) => { e.preventDefault(); void pair.run(); }}>
           <div className="form-grid">
             <Field label="Device name"><input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={100} /></Field>
             <Field label="Stays signed in for (days)"><input type="number" min="1" max="90" value={days} onChange={(e) => setDays(e.target.value)} required /></Field>
           </div>
-          <div className="form-actions"><Button type="submit" busy={pair.busy}>Create a one-time sign-in link</Button></div>
+          <div className="form-actions"><Button icon="link" type="submit" busy={pair.busy}>Create a one-time sign-in link</Button></div>
           {code ? (
             <div className="note note-info pair" aria-live="polite">
               <div className="stack grow">
                 <span>Open this on the device before {dateTime(code.expiresAt)}. It works once.</span>
                 <code className="pair-url">{code.remoteUrl}</code>
               </div>
-              <Button small onClick={() => void copy(code.remoteUrl)}>Copy link</Button>
+              <Button icon="copy" small onClick={() => void copy(code.remoteUrl)}>Copy link</Button>
             </div>
           ) : null}
         </form>

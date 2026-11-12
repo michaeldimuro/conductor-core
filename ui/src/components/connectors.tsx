@@ -150,7 +150,7 @@ export function ConnectorSettings({ connector, template }: { connector: Connecto
         </Field>
       ))}
       <div className="row">
-        <Button small type="submit" variant="primary" busy={save.busy}>Save</Button>
+        <Button icon="check" small type="submit" variant="primary" busy={save.busy}>Save</Button>
         <Button small onClick={() => setEditing(false)}>Cancel</Button>
       </div>
     </form>
@@ -164,7 +164,7 @@ export function ConnectorTools({ connector }: { connector: Connector }) {
   const tools = useQuery(key, () => api.connectorTools(org.id, connector.id));
   const retrust = useAction((tool: string) => api.retrustTool(org.id, connector.id, tool), { invalidate: [key], success: 'Tool re-trusted' });
   return (
-    <Load q={tools} lines={2} empty={<Empty title="This connector exposes no tools" />}>
+    <Load q={tools} lines={2} empty={<Empty icon="connectors" title="This connector exposes no tools" />}>
       {(list) => (
         <ul className="tool-list">
           {list.map((t) => (
@@ -174,7 +174,7 @@ export function ConnectorTools({ connector }: { connector: Connector }) {
                 {t.quarantined ? <Chip tone="stop">Changed upstream</Chip> : null}
                 <span className="field-hint">{t.description}</span>
               </div>
-              {t.quarantined ? <Button small busy={retrust.busy} onClick={() => void retrust.run(t.name)}>Re-trust</Button> : null}
+              {t.quarantined ? <Button icon="check" small busy={retrust.busy} onClick={() => void retrust.run(t.name)}>Re-trust</Button> : null}
             </li>
           ))}
         </ul>
@@ -205,7 +205,7 @@ export function ConnectorSecrets({ connector, template }: { connector: Connector
           {editing === r.ref ? (
             <form className="row" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (value) void save.run(r.ref); }}>
               <input type="password" aria-label={`New value for ${r.name}`} autoComplete="off" value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 180 }} autoFocus />
-              <Button small type="submit" variant="primary" busy={save.busy} disabled={!value}>Store</Button>
+              <Button icon="lock" small type="submit" variant="primary" busy={save.busy} disabled={!value}>Store</Button>
               <Button small onClick={() => setEditing(null)}>Cancel</Button>
             </form>
           ) : <Button small onClick={() => { setEditing(r.ref); setValue(''); }}>{status.data?.[i]?.exists ? 'Replace' : 'Set'}</Button>}

@@ -150,7 +150,7 @@ function PairGateway({ gateway, live, onClose }: { gateway: Gateway; live: Gatew
         </>
       )}
       <div className="form-actions">
-        {!paired && code !== null ? <Button busy={mint.busy} onClick={() => void mint.run()}>New code</Button> : null}
+        {!paired && code !== null ? <Button icon="refresh" busy={mint.busy} onClick={() => void mint.run()}>New code</Button> : null}
         <Button variant="primary" onClick={onClose}>{paired ? 'Done' : 'Close'}</Button>
       </div>
     </div>
@@ -172,9 +172,9 @@ export function Gateways() {
   const mine = (gateways.data ?? []).filter((g) => g.orgId === null || g.orgId === org.id);
   return (
     <div className="stack-lg">
-      <Panel title="Messaging gateways" flush actions={<Button small variant="primary" onClick={() => setForm({})}>Add gateway</Button>}>
+      <Panel icon="mail" title="Messaging gateways" flush actions={<Button icon="add" small variant="primary" onClick={() => setForm({})}>Add gateway</Button>}>
         <Load q={gateways} lines={2}>
-          {() => (mine.length === 0 ? <Empty title="No messaging gateway is connected"><p>Connect Telegram, Slack, Discord, iMessage or email to chat with agents, approve actions and receive takeover links away from this console.</p></Empty> : (
+          {() => (mine.length === 0 ? <Empty icon="mail" title="No messaging gateway is connected"><p>Connect Telegram, Slack, Discord, iMessage or email to chat with agents, approve actions and receive takeover links away from this console.</p></Empty> : (
             <ul className="connectors">
               {mine.map((g) => (
                 <li key={g.id} className="connector">
@@ -189,10 +189,10 @@ export function Gateways() {
                       <p className="muted">{strings(g.config.allowedChatIds).length} allowed chats, {strings(g.config.allowedUserIds).length} allowed users{g.authRef ? '' : ', no credentials set'}</p>
                     </div>
                     <div className="row row-tight">
-                      <Button small variant="primary" disabled={g.status === 'disabled'} title={g.status === 'disabled' ? 'Enable the gateway first' : undefined} onClick={() => setPairing(g.id)}>Pair a chat</Button>
-                      <Button small onClick={() => setForm({ gateway: g })}>Edit</Button>
+                      <Button icon="link" small variant="primary" disabled={g.status === 'disabled'} title={g.status === 'disabled' ? 'Enable the gateway first' : undefined} onClick={() => setPairing(g.id)}>Pair a chat</Button>
+                      <Button icon="edit" small onClick={() => setForm({ gateway: g })}>Edit</Button>
                       <Button small busy={setStatus.busy} onClick={() => void setStatus.run(g, g.status === 'disabled' ? 'active' : 'disabled')}>{g.status === 'disabled' ? 'Enable' : 'Disable'}</Button>
-                      <ConfirmButton small variant="quiet" danger label="Remove" title={`Remove ${g.name}`} confirmLabel="Remove gateway" message="Messages from this platform stop reaching your agents." onConfirm={() => remove.run(g)} />
+                      <ConfirmButton icon="remove" small variant="quiet" danger label="Remove" title={`Remove ${g.name}`} confirmLabel="Remove gateway" message="Messages from this platform stop reaching your agents." onConfirm={() => remove.run(g)} />
                     </div>
                   </div>
                 </li>
@@ -270,8 +270,8 @@ export function Webhooks() {
   const copy = (text: string) => navigator.clipboard.writeText(text).then(() => toast('Copied', 'ok'), () => toast('Copy failed. Select the address and copy it by hand.', 'error'));
   return (
     <div className="stack-lg">
-      <Panel title="Webhooks" flush actions={<Button small variant="primary" onClick={() => setForm({})}>Add webhook</Button>}>
-        <Load q={hooks} empty={<Empty title="No webhooks yet"><p>Inbound webhooks let GitHub, Stripe or any service wake an agent. Outbound webhooks tell other systems when something happens here.</p></Empty>}>
+      <Panel icon="webhook" title="Webhooks" flush actions={<Button icon="add" small variant="primary" onClick={() => setForm({})}>Add webhook</Button>}>
+        <Load q={hooks} empty={<Empty icon="webhook" title="No webhooks yet"><p>Inbound webhooks let GitHub, Stripe or any service wake an agent. Outbound webhooks tell other systems when something happens here.</p></Empty>}>
           {(list) => (
             <ul className="connectors">
               {list.map((h) => (
@@ -280,14 +280,14 @@ export function Webhooks() {
                     <div className="grow">
                       <div className="row"><strong>{h.name}</strong><Chip tone="info">{h.direction === 'in' ? 'Inbound' : 'Outbound'}</Chip>{h.direction === 'in' ? <Chip>{h.source === 'github' ? 'GitHub' : humanize(h.source)}</Chip> : null}<Status value={h.status} />{h.secretRef ? null : <Chip tone="warn">Unsigned</Chip>}</div>
                       {h.inboundUrl ? (
-                        <p className="row row-tight"><span className="muted">POST to</span><code className="hook-url">{h.inboundUrl}</code><Button small onClick={() => void copy(h.inboundUrl!)}>Copy</Button></p>
+                        <p className="row row-tight"><span className="muted">POST to</span><code className="hook-url">{h.inboundUrl}</code><Button icon="copy" small onClick={() => void copy(h.inboundUrl!)}>Copy</Button></p>
                       ) : <p className="muted truncate">Sends to <code>{h.url}</code></p>}
                       <p className="muted">{h.direction === 'in' ? `Wakes ${dir.agentName(h.agentId, 'nobody')}` : ''}{h.events.length ? `${h.direction === 'in' ? ', on ' : 'On '}${h.events.join(', ')}` : h.direction === 'out' ? 'On every event' : ''}</p>
                     </div>
                     <div className="row row-tight">
-                      <Button small onClick={() => setForm({ hook: h })}>Edit</Button>
+                      <Button icon="edit" small onClick={() => setForm({ hook: h })}>Edit</Button>
                       <Button small busy={setStatus.busy} onClick={() => void setStatus.run(h, h.status === 'disabled' ? 'active' : 'disabled')}>{h.status === 'disabled' ? 'Enable' : 'Disable'}</Button>
-                      <ConfirmButton small variant="quiet" danger label="Remove" title={`Remove ${h.name}`} confirmLabel="Remove webhook" message={h.direction === 'in' ? 'The inbound address stops working at once.' : 'Events are no longer sent to this destination.'} onConfirm={() => remove.run(h)} />
+                      <ConfirmButton icon="remove" small variant="quiet" danger label="Remove" title={`Remove ${h.name}`} confirmLabel="Remove webhook" message={h.direction === 'in' ? 'The inbound address stops working at once.' : 'Events are no longer sent to this destination.'} onConfirm={() => remove.run(h)} />
                     </div>
                   </div>
                 </li>

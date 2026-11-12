@@ -61,26 +61,26 @@ export function SessionView({ initial, label, onDone, onRetry }: { initial: Logi
           <code className="pair-url">{session.url}</code>
           <div className="row">
             <a className="btn btn-primary btn-sm" href={session.url} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>
-            <Button small onClick={() => void copyText(session.url!, 'Link copied')}>Copy link</Button>
+            <Button icon="copy" small onClick={() => void copyText(session.url!, 'Link copied')}>Copy link</Button>
           </div>
         </div>
       ) : null}
       {session.userCode && !finished ? (
         <div className="stack">
           <p className="pair-code mono" aria-label="One-time code">{session.userCode}</p>
-          <div><Button small onClick={() => void copyText(session.userCode!, 'Code copied')}>Copy code</Button></div>
+          <div><Button icon="copy" small onClick={() => void copyText(session.userCode!, 'Code copied')}>Copy code</Button></div>
         </div>
       ) : null}
       {session.needsCode && session.state === 'waiting' ? (
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (code.trim()) void send.run(); }}>
           <input className="grow mono" aria-label="Paste the code" placeholder="Paste the code" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="off" autoCapitalize="none" spellCheck={false} style={{ width: 'auto' }} />
-          <Button small type="submit" variant="primary" busy={send.busy} disabled={!code.trim()}>Send code</Button>
+          <Button icon="send" small type="submit" variant="primary" busy={send.busy} disabled={!code.trim()}>Send code</Button>
         </form>
       ) : null}
       <ErrorNote error={pollError} />
       <div className="row">
         {!finished ? <Button small onClick={() => void cancel.run()} busy={cancel.busy}>Cancel</Button> : null}
-        {finished && session.state !== 'succeeded' ? <Button small variant="primary" onClick={onRetry}>Try again</Button> : null}
+        {finished && session.state !== 'succeeded' ? <Button icon="refresh" small variant="primary" onClick={onRetry}>Try again</Button> : null}
         {finished ? <Button small onClick={onDone}>{session.state === 'succeeded' ? 'Done' : 'Close'}</Button> : null}
       </div>
     </div>

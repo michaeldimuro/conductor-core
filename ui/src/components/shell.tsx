@@ -4,21 +4,23 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import type { Organization, StatusResponse } from '../lib/api.js';
 import { live, useLiveState } from '../lib/live.js';
-import { useAgents } from '../lib/org.js';
+import { AgentTree } from './agent-tree.js';
 import { useAction, useQuery } from '../lib/query.js';
 import { setTheme, useTheme, type Theme } from '../lib/theme.js';
-import { Button, ConfirmButton, Lamp, Modal, Toasts, toneOf } from './ui.js';
+import { Button, ConfirmButton, Lamp, Logo, Modal, Toasts } from './ui.js';
+import { Icon, type IconName } from './icons.js';
 
-const ORG_NAV: ReadonlyArray<{ to: string; label: string; key: string; end?: boolean }> = [
-  { to: '', label: 'Overview', key: 'o', end: true },
-  { to: '/issues', label: 'Issues', key: 'i' },
-  { to: '/goals', label: 'Goals', key: 'g' },
-  { to: '/chart', label: 'Org chart', key: 'c' },
-  { to: '/costs', label: 'Costs', key: 'b' },
-  { to: '/skills', label: 'Skills', key: 's' },
-  { to: '/connectors', label: 'Connectors', key: 'n' },
-  { to: '/activity', label: 'Activity', key: 'l' },
-  { to: '/settings', label: 'Settings', key: 't' },
+const ORG_NAV: ReadonlyArray<{ to: string; label: string; key: string; icon: IconName; end?: boolean }> = [
+  { to: '', label: 'Overview', key: 'o', icon: 'overview', end: true },
+  { to: '/issues', label: 'Issues', key: 'i', icon: 'issues' },
+  { to: '/goals', label: 'Goals', key: 'g', icon: 'goals' },
+  { to: '/artifacts', label: 'Artifacts', key: 'f', icon: 'artifacts' },
+  { to: '/chart', label: 'Org chart', key: 'c', icon: 'chart' },
+  { to: '/costs', label: 'Costs', key: 'b', icon: 'costs' },
+  { to: '/skills', label: 'Skills', key: 's', icon: 'skills' },
+  { to: '/connectors', label: 'Connectors', key: 'n', icon: 'connectors' },
+  { to: '/activity', label: 'Activity', key: 'l', icon: 'activity' },
+  { to: '/settings', label: 'Settings', key: 't', icon: 'settings' },
 ];
 
 export function useStatus() {
@@ -50,7 +52,7 @@ function OrgSwitcher({ orgs, current, killed }: { orgs: Organization[]; current:
           <span className="switcher-name truncate">{current?.name ?? 'Choose an organization'}</span>
           <span className="switcher-sub">{orgs.length === 1 ? '1 organization' : `${orgs.length} organizations`}</span>
         </span>
-        <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+        <Icon name="down" size={14} />
       </button>
       {open ? (
         <div className="switcher-menu">
@@ -65,7 +67,7 @@ function OrgSwitcher({ orgs, current, killed }: { orgs: Organization[]; current:
               </li>
             ))}
           </ul>
-          <Link className="switcher-new" to="/new-org">New organization</Link>
+          <Link className="switcher-new" to="/new-org"><Icon name="add" size={14} />New organization</Link>
         </div>
       ) : null}
     </div>
@@ -81,7 +83,7 @@ function KillSwitch({ status, org }: { status: StatusResponse; org: Organization
   return (
     <>
       <button type="button" className={`strip-btn${globalStopped || orgStopped ? ' strip-btn-stop' : ''}`} aria-label={label} onClick={() => setOpen(true)}>
-        <Lamp tone={globalStopped || orgStopped ? 'stop' : 'idle'} />
+        <Icon name="power" size={14} />
         <span>{label}</span>
         {/* Narrow screens hide the full label; a bare lamp does not say what the button is. */}
         {globalStopped || orgStopped ? null : <span className="strip-btn-short">Stop</span>}
@@ -95,9 +97,9 @@ function KillSwitch({ status, org }: { status: StatusResponse; org: Organization
               <p className="muted">{globalStopped ? 'Engaged. No agent can run anywhere.' : 'Not engaged.'}</p>
             </div>
             {globalStopped ? (
-              <Button busy={act.busy} onClick={() => void act.run(() => api.releaseKillSwitch())}>Release</Button>
+              <Button icon="power" busy={act.busy} onClick={() => void act.run(() => api.releaseKillSwitch())}>Release</Button>
             ) : (
-              <ConfirmButton label="Stop everything" danger title="Stop every organization" confirmLabel="Stop all runs" phrase="stop"
+              <ConfirmButton icon="power" label="Stop everything" danger title="Stop every organization" confirmLabel="Stop all runs" phrase="stop"
                 message="This cancels every running agent in every organization. Work in progress is released back to the queue."
                 onConfirm={() => act.run(() => api.engageKillSwitch())} />
             )}
@@ -109,7 +111,7 @@ function KillSwitch({ status, org }: { status: StatusResponse; org: Organization
                 <p className="muted">{orgStopped ? 'Engaged. Agents in this organization cannot run.' : 'Not engaged.'}</p>
               </div>
               {orgStopped ? (
-                <Button busy={act.busy} onClick={() => void act.run(() => api.releaseOrgKillSwitch(org.id))}>Release</Button>
+                <Button icon="power" busy={act.busy} onClick={() => void act.run(() => api.releaseOrgKillSwitch(org.id))}>Release</Button>
               ) : (
                 <ConfirmButton label={`Stop ${org.name}`} danger title={`Stop ${org.name}`} confirmLabel="Stop this organization"
                   message={`This cancels every running agent in ${org.name}. Other organizations keep working.`}
@@ -123,7 +125,7 @@ function KillSwitch({ status, org }: { status: StatusResponse; org: Organization
   );
 }
 
-const THEME_NEXT: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' };
+const THEME_NEXT: Record<Theme, Theme> = { dark: 'light', light: 'system', system: 'dark' };
 const THEME_LABEL: Record<Theme, string> = { system: 'Theme: system', light: 'Theme: light', dark: 'Theme: dark' };
 
 function Shortcuts({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -150,7 +152,6 @@ export function Shell({ orgs, org, children }: { orgs: Organization[]; org: Orga
   const loc = useLocation();
   const [drawer, setDrawer] = useState(false);
   const [help, setHelp] = useState(false);
-  const agents = useAgents(org?.id);
   const base = org ? `/o/${org.slug}` : null;
   const pending = status.data?.counts.pendingApprovals ?? 0;
   const killed = new Set(status.data?.killSwitch.orgs ?? []);
@@ -188,47 +189,34 @@ export function Shell({ orgs, org, children }: { orgs: Organization[]; org: Orga
     live.stop();
     window.location.assign('/');
   });
-  const staff = (agents.data ?? []).filter((a) => a.status !== 'terminated');
 
   return (
     <div className={`shell${drawer ? ' shell-drawer' : ''}`}>
       <a className="skip" href="#content">Skip to content</a>
       <aside className="rail" aria-label="Primary">
+        <Link className="brand" to={base ?? '/'}><Logo />conductor<span className="brand-tag">local</span></Link>
         <OrgSwitcher orgs={orgs} current={org} killed={killed} />
         <nav className="rail-nav">
           {base ? (
-            <ul>
-              {ORG_NAV.map((n) => <li key={n.to}><NavLink to={base + n.to} end={n.end}>{n.label}</NavLink></li>)}
+            <ul className="rail-main">
+              {ORG_NAV.map((n) => <li key={n.to}><NavLink to={base + n.to} end={n.end}><Icon name={n.icon} className="nav-icon" />{n.label}</NavLink></li>)}
             </ul>
           ) : null}
           <ul className="rail-global">
             <li>
               <NavLink to="/approvals">
+                <Icon name="approvals" className="nav-icon" />
                 <span className="grow">Approvals</span>
                 {pending > 0 ? <span className="badge" aria-label={`${pending} pending`}>{pending}</span> : null}
               </NavLink>
             </li>
           </ul>
-          {base && staff.length > 0 ? (
-            <>
-              <h2 className="rail-title">Agents</h2>
-              <ul className="rail-agents">
-                {staff.map((a) => (
-                  <li key={a.id}>
-                    <NavLink to={`${base}/agents/${a.slug}`}>
-                      <Lamp tone={toneOf(a.status)} />
-                      <span className="grow truncate">{a.name}</span>
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
+          {base && org ? <AgentTree orgId={org.id} base={base} /> : null}
         </nav>
         <div className="rail-foot">
-          <button type="button" className="rail-foot-btn" onClick={() => setTheme(THEME_NEXT[theme])}>{THEME_LABEL[theme]}</button>
-          <button type="button" className="rail-foot-btn" onClick={() => setHelp(true)}>Shortcuts</button>
-          <button type="button" className="rail-foot-btn" onClick={() => void signOut.run()} disabled={signOut.busy}>Sign out</button>
+          <button type="button" className="rail-foot-btn" onClick={() => setTheme(THEME_NEXT[theme])}><Icon name={theme} size={14} />{THEME_LABEL[theme]}</button>
+          <button type="button" className="rail-foot-btn" onClick={() => setHelp(true)}><Icon name="shortcuts" size={14} />Shortcuts</button>
+          <button type="button" className="rail-foot-btn" onClick={() => void signOut.run()} disabled={signOut.busy}><Icon name="signOut" size={14} />Sign out</button>
         </div>
       </aside>
       <button type="button" className="scrim" aria-label="Close menu" tabIndex={drawer ? 0 : -1} onClick={() => setDrawer(false)} />
@@ -236,7 +224,7 @@ export function Shell({ orgs, org, children }: { orgs: Organization[]; org: Orga
       <div className="main">
         <header className="strip">
           <button type="button" className="icon-btn strip-menu" aria-label="Open menu" aria-expanded={drawer} onClick={() => setDrawer(true)}>
-            <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path d="M2.5 4.5h13M2.5 9h13M2.5 13.5h13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+            <Icon name="menu" size={18} />
           </button>
           <span className="strip-org truncate">{org?.name ?? 'Conductor'}</span>
           <div className="strip-lamps" aria-live="polite">
@@ -250,6 +238,7 @@ export function Shell({ orgs, org, children }: { orgs: Organization[]; org: Orga
           </div>
           {status.data ? <KillSwitch status={status.data} org={org} /> : null}
           <Link className="strip-btn strip-approvals" to="/approvals">
+            <Icon name="approvals" size={14} />
             <span>Approvals</span>
             <span className={`badge${pending === 0 ? ' badge-zero' : ''}`}>{pending}</span>
           </Link>
@@ -266,13 +255,13 @@ export function Shell({ orgs, org, children }: { orgs: Organization[]; org: Orga
       <nav className="tabbar" aria-label="Quick navigation">
         {base ? (
           <>
-            <NavLink to={base} end>Overview</NavLink>
-            <NavLink to={`${base}/issues`}>Issues</NavLink>
+            <NavLink to={base} end><Icon name="overview" size={18} />Overview</NavLink>
+            <NavLink to={`${base}/issues`}><Icon name="issues" size={18} />Issues</NavLink>
           </>
         ) : null}
-        <NavLink to="/approvals">Approvals{pending > 0 ? <span className="badge">{pending}</span> : null}</NavLink>
-        {base ? <NavLink to={`${base}/chart`}>Agents</NavLink> : null}
-        <button type="button" onClick={() => setDrawer(true)}>More</button>
+        <NavLink to="/approvals"><Icon name="approvals" size={18} />Approvals{pending > 0 ? <span className="badge">{pending}</span> : null}</NavLink>
+        {base ? <NavLink to={`${base}/chart`}><Icon name="agents" size={18} />Agents</NavLink> : null}
+        <button type="button" onClick={() => setDrawer(true)}><Icon name="menu" size={18} />More</button>
       </nav>
       <Shortcuts open={help} onClose={() => setHelp(false)} />
       <Toasts />

@@ -70,9 +70,9 @@ function MemoryItem({ memory, score, onEdit }: { memory: Memory; score?: number;
       </p>
       <div className="row row-tight">
         {memory.status === 'review' ? <Button small variant="primary" busy={patch.busy} onClick={() => void patch.run({ status: 'active' })}>Keep</Button> : null}
-        <Button small onClick={() => onEdit(memory)}>Edit</Button>
+        <Button icon="edit" small onClick={() => onEdit(memory)}>Edit</Button>
         <Button small busy={patch.busy} onClick={() => void patch.run({ pinned: !memory.pinned })}>{memory.pinned ? 'Unpin' : 'Pin'}</Button>
-        {memory.status !== 'forgotten' ? <ConfirmButton small variant="quiet" danger label="Delete" title="Delete this memory" confirmLabel="Delete memory" message="The agent will no longer recall this. The record stays in the audit log." onConfirm={() => forget.run()} /> : null}
+        {memory.status !== 'forgotten' ? <ConfirmButton icon="remove" small variant="quiet" danger label="Delete" title="Delete this memory" confirmLabel="Delete memory" message="The agent will no longer recall this. The record stays in the audit log." onConfirm={() => forget.run()} /> : null}
       </div>
     </li>
   );
@@ -94,8 +94,8 @@ function DocEditor({ q, onSave, label, hint }: { q: QueryResult<DocResponse>; on
       <Field label={label} hint={hint}><textarea className="mono" rows={16} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} /></Field>
       <ErrorNote error={save.error} />
       <div className="form-actions">
-        <Button onClick={() => setText(q.data?.content ?? '')} disabled={text === q.data?.content}>Discard changes</Button>
-        <Button type="submit" variant="primary" busy={save.busy} disabled={text === q.data?.content}>Save</Button>
+        <Button icon="close" onClick={() => setText(q.data?.content ?? '')} disabled={text === q.data?.content}>Discard changes</Button>
+        <Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={text === q.data?.content}>Save</Button>
       </div>
     </form>
   );
@@ -134,14 +134,14 @@ export function MemoryTab({ agent }: { agent: Agent }) {
           { value: 'browse', label: 'Browse' }, { value: 'review', label: reviewCount ? `Review queue (${reviewCount})` : 'Review queue' },
           { value: 'rules', label: 'MEMORY.md' }, { value: 'owner', label: 'Owner model' },
         ]} />
-        <Button variant="primary" onClick={() => setForm({})}>Add memory</Button>
+        <Button icon="add" variant="primary" onClick={() => setForm({})}>Add memory</Button>
       </div>
 
       {view === 'browse' ? (
         <>
           <form className="toolbar" role="search" onSubmit={(e) => { e.preventDefault(); setQuery(text.trim()); }}>
             <input className="toolbar-search" type="search" data-search placeholder={`Search what ${agent.name} can recall`} aria-label="Search memory" value={text} onChange={(e) => { setText(e.target.value); if (!e.target.value) setQuery(''); }} />
-            <Button type="submit">Search</Button>
+            <Button icon="search" type="submit">Search</Button>
             <select aria-label="Filter by type" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">Any type</option>{KINDS.map((x) => <option key={x} value={x}>{humanize(x)}</option>)}</select>
             {!query ? (
               <>
@@ -154,11 +154,11 @@ export function MemoryTab({ agent }: { agent: Agent }) {
           </form>
           <Panel flush>
             {query ? (
-              <Load q={found} empty={<Empty title={`Nothing recalled for "${query}"`} />}>
+              <Load q={found} empty={<Empty icon="memory" title={`Nothing recalled for "${query}"`} />}>
                 {(hits) => <ul className="memories">{hits.map((h) => <MemoryItem key={h.memory.id} memory={h.memory} score={h.score} onEdit={(memory) => setForm({ memory })} />)}</ul>}
               </Load>
             ) : (
-              <Load q={list} empty={<Empty title="No memories match these filters"><p>Agents write memories after each run. You can also add one yourself.</p></Empty>}>
+              <Load q={list} empty={<Empty icon="memory" title="No memories match these filters"><p>Agents write memories after each run. You can also add one yourself.</p></Empty>}>
                 {(items) => (
                   <>
                     <ul className="memories">{items.map((m) => <MemoryItem key={m.id} memory={m} onEdit={(memory) => setForm({ memory })} />)}</ul>
@@ -172,21 +172,21 @@ export function MemoryTab({ agent }: { agent: Agent }) {
       ) : null}
 
       {view === 'review' ? (
-        <Panel title="Low-confidence memories waiting for you" flush>
+        <Panel icon="review" title="Low-confidence memories waiting for you" flush>
           <p className="panel-body muted">Covers {agent.name}'s own memories and the department and organization memories it recalls from. Each one is labelled with its scope.</p>
-          <Load q={review} empty={<Empty title="The review queue is empty"><p>Memories an agent is unsure about land here before they are used.</p></Empty>}>
+          <Load q={review} empty={<Empty icon="review" title="The review queue is empty"><p>Memories an agent is unsure about land here before they are used.</p></Empty>}>
             {(items) => <ul className="memories">{items.map((m) => <MemoryItem key={m.id} memory={m} onEdit={(memory) => setForm({ memory })} />)}</ul>}
           </Load>
         </Panel>
       ) : null}
 
       {view === 'rules' ? (
-        <Panel title={`${agent.name}'s standing rules`}>
+        <Panel icon="memory" title={`${agent.name}'s standing rules`}>
           <DocEditor q={rules} label="MEMORY.md" hint="Injected into every run. Keep it short: the nightly consolidation rewrites it to stay under budget." onSave={(content) => api.putAgentMemoryDoc(org.id, agent.id, content)} />
         </Panel>
       ) : null}
       {view === 'owner' ? (
-        <Panel title="What agents know about you">
+        <Panel icon="user" title="What agents know about you">
           <DocEditor q={owner} label="Owner model" hint={`Shared by every agent in ${org.name}: your preferences, tone and standing instructions.`} onSave={(content) => api.putOwnerModel(org.id, content)} />
         </Panel>
       ) : null}

@@ -51,7 +51,7 @@ export function NewOrg() {
 
   return (
     <div className="page page-narrow">
-      <PageHead title="New organization" sub="An organization is an isolated company of agents with its own goals, budget, memory and credentials." />
+      <PageHead icon="newOrg" eyebrow="Setup" title="New organization" sub="An organization is an isolated company of agents with its own goals, budget, memory and credentials." />
       <Segmented label="How to start" value={mode} onChange={setMode} options={[{ value: 'template', label: 'From a template' }, { value: 'blank', label: 'Blank' }, { value: 'import', label: 'Import a bundle' }]} />
       <form
         className="stack-lg"
@@ -83,7 +83,7 @@ export function NewOrg() {
           </Load>
         ) : null}
         {mode === 'import' ? (
-          <Panel title="Bundle file">
+          <Panel icon="upload" title="Bundle file">
             <div className="stack">
               <Field label="Exported organization (.json)" hint="Bundles carry the org chart, agent configs, skills and sanitized memory. They never contain secrets.">
                 <input type="file" accept="application/json,.json" onChange={(e) => void readBundle(e.target.files?.[0])} />
@@ -93,7 +93,7 @@ export function NewOrg() {
             </div>
           </Panel>
         ) : null}
-        <Panel title="Details">
+        <Panel icon="org" title="Details">
           <div className="form-grid">
             <Field label="Name"><input value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} placeholder="Acme" /></Field>
             {mode === 'blank' ? <Field label="Monthly budget (USD)" hint="Empty means no cap."><input type="number" min="0" step="0.01" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} /></Field> : null}
@@ -102,7 +102,7 @@ export function NewOrg() {
         </Panel>
         {mode !== 'import' ? <BindingEditor legend="Default model provider" value={binding} onChange={setBinding} inheritLabel="Decide later (agents cannot run until a provider is set)" /> : null}
         <ErrorNote error={create.error} />
-        <div className="form-actions"><Button type="submit" variant="primary" busy={create.busy} disabled={!name.trim()}>Create organization</Button></div>
+        <div className="form-actions"><Button icon="add" type="submit" variant="primary" busy={create.busy} disabled={!name.trim()}>Create organization</Button></div>
       </form>
     </div>
   );

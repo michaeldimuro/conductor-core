@@ -1,19 +1,32 @@
 import { useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { actorName } from '../components/activity.js';
+import { ActionBadge, actorIcon, actorName } from '../components/activity.js';
+import { Icon, PriorityIcon, StatusIcon } from '../components/icons.js';
 import { IssueForm, useGoals } from '../components/IssueForm.js';
 import { Button, Chip, Empty, ErrorNote, Field, JsonView, Load, Loading, Panel, Segmented, Status } from '../components/ui.js';
 import { runNow as runAgentNow } from '../lib/run-now.js';
 import { api } from '../lib/api.js';
-import type { Agent, Issue, ReviewRequest, TimelineEntry } from '../lib/api.js';
+import type { AddCommentRequest, Agent, Issue, ReviewRequest, TimelineEntry } from '../lib/api.js';
+import { AttachButton, PendingChips, TaskFiles, useFileDrop, useStagedUploads } from '../components/attachments.js';
 import { ago, dateTime, humanize, money, blockedText } from '../lib/format.js';
 import { ISSUE_STATUSES, PRIORITIES, STATUS_LABEL, k, useDirectory, useOrg, type Directory, type IssueStatus } from '../lib/org.js';
 import { useAction, useQuery } from '../lib/query.js';
 import { Markdown } from '../components/markdown.js';
+import { ArtifactChips, ArtifactViewer } from '../components/artifacts.js';
+import { fromArtifact, guessType, type ViewerFile } from '../lib/artifacts.js';
+import { ARTIFACT_EVENTS } from './Artifacts.js';
 
-/** Comment box with @mention autocomplete over the org's agents (inserted as `@slug`). */
-function CommentBox({ onSubmit, busy, agents }: { onSubmit: (body: string) => Promise<boolean>; busy: boolean; agents: Agent[] }) {
+type CommentAttachments = NonNullable<AddCommentRequest['attachments']>;
+
+/**
+ * Comment box with @mention autocomplete over the org's agents (inserted as
+ * `@slug`) and file attachments (button, drag and drop, or paste a screenshot).
+ */
+function CommentBox({ onSubmit, busy, agents }: { onSubmit: (body: string, attachments: CommentAttachments) => Promise<boolean>; busy: boolean; agents: Agent[] }) {
+  const { org } = useOrg();
+  const uploads = useStagedUploads(org.id);
+  const drop = useFileDrop(uploads.add);
   const [body, setBody] = useState('');
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [active, setActive] = useState(0);
@@ -41,9 +54,15 @@ function CommentBox({ onSubmit, busy, agents }: { onSubmit: (body: string) => Pr
       ref.current?.setSelectionRange(pos, pos);
     });
   };
+  const attachments = uploads.ready();
+  const canSend = (body.trim().length > 0 || attachments.length > 0) && !uploads.busy;
   const send = async () => {
-    if (!body.trim()) return;
-    if (await onSubmit(body)) setBody('');
+    if (!canSend) return;
+    const text = body.trim() ? body : `Attached ${attachments.map((a) => a.name).join(', ')}`;
+    if (await onSubmit(text, attachments)) {
+      setBody('');
+      uploads.clear();
+    }
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mention && matches.length) {
@@ -61,7 +80,8 @@ function CommentBox({ onSubmit, busy, agents }: { onSubmit: (body: string) => Pr
   };
   return (
     <form
-      className="comment-box"
+      className={`comment-box file-drop${drop.over ? ' is-over' : ''}`}
+      {...drop.props}
       onSubmit={(e) => {
         e.preventDefault();
         void send();
@@ -69,7 +89,7 @@ function CommentBox({ onSubmit, busy, agents }: { onSubmit: (body: string) => Pr
     >
       <div className="mention-wrap">
         <textarea
-          ref={ref} rows={3} value={body} aria-label="Add a comment" placeholder="Comment, or type @ to bring an agent in"
+          ref={ref} rows={3} value={body} aria-label="Add a comment" placeholder="Comment, type @ to bring an agent in, or paste or drop files"
           role="combobox" aria-expanded={matches.length > 0} aria-controls="mention-list" aria-autocomplete="list"
           aria-activedescendant={matches.length ? `mention-${matches[active]?.id}` : undefined}
           onChange={(e) => {
@@ -89,16 +109,27 @@ function CommentBox({ onSubmit, busy, agents }: { onSubmit: (body: string) => Pr
           </ul>
         ) : null}
       </div>
+      <PendingChips files={uploads.files} onRemove={uploads.remove} />
       <div className="spread">
-        <span className="muted">Mentioned agents are woken to respond.</span>
-        <Button type="submit" variant="primary" busy={busy} disabled={!body.trim()}>Add comment</Button>
+        <span className="row row-tight">
+          <AttachButton onFiles={uploads.add} />
+          <span className="muted">Mentioned agents are woken to respond and see attached files.</span>
+        </span>
+        <Button icon="send" type="submit" variant="primary" busy={busy} disabled={!canSend} title={uploads.busy ? 'Waiting for uploads to finish' : undefined}>Add comment</Button>
       </div>
+      {drop.over ? <div className="file-drop-hint" aria-hidden="true"><Icon name="upload" size={18} />Drop to attach to your comment</div> : null}
     </form>
   );
 }
 
-function Timeline({ entries, dir, base }: { entries: TimelineEntry[]; dir: Directory; base: string }) {
-  if (entries.length === 0) return <Empty title="No activity on this issue yet" />;
+/** A comment's attachments as viewer files (served inline by the daemon for viewing). */
+const attachmentFiles = (c: Extract<TimelineEntry, { kind: 'comment' }>['comment']): ViewerFile[] => c.attachments.map((a, i) => {
+  const url = api.attachmentPath(c.orgId, c.issueId, c.id, i);
+  return { key: `${c.id}:${i}`, name: a.name, contentType: guessType(a.name, a.mime), viewUrl: `${url}?inline=1`, downloadUrl: url };
+});
+
+function Timeline({ entries, dir, base, onOpen }: { entries: TimelineEntry[]; dir: Directory; base: string; onOpen: (f: ViewerFile, list: ViewerFile[]) => void }) {
+  if (entries.length === 0) return <Empty icon="activity" title="No activity on this issue yet" />;
   return (
     <ol className="timeline" aria-live="polite">
       {entries.map((e) => {
@@ -108,16 +139,14 @@ function Timeline({ entries, dir, base }: { entries: TimelineEntry[]; dir: Direc
           return (
             <li key={`c-${c.id}`} className={`tl-comment tl-${c.authorKind}`}>
               <header className="spread">
-                <strong>{who}</strong>
+                <strong className="tl-author"><span className={`avatar avatar-${c.authorKind}`}><Icon name={actorIcon(c.authorKind)} size={13} /></span>{who}</strong>
                 <span className="muted">{c.runId ? <><Link to={`${base}/runs/${c.runId}`}>run</Link> </> : null}<time title={dateTime(c.createdAt)}>{ago(c.createdAt)}</time></span>
               </header>
               <Markdown text={c.body} />
-              {c.attachments.length ? (
-                <p className="row muted">
-                  <span>Attachments:</span>
-                  {c.attachments.map((a, i) => <a key={`${i}-${a.path}`} className="attachment" href={api.attachmentPath(c.orgId, c.issueId, c.id, i)} download={a.name}>{a.name}</a>)}
-                </p>
-              ) : null}
+              {c.attachments.length ? (() => {
+                const files = attachmentFiles(c);
+                return <ArtifactChips label="Attachments" files={files} onOpen={(f) => onOpen(f, files)} />;
+              })() : null}
             </li>
           );
         }
@@ -131,7 +160,7 @@ function Timeline({ entries, dir, base }: { entries: TimelineEntry[]; dir: Direc
           <li key={`a-${a.id}`} className={`tl-activity${isTool ? ' tl-tool' : ''}`}>
             <details>
               <summary>
-                <span><strong>{actorName(a, dir)}</strong> {isTool ? 'called a tool' : humanize(a.action).toLowerCase()}{summary ? <span className="dim">: {summary}</span> : null}</span>
+                <span className="tl-line"><ActionBadge action={a.action} /><span><strong>{actorName(a, dir)}</strong> {isTool ? 'called a tool' : humanize(a.action).toLowerCase()}{summary ? <span className="dim">: {summary}</span> : null}</span></span>
                 <time className="muted" title={dateTime(a.ts)}>{ago(a.ts)}</time>
               </summary>
               <div className="tl-detail">
@@ -157,7 +186,7 @@ function Review({ issue }: { issue: Issue }) {
     rejected: 'The work goes back to the agent for another pass, with your note.',
   };
   return (
-    <Panel title="Your review">
+    <Panel icon="review" title="Your review">
       <form className="form" onSubmit={(e) => { e.preventDefault(); void review.run(); }}>
         <Segmented label="Verdict" value={outcome} onChange={setOutcome} options={[{ value: 'accepted', label: 'Accept' }, { value: 'edited', label: 'Accept with edits' }, { value: 'rejected', label: 'Reject' }]} />
         <p className="muted">{HELP[outcome]}</p>
@@ -165,7 +194,7 @@ function Review({ issue }: { issue: Issue }) {
           <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} required={outcome === 'rejected'} />
         </Field>
         <ErrorNote error={review.error} />
-        <div className="form-actions"><Button type="submit" variant={outcome === 'rejected' ? 'danger' : 'primary'} busy={review.busy}>Submit review</Button></div>
+        <div className="form-actions"><Button icon="review" type="submit" variant={outcome === 'rejected' ? 'danger' : 'primary'} busy={review.busy}>Submit review</Button></div>
       </form>
     </Panel>
   );
@@ -179,7 +208,7 @@ function IssueLinks({ ids, title }: { ids: string[]; title: string }) {
       <h3>{title}</h3>
       {q.data ? (
         <ul className="lines lines-compact">
-          {q.data.map((i) => <li key={i.id} className="line"><Status value={i.status} label="" /><Link className="truncate" to={`${base}/issues/${i.number}`}>#{i.number} {i.title}</Link></li>)}
+          {q.data.map((i) => <li key={i.id} className="line"><StatusIcon status={i.status} /><Link className="truncate" to={`${base}/issues/${i.number}`}>#{i.number} {i.title}</Link></li>)}
         </ul>
       ) : q.error ? <ErrorNote error={q.error} /> : <Loading lines={1} />}
     </div>
@@ -197,12 +226,16 @@ export function IssueDetail() {
   const timeline = useQuery(k(org.id, 'issue', ref, 'timeline'), () => api.issueTimeline(org.id, ref), { ...o, events: ['comment.', 'issue.', 'run.started', 'run.finished', 'approval.'] });
   const children = useQuery(issue ? k(org.id, 'issues', 'children', issue.id) : null, () => api.listIssues(org.id, { parentIssueId: issue!.id, limit: 100 }), { ...o, events: ['issue.'] });
   const runs = useQuery(issue ? k(org.id, 'runs', 'issue', issue.id) : null, () => api.listRuns(org.id, { issueId: issue!.id, limit: 30 }), { ...o, events: ['run.started', 'run.finished', 'run.paused', 'run.resumed'] });
+  const artifacts = useQuery(issue ? k(org.id, 'artifacts', 'issue', issue.id) : null, () => api.listArtifacts(org.id, { issueId: issue!.id }), { ...o, events: ARTIFACT_EVENTS });
+  const [viewing, setViewing] = useState<{ file: ViewerFile; list: ViewerFile[] } | null>(null);
+  const openFile = (file: ViewerFile, list: ViewerFile[]) => setViewing({ file, list });
   const [editing, setEditing] = useState(false);
   const [subIssue, setSubIssue] = useState(false);
   const inv = { invalidate: [k(org.id, 'issue')] };
   const patch = useAction((p: Parameters<typeof api.updateIssue>[2]) => api.updateIssue(org.id, issue!.id, p), inv);
   const assign = useAction((agentId: string | null) => api.assignIssue(org.id, issue!.id, agentId), inv);
-  const comment = useAction((body: string) => api.addComment(org.id, issue!.id, { body }), inv);
+  const comment = useAction((body: string, attachments: CommentAttachments) =>
+    api.addComment(org.id, issue!.id, attachments.length ? { body, attachments } : { body }), inv);
   const runNow = useAction(() => runAgentNow(org.id, issue!.assigneeAgentId!, dir.agentName(issue!.assigneeAgentId, 'The agent'), { issueId: issue!.id }), { invalidate: [k(org.id, 'runs')] });
 
   if (!issue) return <div className="page page-narrow">{issueQ.error ? <ErrorNote error={issueQ.error} retry={issueQ.reload} /> : <Loading lines={5} />}</div>;
@@ -214,27 +247,29 @@ export function IssueDetail() {
       <header className="page-head">
         <div className="page-head-text">
           <nav className="crumbs" aria-label="Breadcrumb"><Link to={`${base}/issues`}>Issues</Link><span aria-hidden="true">/</span><span>#{issue.number}</span></nav>
-          <h1>{issue.title}</h1>
+          <h1 className="issue-title"><StatusIcon status={issue.status} size={22} />{issue.title}</h1>
+          <p className="row row-tight issue-sub muted"><span>{STATUS_LABEL[issue.status]}</span><span aria-hidden="true">·</span><PriorityIcon priority={issue.priority} /><span>{PRIORITIES[issue.priority]} priority</span>{issue.assigneeAgentId ? <><span aria-hidden="true">·</span><Icon name="agent" size={14} /><span>{dir.agentName(issue.assigneeAgentId)}</span></> : null}</p>
         </div>
         <div className="row page-actions">
-          <Button onClick={() => setEditing(true)}>Edit</Button>
-          <Button onClick={() => setSubIssue(true)}>Add sub-issue</Button>
-          <Button variant="primary" busy={runNow.busy} disabled={!issue.assigneeAgentId} title={issue.assigneeAgentId ? undefined : 'Assign an agent first'} onClick={() => void runNow.run()}>Run now</Button>
+          <Button icon="edit" onClick={() => setEditing(true)}>Edit</Button>
+          <Button icon="add" onClick={() => setSubIssue(true)}>Add sub-issue</Button>
+          <Button icon="play" variant="primary" busy={runNow.busy} disabled={!issue.assigneeAgentId} title={issue.assigneeAgentId ? undefined : 'Assign an agent first'} onClick={() => void runNow.run()}>Run now</Button>
         </div>
       </header>
       <div className="split">
         <div className="stack-lg">
           {issue.status === 'blocked' && issue.blockedReason ? <p className="note note-stop">Blocked: {blockedText(issue.blockedReason)}</p> : null}
           {ownerReviews ? <Review issue={issue} /> : null}
-          <Panel title="Description">
+          <Panel icon="description" title="Description">
             <div className="stack">
               {issue.body ? <Markdown text={issue.body} /> : <p className="muted">No description.</p>}
               {issue.expectedOutput ? <div><h3>Expected output</h3><Markdown text={issue.expectedOutput} className="dim" /></div> : null}
+              <TaskFiles orgId={org.id} issueId={issue.id} onOpen={openFile} />
             </div>
           </Panel>
-          <Panel title="Timeline" flush>
-            <Load q={timeline}>{(entries) => <Timeline entries={entries} dir={dir} base={base} />}</Load>
-            <CommentBox agents={dir.staff} busy={comment.busy} onSubmit={async (body) => (await comment.run(body)) !== undefined} />
+          <Panel icon="activity" title="Timeline" flush>
+            <Load q={timeline}>{(entries) => <Timeline entries={entries} dir={dir} base={base} onOpen={openFile} />}</Load>
+            <CommentBox agents={dir.staff} busy={comment.busy} onSubmit={async (body, files) => (await comment.run(body, files)) !== undefined} />
           </Panel>
         </div>
         <aside className="stack-lg" aria-label="Issue details">
@@ -267,7 +302,7 @@ export function IssueDetail() {
               </dl>
             </div>
           </Panel>
-          <Panel title="Related">
+          <Panel icon="link" title="Related">
             <div className="stack">
               {issue.parentIssueId ? <IssueLinks ids={[issue.parentIssueId]} title="Parent" /> : null}
               {issue.blockedBy.length ? <IssueLinks ids={issue.blockedBy} title="Blocked by" /> : null}
@@ -275,14 +310,22 @@ export function IssueDetail() {
                 <h3>Sub-issues</h3>
                 {children.data?.items.length ? (
                   <ul className="lines lines-compact">
-                    {children.data.items.map((i) => <li key={i.id} className="line"><Status value={i.status} label="" /><Link className="truncate" to={`${base}/issues/${i.number}`}>#{i.number} {i.title}</Link></li>)}
+                    {children.data.items.map((i) => <li key={i.id} className="line"><StatusIcon status={i.status} /><Link className="truncate" to={`${base}/issues/${i.number}`}>#{i.number} {i.title}</Link></li>)}
                   </ul>
                 ) : <p className="muted">None</p>}
               </div>
             </div>
           </Panel>
-          <Panel title="Runs" flush>
-            <Load q={runs} lines={2} empty={<Empty title="No agent has worked on this yet" />}>
+          <Panel icon="artifacts" title="Artifacts">
+            <Load q={artifacts} lines={2} empty={<p className="muted">Files the agents save or attach while working on this issue show up here.</p>}>
+              {(list) => {
+                const files = list.map(fromArtifact);
+                return <ArtifactChips label="Artifacts" files={files} onOpen={(f) => openFile(f, files)} />;
+              }}
+            </Load>
+          </Panel>
+          <Panel icon="runs" title="Runs" flush>
+            <Load q={runs} lines={2} empty={<Empty icon="issues" title="No agent has worked on this yet" />}>
               {(list) => (
                 <ul className="lines">
                   {list.map((r) => (
@@ -298,6 +341,7 @@ export function IssueDetail() {
           </Panel>
         </aside>
       </div>
+      <ArtifactViewer file={viewing?.file ?? null} files={viewing?.list} onOpen={(f) => setViewing((v) => (v ? { ...v, file: f } : v))} onClose={() => setViewing(null)} />
       <IssueForm open={editing} onClose={() => setEditing(false)} issue={issue} />
       <IssueForm open={subIssue} onClose={() => setSubIssue(false)} defaults={{ parentIssueId: issue.id, goalId: issue.goalId, assigneeAgentId: issue.assigneeAgentId }} />
     </div>

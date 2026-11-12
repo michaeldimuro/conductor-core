@@ -58,7 +58,7 @@ function AccountCard({ status, orgId }: { status: ProviderAuthStatus; orgId: str
                 <code>{c.ref}</code>
                 <Chip tone={c.present ? 'go' : 'idle'}>{c.present ? '✓ Stored' : '✗ Missing'}</Chip>
                 {c.present ? (
-                  <ConfirmButton small variant="quiet" danger label="Remove" title={`Remove ${c.ref}`} confirmLabel="Remove credential"
+                  <ConfirmButton icon="remove" small variant="quiet" danger label="Remove" title={`Remove ${c.ref}`} confirmLabel="Remove credential"
                     message={<>Bindings that use <code>{c.ref}</code> stop working until you store a credential again. The {s.label} CLI login on this Mac is not changed.</>}
                     onConfirm={() => forget.run(c.auth, c.ref)} />
                 ) : null}
@@ -68,7 +68,7 @@ function AccountCard({ status, orgId }: { status: ProviderAuthStatus; orgId: str
         </div>
       ) : null}
       {mode === 'idle' && s.activeSession ? (
-        <div className="note note-info"><span>A login is in progress.</span><Button small onClick={() => void resume.run(s.activeSession!)} busy={resume.busy}>Show it</Button></div>
+        <div className="note note-info"><span>A login is in progress.</span><Button icon="view" small onClick={() => void resume.run(s.activeSession!)} busy={resume.busy}>Show it</Button></div>
       ) : null}
       {mode === 'form' ? <LoginForm status={s} orgId={orgId} onClose={() => setMode('idle')} onStarted={(x) => { setSession(x); setMode('session'); }} /> : null}
       {mode === 'session' && session ? (
@@ -77,9 +77,9 @@ function AccountCard({ status, orgId }: { status: ProviderAuthStatus; orgId: str
       <ErrorNote error={refresh.error ?? logout.error} />
       <div className="row">
         {mode === 'idle' && s.installed ? <Button small variant={s.loggedIn === 'yes' ? 'default' : 'primary'} onClick={() => setMode('form')}>{s.loggedIn === 'yes' ? 'Log in again or add a credential' : 'Log in'}</Button> : null}
-        <Button small onClick={() => void refresh.run()} busy={refresh.busy}>Refresh</Button>
+        <Button icon="refresh" small onClick={() => void refresh.run()} busy={refresh.busy}>Refresh</Button>
         {s.installed && s.loggedIn !== 'no' ? (
-          <ConfirmButton small variant="quiet" danger label="Log out of the CLI" title={`Log out of ${s.label}`} confirmLabel="Log out"
+          <ConfirmButton icon="signOut" small variant="quiet" danger label="Log out of the CLI" title={`Log out of ${s.label}`} confirmLabel="Log out"
             message={<>This logs the {s.label} CLI out on this Mac for everything that uses it: your own terminal sessions, editors, and every Conductor agent bound with the CLI login. Stored long-lived credentials are kept.</>}
             onConfirm={() => logout.run()} />
         ) : null}
@@ -96,7 +96,7 @@ export function ProviderAccounts({ orgId }: { orgId: string | null }) {
     setQueryData<ProviderAuthStatus[]>(`providers/${orgId ?? ''}`, () => fresh);
   });
   return (
-    <Panel title="Provider accounts" actions={<Button small busy={recheck.busy} onClick={() => void recheck.run()}>Check all again</Button>}>
+    <Panel icon="key" title="Provider accounts" actions={<Button icon="refresh" small busy={recheck.busy} onClick={() => void recheck.run()}>Check all again</Button>}>
       <p className="dim">How Conductor signs in to the agent CLIs on this Mac. Bindings with "This Mac's CLI login" use these logins; long-lived tokens and API keys are kept in the Keychain.</p>
       <Load q={q} lines={3}>
         {(list) => <div className="accounts">{list.map((s) => <AccountCard key={s.provider} status={s} orgId={orgId} />)}</div>}

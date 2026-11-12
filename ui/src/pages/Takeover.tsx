@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { useParams } from 'react-router-dom';
-import { Button, ErrorNote, Lamp, Segmented } from '../components/ui.js';
+import { Button, ErrorNote, Lamp, Logo, Segmented } from '../components/ui.js';
 import { ConductorApiError, api, errorText, wsUrl } from '../lib/api.js';
 import type { BrowserInputEvent, ClaimResponse, TakeoverServerMessage } from '../lib/api.js';
 import { clock } from '../lib/format.js';
@@ -293,11 +293,11 @@ function Stage({ session, deadline, exact, onDone, onEnded }: { session: ClaimRe
         <span className={`takeover-clock${left < 120_000 ? ' takeover-clock-low' : ''}`} role="timer" aria-label={`${exact ? 'Time left' : 'At most'} ${clock(left)}`} title={exact ? 'Time left' : 'Counted from when you took control. The link was valid for 15 minutes from when it was sent, so the session can end sooner.'}>
           {exact ? '' : 'up to '}{clock(left)}
         </span>
-        <Button variant="primary" className="takeover-handback" busy={handing} onClick={handBack}>Hand back</Button>
+        <Button icon="hand" variant="primary" className="takeover-handback" busy={handing} onClick={handBack}>Hand back</Button>
       </header>
       {error ? <ErrorNote error={error} /> : null}
-      {notice ? <div className="note note-warn" role="alert"><span>{notice}</span><Button small onClick={clearNotice}>Dismiss</Button></div> : null}
-      {conn === 'lost' ? <div className="note note-stop" role="alert"><span>The live view stopped responding.</span><Button small onClick={() => window.location.reload()}>Reload and reconnect</Button></div> : null}
+      {notice ? <div className="note note-warn" role="alert"><span>{notice}</span><Button icon="close" small onClick={clearNotice}>Dismiss</Button></div> : null}
+      {conn === 'lost' ? <div className="note note-stop" role="alert"><span>The live view stopped responding.</span><Button icon="refresh" small onClick={() => window.location.reload()}>Reload and reconnect</Button></div> : null}
       <div
         className={`takeover-stage${zoom === '1' ? '' : ' takeover-stage-zoomed'}`} ref={stage} tabIndex={0} role="application" aria-label={meta ? `Live view of the agent's browser: ${meta.title || meta.url}` : "Live view of the agent's browser"}
         onKeyDown={onKey('down')} onKeyUp={onKey('up')}
@@ -317,7 +317,7 @@ function Stage({ session, deadline, exact, onDone, onEnded }: { session: ClaimRe
         {meta ? <p className="takeover-url truncate" title={meta.url}>{meta.title ? `${meta.title} ` : ''}<span className="muted">{meta.url}</span></p> : null}
         <form className="row" onSubmit={(e) => { e.preventDefault(); sendText(false); }}>
           <input className="grow" aria-label="Text to type into the page" placeholder="Type or paste here, then send" value={text} onChange={(e) => setText(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="send" style={{ width: 'auto' }} />
-          <Button type="submit" variant="primary" disabled={!text}>Type it</Button>
+          <Button icon="edit" type="submit" variant="primary" disabled={!text}>Type it</Button>
           <Button onClick={() => sendText(true)}>{text ? 'Type and Enter' : 'Enter'}</Button>
         </form>
         <div className="row takeover-quick">
@@ -368,7 +368,7 @@ export function Takeover() {
   return (
     <div className="center-screen">
       <main className="center-card">
-        <p className="wordmark"><Lamp tone={phase.step === 'done' ? 'go' : phase.step === 'ended' ? 'stop' : 'warn'} />Conductor</p>
+        <p className="wordmark"><Logo size={28} />conductor<Lamp tone={phase.step === 'done' ? 'go' : phase.step === 'ended' ? 'stop' : 'warn'} /></p>
         {phase.step === 'confirm' ? (
           <>
             <h1>An agent needs you in its browser</h1>
@@ -379,7 +379,7 @@ export function Takeover() {
               <li>The session ends 15 minutes after the link was sent, or when you hand back.</li>
             </ul>
             {error ? <div className="note note-stop" role="alert"><span>{errorText(error)}. Links are single use and expire after 15 minutes. If this one is spent, the agent can ask again.</span></div> : null}
-            <Button variant="primary" className="takeover-claim" busy={busy} onClick={claim}>Take control on this device</Button>
+            <Button icon="hand" variant="primary" className="takeover-claim" busy={busy} onClick={claim}>Take control on this device</Button>
           </>
         ) : phase.step === 'done' ? (
           <>

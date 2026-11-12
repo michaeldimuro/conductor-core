@@ -66,7 +66,7 @@ export function useDirectory(orgId: string): Directory {
 
 export const AUTONOMY_LEVELS: ReadonlyArray<{ level: number; name: string; behavior: string }> = [
   { level: 0, name: 'Assist', behavior: 'Only acts on explicitly assigned issues; every external action needs approval.' },
-  { level: 1, name: 'Supervised', behavior: 'Creates its own sub-issues; external writes (send, post, pay) need approval.' },
+  { level: 1, name: 'Supervised', behavior: 'Creates its own sub-issues; routine work runs on its own. Destructive actions, payments, publishing and first messages to new recipients need approval.' },
   { level: 2, name: 'Autonomous', behavior: 'Pursues goals proactively, creates issues, acts within budget and policy; only policy-flagged actions need approval.' },
   { level: 3, name: 'Lead', behavior: 'Autonomous, plus may propose hires, reassign work and set department goals. Hires still need your approval.' },
 ];

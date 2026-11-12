@@ -52,7 +52,7 @@ export function OrgSettings() {
   return (
     <div className="stack-lg page-narrow">
     <form className="stack-lg" onSubmit={(e) => { e.preventDefault(); void save.run(); }}>
-      <Panel title="Identity and limits">
+      <Panel icon="org" title="Identity and limits">
         <div className="form-grid">
           <Field label="Name"><input value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} /></Field>
           <Field label="Address"><input value={`/o/${org.slug}`} readOnly className="mono" /></Field>
@@ -64,7 +64,7 @@ export function OrgSettings() {
       </Panel>
       <BindingEditor legend="Default model provider" value={provider} onChange={setProvider} inheritLabel="None set (agents need their own binding to run)" />
       <BindingEditor legend="Utility model (reflection, summaries, memory extraction)" value={utility} onChange={setUtility} inheritLabel="Use the built-in offline heuristics" />
-      <Panel title="Inherited by every agent">
+      <Panel icon="agents" title="Inherited by every agent">
         <div className="form-grid">
           <Field label="Default skills" wide hint="Skill names every agent in this organization loads."><TagInput label="Default skills" value={skills} onChange={setSkills} placeholder="Type a skill name and press Enter" /></Field>
           <fieldset className="field-wide">
@@ -76,7 +76,7 @@ export function OrgSettings() {
           </fieldset>
         </div>
       </Panel>
-      <Panel title="What needs your approval">
+      <Panel icon="policy" title="What needs your approval">
         <div className="stack">
           <p className="dim">These actions wait for you by default. Unticking one lets agents do it without asking.</p>
           {GATED.map((g) => (
@@ -109,13 +109,13 @@ export function OrgSettings() {
         </div>
       </Panel>
       <ErrorNote error={save.error} />
-      <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy}>Save organization</Button></div>
+      <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy}>Save organization</Button></div>
     </form>
       <MemoryBackendPanel />
-      <Panel title="Archive">
+      <Panel icon="archive" title="Archive">
         <div className="spread">
           <p className="dim">Archiving stops every agent and hides the organization. Its data stays on disk.</p>
-          <ConfirmButton label="Archive organization" danger title={`Archive ${org.name}`} confirmLabel="Archive" phrase={org.slug} message={`Every agent in ${org.name} stops and the organization disappears from the switcher.`} onConfirm={() => archive.run()} />
+          <ConfirmButton icon="archive" label="Archive organization" danger title={`Archive ${org.name}`} confirmLabel="Archive" phrase={org.slug} message={`Every agent in ${org.name} stops and the organization disappears from the switcher.`} onConfirm={() => archive.run()} />
         </div>
       </Panel>
       <ArchivedOrgs />

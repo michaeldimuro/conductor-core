@@ -10,6 +10,7 @@ import { lastOrg, rememberOrg } from './lib/theme.js';
 import { Activity } from './pages/Activity.js';
 import { AgentPage } from './pages/agent/AgentPage.js';
 import { Approvals } from './pages/Approvals.js';
+import { Artifacts } from './pages/Artifacts.js';
 import { Board } from './pages/Board.js';
 import { Connectors } from './pages/Connectors.js';
 import { Costs } from './pages/Costs.js';
@@ -27,7 +28,7 @@ import { Takeover } from './pages/Takeover.js';
 function NotFound({ what }: { what: string }) {
   return (
     <div className="page page-narrow">
-      <Empty title={`${what} not found`}>
+      <Empty icon="search" title={`${what} not found`}>
         <p>The link may be out of date, or it belongs to another organization.</p>
         <Link to="/">Go to the start page</Link>
       </Empty>
@@ -57,6 +58,7 @@ function OrgRoutes({ orgs }: { orgs: Organization[] }) {
         <Route path="issues" element={<Board />} />
         <Route path="issues/:issue" element={<IssueDetail />} />
         <Route path="goals" element={<Goals />} />
+        <Route path="artifacts" element={<Artifacts />} />
         <Route path="chart" element={<OrgChart />} />
         <Route path="agents/:agent" element={<AgentPage />} />
         <Route path="agents/:agent/:tab" element={<AgentPage />} />

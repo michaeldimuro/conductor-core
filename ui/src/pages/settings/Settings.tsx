@@ -1,24 +1,26 @@
 import { NavLink, useParams } from 'react-router-dom';
 import { Empty, PageHead } from '../../components/ui.js';
+import { Icon, type IconName } from '../../components/icons.js';
 import { useOrg } from '../../lib/org.js';
 import { OrgSettings } from './OrgSettings.js';
 import { Playbooks, DataSettings } from './Playbooks.js';
 import { Providers, RemoteAccess, Secrets } from './Providers.js';
 import { Gateways, Webhooks } from './Reach.js';
 
-const SECTIONS = [
-  { id: 'organization', label: 'Organization' }, { id: 'providers', label: 'Providers' }, { id: 'secrets', label: 'Secrets' }, { id: 'remote', label: 'Remote access' },
-  { id: 'gateways', label: 'Messaging' }, { id: 'webhooks', label: 'Webhooks' }, { id: 'playbooks', label: 'Playbooks' }, { id: 'data', label: 'Import and export' },
-] as const;
+const SECTIONS: ReadonlyArray<{ id: string; label: string; icon: IconName }> = [
+  { id: 'organization', label: 'Organization', icon: 'org' }, { id: 'providers', label: 'Providers', icon: 'model' }, { id: 'secrets', label: 'Secrets', icon: 'lock' },
+  { id: 'remote', label: 'Remote access', icon: 'phone' }, { id: 'gateways', label: 'Messaging', icon: 'mail' }, { id: 'webhooks', label: 'Webhooks', icon: 'webhook' },
+  { id: 'playbooks', label: 'Playbooks', icon: 'playbook' }, { id: 'data', label: 'Import and export', icon: 'upload' },
+];
 
 export function Settings() {
   const { base, org } = useOrg();
   const { section = 'organization' } = useParams();
   return (
     <div className="page">
-      <PageHead title="Settings" sub={`${org.name}, and the daemon it runs on.`} />
+      <PageHead icon="settings" eyebrow="Configuration" title="Settings" sub={`${org.name}, and the daemon it runs on.`} />
       <nav className="tabs" aria-label="Settings sections">
-        {SECTIONS.map((s) => <NavLink key={s.id} to={s.id === 'organization' ? `${base}/settings` : `${base}/settings/${s.id}`} end>{s.label}</NavLink>)}
+        {SECTIONS.map((s) => <NavLink key={s.id} to={s.id === 'organization' ? `${base}/settings` : `${base}/settings/${s.id}`} end><Icon name={s.icon} size={14} />{s.label}</NavLink>)}
       </nav>
       {section === 'organization' ? <OrgSettings key={org.id} /> : null}
       {section === 'providers' ? <Providers /> : null}
@@ -28,7 +30,7 @@ export function Settings() {
       {section === 'webhooks' ? <Webhooks /> : null}
       {section === 'playbooks' ? <Playbooks /> : null}
       {section === 'data' ? <DataSettings /> : null}
-      {!SECTIONS.some((s) => s.id === section) ? <Empty title="No such settings section" /> : null}
+      {!SECTIONS.some((s) => s.id === section) ? <Empty icon="search" title="No such settings section" /> : null}
     </div>
   );
 }

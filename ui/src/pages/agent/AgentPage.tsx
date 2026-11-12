@@ -13,14 +13,17 @@ import { AgentActions } from '../OrgChart.js';
 import { BrowserTab } from './BrowserTab.js';
 import { ConnectorsTab } from './ConnectorsTab.js';
 import { MemoryTab } from './MemoryTab.js';
-import { ChatTab, RunsTab } from './RunsChat.js';
+import { ChatTab, RunsTab, TasksTab } from './RunsChat.js';
 import { ScorecardTab } from './ScorecardTab.js';
+import { Icon, type IconName } from '../../components/icons.js';
 import { SkillsTab } from './SkillsTab.js';
 
-const TABS = [
-  { id: 'config', label: 'Config' }, { id: 'skills', label: 'Skills' }, { id: 'connectors', label: 'Connectors' }, { id: 'memory', label: 'Memory' },
-  { id: 'scorecard', label: 'Scorecard' }, { id: 'runs', label: 'Runs' }, { id: 'chat', label: 'Chat' }, { id: 'browser', label: 'Browser' },
-] as const;
+/** Chat comes first: opening an agent lands you in the conversation with it. */
+const TABS: ReadonlyArray<{ id: string; label: string; icon: IconName }> = [
+  { id: 'chat', label: 'Chat', icon: 'chat' }, { id: 'tasks', label: 'Tasks', icon: 'task' }, { id: 'runs', label: 'Runs', icon: 'runs' }, { id: 'config', label: 'Config', icon: 'tune' },
+  { id: 'skills', label: 'Skills', icon: 'skills' }, { id: 'connectors', label: 'Connectors', icon: 'connectors' }, { id: 'memory', label: 'Memory', icon: 'memory' },
+  { id: 'scorecard', label: 'Scorecard', icon: 'scorecard' }, { id: 'browser', label: 'Browser', icon: 'browser' },
+];
 
 function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
   const { org, base } = useOrg();
@@ -34,7 +37,7 @@ function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
   return (
     <div className="split">
       <div className="stack-lg">
-        <Panel title="Persona" actions={agent.status !== 'terminated' ? <Button small onClick={onEdit}>Edit</Button> : null}>
+        <Panel icon="persona" title="Persona" actions={agent.status !== 'terminated' ? <Button icon="edit" small onClick={onEdit}>Edit</Button> : null}>
           <dl className="kv">
             <div><dt>Role</dt><dd>{agent.role}</dd></div>
             <div><dt>Goal</dt><dd className="prose">{agent.goal || <span className="muted">None written</span>}</dd></div>
@@ -43,7 +46,7 @@ function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
             <div><dt>Reports to</dt><dd>{manager ? <Link to={`${base}/agents/${manager.slug}`}>{manager.name}</Link> : 'You'}</dd></div>
           </dl>
         </Panel>
-        <Panel title="How it runs">
+        <Panel icon="tune" title="How it runs">
           <dl className="kv">
             <div><dt>Provider</dt><dd>{describeBinding(agent.providerBinding, agent.model)}{!agent.providerBinding && org.defaultProvider ? <span className="muted"> ({describeBinding(org.defaultProvider, agent.model)})</span> : null}</dd></div>
             <div><dt>Heartbeat</dt><dd>{cron ? <>{cron.text} <code>{agent.heartbeatCron}</code>{cron.next[0] ? <span className="muted">, next {dateTime(cron.next[0])}</span> : null}</> : 'None. Wakes on assignment, mention or manual run.'}</dd></div>
@@ -51,8 +54,8 @@ function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
             <div><dt>Run limits</dt><dd>{agent.maxSteps} steps, {duration(agent.maxWallMs)} per run, {agent.maxRunsPerHour} runs an hour</dd></div>
           </dl>
         </Panel>
-        <Panel title="Revision history" flush>
-          <Load q={revisions} lines={2} empty={<Empty title="No revisions recorded" />}>
+        <Panel icon="runs" title="Revision history" flush>
+          <Load q={revisions} lines={2} empty={<Empty icon="runs" title="No revisions recorded" />}>
             {(list) => (
               <ul className="lines">
                 {[...list].sort((a, b) => b.revision - a.revision).map((r, i) => (
@@ -74,7 +77,7 @@ function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
           </Load>
         </Panel>
       </div>
-      <Panel title="Budget this month">
+      <Panel icon="budget" title="Budget this month">
         <Load q={budget} lines={2}>
           {(b) => (
             <div className="stack">
@@ -97,7 +100,7 @@ function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
 
 export function AgentPage() {
   const { org, base } = useOrg();
-  const { agent: slug = '', tab = 'config' } = useParams();
+  const { agent: slug = '', tab = 'chat' } = useParams();
   const dir = useDirectory(org.id);
   const [editing, setEditing] = useState(false);
   const agent = dir.agents.find((a) => a.slug === slug || a.id === slug);
@@ -105,7 +108,7 @@ export function AgentPage() {
   if (!agent) {
     return (
       <div className="page page-narrow">
-        {dir.loading ? <Loading lines={5} /> : dir.error ? <ErrorNote error={dir.error} /> : <Empty title="Agent not found"><Link to={`${base}/chart`}>Open the org chart</Link></Empty>}
+        {dir.loading ? <Loading lines={5} /> : dir.error ? <ErrorNote error={dir.error} /> : <Empty icon="search" title="Agent not found"><Link to={`${base}/chart`}>Open the org chart</Link></Empty>}
       </div>
     );
   }
@@ -115,16 +118,16 @@ export function AgentPage() {
       <header className="page-head">
         <div className="page-head-text">
           <nav className="crumbs" aria-label="Breadcrumb"><Link to={`${base}/chart`}>Org chart</Link><span aria-hidden="true">/</span><span>{dir.dept(agent.deptId)?.name}</span></nav>
-          <h1>{agent.name}</h1>
+          <h1 className="page-title-icon"><span className="page-icon page-icon-agent"><Icon name="agent" size={22} /></span>{agent.name}</h1>
           <p className="row"><span>{agent.role}</span><Status value={agent.status} label={agent.status === 'paused' && agent.pausedReason ? `Paused: ${agent.pausedReason}` : undefined} />{dir.dept(agent.deptId)?.leadAgentId === agent.id ? <Chip tone="info">Lead</Chip> : null}</p>
         </div>
         <div className="row page-actions">
           <AgentActions agent={agent} onEdit={() => setEditing(true)} />
-          <Button variant="primary" busy={run.busy} disabled={agent.status !== 'active'} onClick={() => void run.run()}>Run now</Button>
+          <Button icon="play" variant="primary" busy={run.busy} disabled={agent.status !== 'active'} onClick={() => void run.run()}>Run now</Button>
         </div>
       </header>
       <nav className="tabs" aria-label="Agent sections">
-        {TABS.map((t) => <NavLink key={t.id} to={t.id === 'config' ? here : `${here}/${t.id}`} end>{t.label}</NavLink>)}
+        {TABS.map((t) => <NavLink key={t.id} to={t.id === 'chat' ? here : `${here}/${t.id}`} end><Icon name={t.icon} size={14} />{t.label}</NavLink>)}
       </nav>
       {tab === 'config' ? <ConfigTab agent={agent} onEdit={() => setEditing(true)} /> : null}
       {tab === 'skills' ? <SkillsTab agent={agent} /> : null}
@@ -132,9 +135,10 @@ export function AgentPage() {
       {tab === 'memory' ? <MemoryTab agent={agent} /> : null}
       {tab === 'scorecard' ? <ScorecardTab agent={agent} /> : null}
       {tab === 'runs' ? <RunsTab agent={agent} /> : null}
-      {tab === 'chat' ? <ChatTab agent={agent} /> : null}
+      {tab === 'chat' ? <ChatTab key={agent.id} agent={agent} /> : null}
+      {tab === 'tasks' ? <TasksTab agent={agent} /> : null}
       {tab === 'browser' ? <BrowserTab agent={agent} /> : null}
-      {!TABS.some((t) => t.id === tab) ? <Empty title="No such section" /> : null}
+      {!TABS.some((t) => t.id === tab) ? <Empty icon="search" title="No such section" /> : null}
       <AgentForm open={editing} onClose={() => setEditing(false)} agent={agent} />
     </div>
   );

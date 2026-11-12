@@ -5,14 +5,16 @@ import type { CreateIssueInput, Issue } from '../lib/api.js';
 import { ISSUE_STATUSES, PRIORITIES, STATUS_LABEL, k, useDirectory, useOrg, type IssueStatus } from '../lib/org.js';
 import { useAction, useQuery } from '../lib/query.js';
 import { Field, FormShell, Modal, TagInput } from './ui.js';
+import { AttachButton, PendingChips, pending, uploadTaskFiles, useFileDrop, type PendingFile } from './attachments.js';
 
 export const useGoals = (orgId: string) => useQuery(k(orgId, 'goals'), () => api.listGoals(orgId), { events: ['goal.'], orgId });
 
 /** Create an issue, or edit one when `issue` is given. */
-export function IssueForm({ open, onClose, issue, defaults }: { open: boolean; onClose: () => void; issue?: Issue; defaults?: Partial<CreateIssueInput> }) {
+/** `onCreated` keeps you where you are instead of opening the new issue. */
+export function IssueForm({ open, onClose, issue, defaults, onCreated }: { open: boolean; onClose: () => void; issue?: Issue; defaults?: Partial<CreateIssueInput>; onCreated?: (issue: Issue) => void }) {
   return (
     <Modal open={open} onClose={onClose} title={issue ? `Edit issue #${issue.number}` : 'Create an issue'} wide>
-      <Body key={issue?.id ?? 'new'} onClose={onClose} issue={issue} defaults={defaults} />
+      <Body key={issue?.id ?? 'new'} onClose={onClose} issue={issue} defaults={defaults} onCreated={onCreated} />
     </Modal>
   );
 }
@@ -20,7 +22,7 @@ export function IssueForm({ open, onClose, issue, defaults }: { open: boolean; o
 /** The daemon only accepts these as a starting status; the rest are reached by doing the work. */
 const CREATE_STATUSES: IssueStatus[] = ['backlog', 'todo', 'in_progress', 'blocked'];
 
-function Body({ onClose, issue, defaults }: { onClose: () => void; issue?: Issue; defaults?: Partial<CreateIssueInput> }) {
+function Body({ onClose, issue, defaults, onCreated }: { onClose: () => void; issue?: Issue; defaults?: Partial<CreateIssueInput>; onCreated?: (issue: Issue) => void }) {
   const { org, base } = useOrg();
   const nav = useNavigate();
   const dir = useDirectory(org.id);
@@ -36,6 +38,9 @@ function Body({ onClose, issue, defaults }: { onClose: () => void; issue?: Issue
   const [status, setStatus] = useState<IssueStatus>(init.status ?? 'todo');
   const [priority, setPriority] = useState(init.priority ?? 2);
   const [labels, setLabels] = useState<string[]>(init.labels ?? []);
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const addFiles = (picked: File[]) => setFiles((list) => [...list, ...picked.map(pending)]);
+  const drop = useFileDrop(addFiles, !!issue);
 
   const save = useAction(async () => {
     const input: CreateIssueInput = {
@@ -45,8 +50,14 @@ function Body({ onClose, issue, defaults }: { onClose: () => void; issue?: Issue
     };
     if (issue) await api.updateIssue(org.id, issue.id, input);
     else {
-      const created = await api.createIssue(org.id, input);
-      nav(`${base}/issues/${created.number}`);
+      // Assigning wakes the agent, so with files the issue is assigned only once they are attached.
+      const assignLater = files.length > 0 && !!input.assigneeAgentId;
+      let created = await api.createIssue(org.id, assignLater ? { ...input, assigneeAgentId: null } : input);
+      // The issue exists either way; a file that fails to upload is announced and can be re-attached on its page.
+      if (files.length) await uploadTaskFiles(org.id, created.id, files.map((f) => f.file));
+      if (assignLater) created = await api.assignIssue(org.id, created.id, input.assigneeAgentId!);
+      if (onCreated) onCreated(created);
+      else nav(`${base}/issues/${created.number}`);
     }
     onClose();
   }, { invalidate: [k(org.id, 'issues'), k(org.id, 'issue')], success: issue ? 'Saved issue' : 'Created issue' });
@@ -87,6 +98,16 @@ function Body({ onClose, issue, defaults }: { onClose: () => void; issue?: Issue
         </Field>
         <Field label="Task type" hint="Groups repeated work for scorecards and skills."><input value={taskType} onChange={(e) => setTaskType(e.target.value)} placeholder="seo-audit" autoCapitalize="none" /></Field>
         <Field label="Labels" wide><TagInput label="Labels" value={labels} onChange={setLabels} placeholder="Type a label and press Enter" /></Field>
+        {issue ? null : (
+          <div className={`field field-wide file-drop${drop.over ? ' is-over' : ''}`} {...drop.props}>
+            <span className="field-label">Attachments</span>
+            <div className="row row-tight">
+              <AttachButton onFiles={addFiles} />
+              <span className="muted">Screenshots, mockups, documents. Drop or paste them here too. The assignee sees them with the task.</span>
+            </div>
+            <PendingChips files={files} onRemove={(key) => setFiles((list) => list.filter((f) => f.key !== key))} />
+          </div>
+        )}
       </div>
     </FormShell>
   );

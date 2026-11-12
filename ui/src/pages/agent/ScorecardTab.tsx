@@ -5,6 +5,7 @@ import { api } from '../../lib/api.js';
 import type { Agent } from '../../lib/api.js';
 import { money, pct, shortDay } from '../../lib/format.js';
 import { k, useOrg } from '../../lib/org.js';
+import { Icon } from '../../components/icons.js';
 import { useQuery } from '../../lib/query.js';
 
 export function ScorecardTab({ agent }: { agent: Agent }) {
@@ -19,23 +20,23 @@ export function ScorecardTab({ agent }: { agent: Agent }) {
         </select>
       </div>
       <Load q={card} lines={5}>
-        {(s) => (s.runs === 0 ? <Panel><Empty title={`${agent.name} has no graded runs in this period`}><p>The scorecard fills in as issues are closed and reviewed.</p></Empty></Panel> : (
+        {(s) => (s.runs === 0 ? <Panel><Empty icon="agent" title={`${agent.name} has no graded runs in this period`}><p>The scorecard fills in as issues are closed and reviewed.</p></Empty></Panel> : (
           <>
             <div className="tiles">
-              <div className="tile"><span className="tile-label">Success rate</span><span className="tile-value">{pct(s.successRate)}</span><span className="tile-sub">{s.runs} runs</span></div>
-              <div className="tile"><span className="tile-label">Rework rate</span><span className="tile-value">{pct(s.reworkRate)}</span><span className="tile-sub">Issues sent back after review</span></div>
-              <div className="tile"><span className="tile-label">Cost per issue</span><span className="tile-value">{money(s.costPerIssue)}</span><span className="tile-sub">{s.issuesClosed} issues closed</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="trend" size={14} />Success rate</span><span className="tile-value">{pct(s.successRate)}</span><span className="tile-sub">{s.runs} runs</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="refresh" size={14} />Rework rate</span><span className="tile-value">{pct(s.reworkRate)}</span><span className="tile-sub">Issues sent back after review</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="costs" size={14} />Cost per issue</span><span className="tile-value">{money(s.costPerIssue)}</span><span className="tile-sub">{s.issuesClosed} issues closed</span></div>
             </div>
             <div className="grid-2">
-              <Panel title="Success rate by week">
+              <Panel icon="trend" title="Success rate by week">
                 <LineChart label="Weekly success rate" max={1} format={(v) => pct(v)} data={s.trend.map((w) => ({ label: shortDay(w.weekStart), value: w.successRate }))} />
               </Panel>
-              <Panel title="Cost per issue by week">
+              <Panel icon="costs" title="Cost per issue by week">
                 <LineChart label="Weekly cost per issue" format={(v) => money(v)} data={s.trend.map((w) => ({ label: shortDay(w.weekStart), value: w.costPerIssue }))} />
               </Panel>
             </div>
-            <Panel title="By task type" flush>
-              {s.byTaskType.length === 0 ? <Empty title="No task types recorded" /> : (
+            <Panel icon="tasks" title="By task type" flush>
+              {s.byTaskType.length === 0 ? <Empty icon="issues" title="No task types recorded" /> : (
                 <table className="table">
                   <thead><tr><th>Task type</th><th className="num">Runs</th><th className="num">Success rate</th><th className="num">Cost per issue</th></tr></thead>
                   <tbody>

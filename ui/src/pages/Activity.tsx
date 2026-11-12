@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { activityLink, activitySubject, actorName } from '../components/activity.js';
+import { ActionBadge, activityLink, activitySubject, actorName } from '../components/activity.js';
 import { Button, Empty, JsonView, Load, PageHead, Panel } from '../components/ui.js';
 import { api } from '../lib/api.js';
 import { dateTime, fromDateInput, humanize } from '../lib/format.js';
@@ -24,15 +24,15 @@ export function Activity() {
     { events: applied || entityKind ? [] : ['issue.', 'run.started', 'run.finished', 'approval.', 'agent.', 'goal.', 'skill.', 'memory.', 'comment.', 'org.'], orgId: org.id });
   return (
     <div className="page">
-      <PageHead title="Activity" sub="The append-only audit log: every state change, tool call and decision, with who did it." />
+      <PageHead icon="activity" eyebrow="Audit log" title="Activity" sub="The append-only audit log: every state change, tool call and decision, with who did it." />
       <form className="toolbar" role="search" onSubmit={(e) => { e.preventDefault(); setApplied(action.trim()); setLimit(PAGE); }}>
         <input className="toolbar-search mono" data-search aria-label="Filter by exact action" placeholder="Exact action, e.g. tool.called" value={action} onChange={(e) => { setAction(e.target.value); if (!e.target.value) setApplied(''); }} autoCapitalize="none" spellCheck={false} />
-        <Button type="submit">Filter</Button>
+        <Button icon="filter" type="submit">Filter</Button>
         <select aria-label="Filter by subject" value={entityKind} onChange={(e) => setEntityKind(e.target.value)}><option value="">Any subject</option>{ENTITY_KINDS.map((x) => <option key={x} value={x}>{humanize(x)}</option>)}</select>
         <label className="row nowrap">Since <input type="date" aria-label="Since date" value={since} onChange={(e) => setSince(e.target.value)} style={{ width: 'auto' }} /></label>
       </form>
       <Panel flush>
-        <Load q={log} empty={<Empty title="No activity matches these filters" />}>
+        <Load q={log} empty={<Empty icon="activity" title="No activity matches these filters" />}>
           {(items) => (
             <>
               <ol className="audit">
@@ -43,6 +43,7 @@ export function Activity() {
                     <li key={rec.id}>
                       <details>
                         <summary>
+                          <ActionBadge action={rec.action} />
                           <time className="muted nowrap">{dateTime(rec.ts)}</time>
                           <span className="audit-actor truncate">{actorName(rec, dir)}</span>
                           <code className="audit-action">{rec.action}</code>

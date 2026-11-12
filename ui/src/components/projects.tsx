@@ -44,8 +44,8 @@ export function ProjectsPanel({ goals }: { goals: Goal[] }) {
   if (!projects.loading && !projects.error && (projects.data?.length ?? 0) === 0) return null;
   return (
     <>
-      <Panel title="Projects" flush>
-        <Load q={projects} lines={2} empty={<Empty title="No projects yet" />}>
+      <Panel icon="project" title="Projects" flush>
+        <Load q={projects} lines={2} empty={<Empty icon="project" title="No projects yet" />}>
           {(list) => (
             <ul className="lines">
               {list.map((p) => (
@@ -56,7 +56,7 @@ export function ProjectsPanel({ goals }: { goals: Goal[] }) {
                     <span className="muted">{goals.find((g) => g.id === p.goalId)?.title ?? 'No goal'}{p.workspacePath ? ` · ${p.workspacePath}` : ''}</span>
                   </span>
                   {p.budgetUsd != null ? <Chip>{money(p.budgetUsd)}</Chip> : null}
-                  <Button small onClick={() => setEditing(p)}>Edit</Button>
+                  <Button icon="edit" small onClick={() => setEditing(p)}>Edit</Button>
                   <Button small busy={setStatus.busy} onClick={() => void setStatus.run(p, p.status === 'archived' ? 'active' : 'archived')}>{p.status === 'archived' ? 'Restore' : 'Archive'}</Button>
                 </li>
               ))}

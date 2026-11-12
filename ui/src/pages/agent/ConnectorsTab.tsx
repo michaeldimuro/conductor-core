@@ -70,7 +70,7 @@ function GrantEditor({ agent, connector, grant }: { agent: Agent; connector: Con
         )
       ) : tools.error ? <ErrorNote error={tools.error} retry={tools.reload} /> : <Loading lines={2} label="Discovering tools" />}
       <ErrorNote error={save.error} />
-      <div className="form-actions"><Button type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save grant</Button></div>
+      <div className="form-actions"><Button icon="check" type="submit" variant="primary" busy={save.busy} disabled={!dirty}>Save grant</Button></div>
     </form>
   );
 }
@@ -99,7 +99,7 @@ function ConnectorGrantRow({ agent, connector, grant, shared }: { agent: Agent; 
           {grant ? (
             <>
               <Button small onClick={() => setOpen((v) => !v)} aria-expanded={open}>{open ? 'Hide tool policies' : 'Tool policies'}</Button>
-              <ConfirmButton small variant="quiet" danger label="Revoke" title={`Revoke ${connector.name}`} confirmLabel="Revoke grant" message={`${agent.name} loses its per-tool rules and account binding for this connector.`} onConfirm={() => revoke.run()} />
+              <ConfirmButton icon="close" small variant="quiet" danger label="Revoke" title={`Revoke ${connector.name}`} confirmLabel="Revoke grant" message={`${agent.name} loses its per-tool rules and account binding for this connector.`} onConfirm={() => revoke.run()} />
             </>
           ) : <Button small variant="primary" busy={give.busy} onClick={() => void give.run()}>Grant to {agent.name}</Button>}
         </div>
@@ -119,8 +119,8 @@ export function ConnectorsTab({ agent }: { agent: Agent }) {
   const inherited = new Set(caps.data?.connectorIds ?? []);
   return (
     <div className="stack-lg">
-      <Panel title="Connectors" flush actions={<Link to={`${base}/connectors`}>Manage all connectors</Link>}>
-        <Load q={connectors} empty={<Empty title="No connectors installed"><p>Install one from the catalog below, then grant it here.</p></Empty>}>
+      <Panel icon="connectors" title="Connectors" flush actions={<Link to={`${base}/connectors`}>Manage all connectors</Link>}>
+        <Load q={connectors} empty={<Empty icon="connectors" title="No connectors installed"><p>Install one from the catalog below, then grant it here.</p></Empty>}>
           {(list) => (
             <ul className="connectors">
               {list.map((c) => <ConnectorGrantRow key={c.id} agent={agent} connector={c} grant={grants.data?.find((g) => g.connectorId === c.id)} shared={inherited.has(c.id)} />)}
@@ -128,14 +128,14 @@ export function ConnectorsTab({ agent }: { agent: Agent }) {
           )}
         </Load>
       </Panel>
-      <Panel title="Install from the catalog">
-        <Load q={catalog} empty={<Empty title="The catalog is empty" />}>
+      <Panel icon="catalog" title="Install from the catalog">
+        <Load q={catalog} empty={<Empty icon="catalog" title="The catalog is empty" />}>
           {(list) => (
             <ul className="catalog">
               {list.map((t) => (
                 <li key={t.id}>
                   <div className="grow"><strong>{t.name}</strong> <Chip>{humanize(t.category)}</Chip><span className="field-hint">{t.description}</span></div>
-                  <Button small onClick={() => setInstall({ template: t })}>Install</Button>
+                  <Button icon="add" small onClick={() => setInstall({ template: t })}>Install</Button>
                 </li>
               ))}
             </ul>

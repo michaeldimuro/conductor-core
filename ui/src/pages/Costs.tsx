@@ -6,6 +6,7 @@ import { api } from '../lib/api.js';
 import type { BudgetSummary } from '../lib/api.js';
 import { count, dateTime, humanize, money, monthStart, seatTime, shortDay, tokens } from '../lib/format.js';
 import { k, useDirectory, useOrg, type Directory } from '../lib/org.js';
+import { Icon } from '../components/icons.js';
 import { useQuery } from '../lib/query.js';
 
 const DAY = 86_400_000;
@@ -51,24 +52,24 @@ export function Costs() {
 
   return (
     <div className="page">
-      <PageHead title="Costs" sub="Metered spend comes from each run's usage. Runs on a local subscription login cost nothing extra and count against seat time instead."
+      <PageHead icon="costs" eyebrow="Spend and seat time" title="Costs" sub="Metered spend comes from each run's usage. Runs on a local subscription login cost nothing extra and count against seat time instead."
         actions={<select aria-label="Period" value={range} onChange={(e) => setRange(e.target.value as Range)} style={{ width: 'auto' }}><option value="month">This month</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>} />
       <Load q={summary} lines={6}>
         {(s) => (
           <>
             <div className="tiles">
-              <div className="tile"><span className="tile-label">Spend</span><span className="tile-value">{money(s.totalUsd)}</span><span className="tile-sub">{org.budgetMonthlyUsd == null ? 'No monthly cap' : `Monthly cap ${money(org.budgetMonthlyUsd)}`}</span></div>
-              <div className="tile"><span className="tile-label">Seat time</span><span className="tile-value">{seatTime(s.seatSeconds)}</span><span className="tile-sub">{org.seatSecondsMonthly ? `Monthly quota ${seatTime(org.seatSecondsMonthly)}` : 'No quota'}</span></div>
-              <div className="tile"><span className="tile-label">Runs</span><span className="tile-value">{count(s.byAgent.reduce((n, a) => n + a.runs, 0))}</span><span className="tile-sub">{s.byAgent.length} agents</span></div>
-              <div className="tile"><span className="tile-label">Tokens</span><span className="tile-value">{tokens(s.byAgent.reduce((n, a) => n + a.tokensIn + a.tokensOut, 0))}</span><span className="tile-sub">In and out</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="costs" size={14} />Spend</span><span className="tile-value">{money(s.totalUsd)}</span><span className="tile-sub">{org.budgetMonthlyUsd == null ? 'No monthly cap' : `Monthly cap ${money(org.budgetMonthlyUsd)}`}</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="time" size={14} />Seat time</span><span className="tile-value">{seatTime(s.seatSeconds)}</span><span className="tile-sub">{org.seatSecondsMonthly ? `Monthly quota ${seatTime(org.seatSecondsMonthly)}` : 'No quota'}</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="runs" size={14} />Runs</span><span className="tile-value">{count(s.byAgent.reduce((n, a) => n + a.runs, 0))}</span><span className="tile-sub">{s.byAgent.length} agents</span></div>
+              <div className="tile"><span className="tile-label"><Icon name="tokens" size={14} />Tokens</span><span className="tile-value">{tokens(s.byAgent.reduce((n, a) => n + a.tokensIn + a.tokensOut, 0))}</span><span className="tile-sub">In and out</span></div>
             </div>
-            <Panel title="Spend by day">
-              {s.totalUsd === 0 ? <Empty title="No metered spend in this period" /> : <BarChart label="Spend by day in US dollars" format={(v) => money(v)} data={fillDays(s.byDay, since)} />}
+            <Panel icon="calendar" title="Spend by day">
+              {s.totalUsd === 0 ? <Empty icon="costs" title="No metered spend in this period" /> : <BarChart label="Spend by day in US dollars" format={(v) => money(v)} data={fillDays(s.byDay, since)} />}
             </Panel>
             <div className="grid-2">
-              <Panel title="Budgets this month">
+              <Panel icon="budget" title="Budgets this month">
                 <Load q={month} lines={3}>
-                  {(m) => (m.lines.length === 0 ? <Empty title="No budgets are set"><p>Set caps on the organization, a department or an agent.</p></Empty> : (
+                  {(m) => (m.lines.length === 0 ? <Empty icon="costs" title="No budgets are set"><p>Set caps on the organization, a department or an agent.</p></Empty> : (
                     <ul className="stack">
                       {m.lines.map((l) => (
                         <li key={`${l.scope}-${l.id}`} className="stack budget-line">
@@ -84,8 +85,8 @@ export function Costs() {
                   ))}
                 </Load>
               </Panel>
-              <Panel title="Spend by agent" flush>
-                {s.byAgent.length === 0 ? <Empty title="No agent has spent anything in this period" /> : (
+              <Panel icon="agents" title="Spend by agent" flush>
+                {s.byAgent.length === 0 ? <Empty icon="agent" title="No agent has spent anything in this period" /> : (
                   <table className="table">
                     <thead><tr><th>Agent</th><th className="num">Runs</th><th className="num">Tokens</th><th className="num">Cost</th></tr></thead>
                     <tbody>
@@ -111,8 +112,8 @@ export function Costs() {
           </>
         )}
       </Load>
-      <Panel title="Ledger" flush>
-        <Load q={ledger} empty={<Empty title="The ledger is empty" />}>
+      <Panel icon="ledger" title="Ledger" flush>
+        <Load q={ledger} empty={<Empty icon="costs" title="The ledger is empty" />}>
           {(rows) => (
             <>
               <table className="table">
@@ -130,7 +131,7 @@ export function Costs() {
                   ))}
                 </tbody>
               </table>
-              {rows.length >= ledgerLimit && ledgerLimit < 5000 ? <div className="panel-body"><Button small busy={ledger.fetching} onClick={() => setLedgerLimit((l) => Math.min(5000, l + 200))}>Show 200 more</Button></div> : null}
+              {rows.length >= ledgerLimit && ledgerLimit < 5000 ? <div className="panel-body"><Button icon="down" small busy={ledger.fetching} onClick={() => setLedgerLimit((l) => Math.min(5000, l + 200))}>Show 200 more</Button></div> : null}
             </>
           )}
         </Load>
