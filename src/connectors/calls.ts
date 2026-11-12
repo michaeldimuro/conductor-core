@@ -9,17 +9,20 @@ import { newId } from '../shared/ids.js';
 import { redact, sha256, stableStringify } from '../shared/util.js';
 import type { AccessResolver } from './access.js';
 import { callToolDef, findToolsDef, searchTools } from './meta.js';
-import { classifyAction } from './actions.js';
+import type { ToolRisk } from '../contracts/tools.js';
+import type { ToolPolicy } from '../contracts/types.js';
+import { classifyAction, type ActionCategory } from './actions.js';
 import { ActionGates } from './gates.js';
-import { argsPreview, escalate, isExternalRisk, redactArgs, resultSize, toolMatchKey, wrapUntrusted } from './risk.js';
+import { assessCall, type CallIntent } from './intent.js';
+import { argsPreview, escalate, isExternalRisk, redactArgs, resultSize, riskOfIntent, toolMatchKey, wrapUntrusted } from './risk.js';
 import type { ConnectorStore } from './store.js';
-import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER } from './types.js';
+import { AuthRequiredError, CALL_TOOL, FIND_TOOLS, META_SERVER, type ToolEntry } from './types.js';
 
 type CallStatus = 'ok' | 'error' | 'denied' | 'approval_pending';
 
 const TITLES: Record<string, string> = {
   payment: 'Payment', spend_threshold: 'Spend over threshold', new_recipient: 'First send to a new recipient', unknown_recipient: 'Send to an unidentified recipient', publish: 'Publish',
-  credential_new_origin: 'Credential on a new site',
+  credential_new_origin: 'Credential on a new site', destructive: 'Destructive action',
 };
 
 /** A reported per-call cost, when it is a sane non-negative USD amount. */
@@ -127,11 +130,13 @@ export class ToolCalls {
     const entry = resolution.entry;
     const log = { ...base, connectorId: entry.connectorId };
     const untrustedBefore = this.ingestedUntrusted(ctx);
-    const category = classifyAction(entry.def.name, { builtin: !!entry.builtin, description: entry.def.description, annotations: entry.annotations, args });
-    const escalated = escalate(entry.policy, entry.def.risk, ctx.autonomyLevel, untrustedBefore, category);
+    const assessed = this.assess(entry, args);
+    const { category, risk, policy, intent } = assessed;
+    const escalated = escalate(policy, risk, ctx.autonomyLevel, untrustedBefore, category, intent?.egress ?? false);
     // Default approval gates (payment, spend threshold, first send, publish, org extras) come before the tool policy.
-    const gate = this.gates.evaluate(ctx, entry, args, category, untrustedBefore);
-    const ask = gate ?? (escalated.policy === 'ask' ? { kind: 'tool_call' as const, reason: escalated.reason ?? 'policy', detail: {}, remember: [] } : null);
+    const gate = this.gates.evaluate(ctx, risk === entry.def.risk ? entry : { ...entry, def: { ...entry.def, risk } }, args, category, untrustedBefore);
+    const asked = escalated.policy === 'ask' ? escalated.reason ?? 'policy' : assessed.destructive ? 'destructive' : null;
+    const ask = gate ?? (asked ? { kind: 'tool_call' as const, reason: asked, detail: intent ? { intent: intent.why } : {}, remember: [] } : null);
     let approvalId: string | undefined;
 
     if (ask) {
@@ -155,7 +160,7 @@ export class ToolCalls {
           orgId: ctx.orgId,
           kind: ask.kind,
           title: `${TITLES[ask.reason] ?? 'Tool call'}: ${qualified}`,
-          payload: { matchKey, tool: qualified, connectorId: entry.connectorId, args: redactArgs(args), risk: entry.def.risk, category, reason: ask.reason, ...ask.detail },
+          payload: { matchKey, tool: qualified, connectorId: entry.connectorId, args: redactArgs(args), risk, category, reason: ask.reason, ...ask.detail },
           requesterAgentId: ctx.agentId,
           runId: ctx.runId,
           issueId: ctx.issueId,
@@ -201,6 +206,27 @@ export class ToolCalls {
       this.store.markRunUntrusted(ctx.orgId, ctx.runId);
     }
     return this.finish(ctx, { ...log, status, approvalId, costUsd }, result);
+  }
+
+  /**
+   * What this call actually does. For opaque executors (shell, HTTP proxy,
+   * multi-action, code) the arguments decide (`intent.ts`): read-only and
+   * ordinary calls run without the Ask-first that their tool name alone would
+   * earn, destructive ones ask. An Ask-first the owner set on the grant always
+   * stands; so does an explicit owner Allow, even for a destructive call.
+   */
+  private assess(entry: ToolEntry, args: Record<string, unknown>): {
+    category: ActionCategory; risk: ToolRisk; policy: ToolPolicy; intent: CallIntent | null; destructive: boolean;
+  } {
+    const intent = assessCall(entry.def.name, args);
+    if (!intent) {
+      const category = classifyAction(entry.def.name, { builtin: !!entry.builtin, description: entry.def.description, annotations: entry.annotations, args });
+      return { category, risk: entry.def.risk, policy: entry.policy, intent: null, destructive: false };
+    }
+    const byDefault = entry.policySource === 'default';
+    const policy = byDefault && entry.policy === 'ask' && intent.level !== 'destructive' ? 'allowed' : entry.policy;
+    const destructive = intent.level === 'destructive' && byDefault && policy === 'allowed';
+    return { category: intent.category, risk: riskOfIntent(intent.level, entry.def.risk), policy, intent, destructive };
   }
 
   private authPending(connectorName: string, approvalId: string, authUrl: string | null): ToolResult {

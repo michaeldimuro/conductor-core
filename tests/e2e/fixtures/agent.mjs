@@ -43,9 +43,9 @@ if (mode === 'work') {
   });
   out.report = viaHttp;
 } else if (mode === 'ask') {
-  // A genuinely gated tool call (high-risk tool, supervised agent): the gateway answers "awaiting board
-  // approval" without running it; once the board approves, the very same call goes through.
-  out.gated = await call('conductor-files__run_command', { command: 'echo launch-announcement-sent' });
+  // A genuinely gated tool call (a destructive command; routine ones run without approval): the gateway answers
+  // "awaiting board approval" without running it; once the board approves, the very same call goes through.
+  out.gated = await call('conductor-files__run_command', { command: 'rm -rf ./previous-announcement && echo launch-announcement-sent' });
   out.pending = /awaiting board approval/.test(out.gated.text);
   // Each run of this mode is kept, so the test can compare the run before and after the decision.
   let history = [];

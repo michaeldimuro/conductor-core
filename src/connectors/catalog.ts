@@ -1,17 +1,21 @@
 import type { ConnectorTemplate } from '../contracts/services.js';
 import type { ToolPolicy } from '../contracts/types.js';
 
-/** send / post / pay / delete style actions ask first by default (glob keys, matched case-insensitively). */
+/**
+ * Delete-style actions ask first by default (glob keys, matched case-insensitively).
+ *
+ * Sends, publishes and payments are deliberately NOT name-globbed here: the
+ * default gates (`gates.ts`) already catch them with better judgement — a send
+ * asks only the first time a recipient is addressed, a payment asks always,
+ * spend over the threshold asks always, publishing asks always. A blanket
+ * `*send*` / `*post*` glob would ask on every message to a known contact and on
+ * reads such as `list_posts`, which is exactly the approval noise that stops the
+ * platform from running on its own.
+ */
 const GUARDED: Record<string, ToolPolicy> = {
-  '*send*': 'ask',
-  '*post*': 'ask',
-  '*publish*': 'ask',
-  '*pay*': 'ask',
-  '*purchase*': 'ask',
-  '*charge*': 'ask',
-  '*refund*': 'ask',
   '*delete*': 'ask',
   '*remove*': 'ask',
+  '*destroy*': 'ask',
 };
 
 const guarded = (extra: Record<string, ToolPolicy> = {}): Record<string, ToolPolicy> => ({ ...GUARDED, ...extra });
@@ -36,9 +40,11 @@ const TEMPLATES: ConnectorTemplate[] = [
         help: 'Project API keys only: an MCP server you created in Composio limits agents to its toolkits and tools. Leave empty for a session with every toolkit you have connected. Ignored with a consumer key (ck_…).',
       },
     ],
-    // Composio's meta-tools run arbitrary app actions (send, delete, pay) behind one name, so name-based gates
-    // cannot see what they do: executing tools ask first until the owner relaxes them per grant.
-    suggestedPolicies: guarded({ '*reply*': 'ask', '*create*': 'ask', '*EXECUTE*': 'ask', '*BASH*': 'ask', '*WORKBENCH*': 'ask', '*MANAGE*': 'ask' }),
+    // Composio's meta-tools run arbitrary app actions (send, delete, pay) behind one name. The gateway reads each
+    // call's arguments (`intent.ts`: inner action slugs, HTTP method, shell command): read-only and ordinary calls
+    // run, destructive ones ask, and inner sends / payments meet the default gates. These Ask-first defaults only
+    // remain for calls whose arguments cannot be read. MANAGE connects accounts (a login): that always asks.
+    suggestedPolicies: guarded({ '*EXECUTE*': 'ask', '*BASH*': 'ask', '*WORKBENCH*': 'ask', '*MANAGE*': 'ask' }),
     docsUrl: 'https://docs.composio.dev/docs/composio-connect',
   },
   {
@@ -55,7 +61,7 @@ const TEMPLATES: ConnectorTemplate[] = [
         help: 'Create an MCP gateway in the Arcade dashboard with user mode "Arcade Headers" and the tools you want, then enter its slug: the last part of https://api.arcade.dev/mcp/<slug>.',
       },
     ],
-    suggestedPolicies: guarded({ '*reply*': 'ask' }),
+    suggestedPolicies: guarded(),
     docsUrl: 'https://docs.arcade.dev/en/operate/governance/mcp-gateways',
   },
   {
@@ -89,7 +95,8 @@ const TEMPLATES: ConnectorTemplate[] = [
     category: 'dev',
     config: { url: 'https://api.githubcopilot.com/mcp/', auth: { type: 'bearer', secretRef: 'GITHUB_PERSONAL_ACCESS_TOKEN' } },
     requiredSecrets: ['GITHUB_PERSONAL_ACCESS_TOKEN'],
-    suggestedPolicies: guarded({ '*merge*': 'ask', '*push*': 'ask' }),
+    // Merging can ship to production; pushing commits to a branch is routine and runs.
+    suggestedPolicies: guarded({ '*merge*': 'ask' }),
     docsUrl: 'https://github.com/github/github-mcp-server',
   },
   {
@@ -122,7 +129,7 @@ const TEMPLATES: ConnectorTemplate[] = [
     category: 'comms',
     config: { url: 'https://mcp.slack.com/mcp', auth: { type: 'oauth', secretRef: 'SLACK_ACCESS_TOKEN' } },
     requiredSecrets: ['SLACK_ACCESS_TOKEN'],
-    suggestedPolicies: guarded({ '*reply*': 'ask', '*schedule*': 'ask' }),
+    suggestedPolicies: guarded(),
     docsUrl: 'https://docs.slack.dev/ai/mcp-server',
   },
   {
@@ -133,7 +140,8 @@ const TEMPLATES: ConnectorTemplate[] = [
     category: 'payments',
     config: { url: 'https://mcp.stripe.com', auth: { type: 'bearer', secretRef: 'STRIPE_SECRET_KEY' } },
     requiredSecrets: ['STRIPE_SECRET_KEY'],
-    suggestedPolicies: guarded({ '*create*': 'ask', '*update*': 'ask', '*cancel*': 'ask', '*finalize*': 'ask' }),
+    // Money moves: creating, changing, cancelling or finalizing billing objects asks first.
+    suggestedPolicies: guarded({ '*pay*': 'ask', '*refund*': 'ask', '*charge*': 'ask', '*create*': 'ask', '*update*': 'ask', '*cancel*': 'ask', '*finalize*': 'ask' }),
     docsUrl: 'https://docs.stripe.com/mcp',
   },
   {

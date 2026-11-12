@@ -8,7 +8,7 @@ import { errorMessage } from '../shared/errors.js';
 import { sha256 } from '../shared/util.js';
 import { findTemplate } from './catalog.js';
 import { syncPins } from './pins.js';
-import { classifyRisk, intersectAllowlists, resolvePolicy } from './risk.js';
+import { classifyRisk, intersectAllowlists, resolvePolicyWithSource } from './risk.js';
 import type { ConnectorStore } from './store.js';
 import { AuthRequiredError, type CredentialContext, type ToolEntry, type UpstreamTool } from './types.js';
 import { credentialKey } from './upstream/factory.js';
@@ -143,14 +143,14 @@ export class AccessResolver {
     const out: ToolEntry[] = [];
     for (const def of defs) {
       if (allow && !allow.includes(def.name)) continue;
-      const policy = resolvePolicy({
+      const { policy, source: policySource } = resolvePolicyWithSource({
         tool: def.name, risk: def.risk, builtin: !!server.builtin,
         toolPolicies: server.grant?.toolPolicies, defaultPolicy: server.grant?.defaultPolicy, suggested,
       });
       if (policy === 'off') continue;
       out.push({
         qualified: qualifyTool(server.name, def.name), serverName: server.name, connectorId: server.connectorId,
-        def, policy, builtin: server.builtin, connector: server.connector, grant: server.grant,
+        def, policy, policySource, builtin: server.builtin, connector: server.connector, grant: server.grant,
         ...(annotations.has(def.name) ? { annotations: annotations.get(def.name) } : {}),
       });
     }

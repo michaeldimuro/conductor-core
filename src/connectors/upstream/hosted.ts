@@ -1,6 +1,6 @@
 import type { ArcadeConfig, ComposioConfig } from '../config.js';
 import type { SecretResolver } from '../secrets.js';
-import type { CredentialContext, UpstreamClient } from '../types.js';
+import { AuthRequiredError, type CredentialContext, type UpstreamClient } from '../types.js';
 import { ConductorError, errorMessage } from '../../shared/errors.js';
 import { connectHttp } from './mcp.js';
 
@@ -140,7 +140,9 @@ export async function arcadeUpstream(config: ArcadeConfig, cred: CredentialConte
   } catch (e) {
     const m = errorMessage(e);
     if (/gateway_not_found|gateway not found/i.test(m)) throw new ConductorError('unavailable', `Arcade has no MCP gateway at ${url.pathname.split('/').pop() ?? url.href}. ${ARCADE_GATEWAY_HELP}`);
-    if (/\b401\b|unauthori[sz]ed|invalid.*key/i.test(m)) {
+    // A gateway-level 401 is a setup problem, not a per-tool OAuth prompt: most often the gateway uses
+    // "Arcade Auth" (OAuth sign-in), which rejects API keys with "Invalid OAuth token".
+    if (e instanceof AuthRequiredError || /\b401\b|unauthori[sz]ed|invalid.*(key|token)/i.test(m)) {
       throw new ConductorError('unavailable', 'Arcade rejected the request: check ARCADE_API_KEY, and that the gateway\'s user mode is "Arcade Headers" (Conductor authenticates with your API key and an Arcade-User-ID header).');
     }
     throw e;

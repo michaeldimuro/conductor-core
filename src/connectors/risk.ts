@@ -64,23 +64,45 @@ export function matchPolicy(policies: Record<string, ToolPolicy> | undefined, to
  * grant.toolPolicies → grant.defaultPolicy (when not the neutral `allowed`)
  * → template suggestedPolicies → by risk (upstream `high` asks first).
  */
-export function resolvePolicy(input: {
+export interface PolicyInput {
   tool: string;
   risk: ToolRisk;
   builtin: boolean;
   toolPolicies?: Record<string, ToolPolicy>;
   defaultPolicy?: ToolPolicy;
   suggested?: Record<string, ToolPolicy>;
-}): ToolPolicy {
-  const explicit = matchPolicy(input.toolPolicies, input.tool);
-  if (explicit) return explicit;
-  if (input.defaultPolicy && input.defaultPolicy !== 'allowed') return input.defaultPolicy;
-  const suggested = matchPolicy(input.suggested, input.tool);
-  if (suggested) return suggested;
-  return input.risk === 'high' && !input.builtin ? 'ask' : 'allowed';
 }
 
-export type EscalationReason = 'policy' | 'untrusted_content' | 'autonomy';
+/**
+ * Where a resolved policy came from: `owner` when the grant set it (a tool
+ * policy or a non-neutral default policy), `default` when it was a template
+ * suggestion or the risk-based fallback. Default policies on opaque executor
+ * tools yield to what the call actually does (see `intent.ts`); owner policies
+ * never do.
+ */
+export type PolicySource = 'owner' | 'default';
+
+export function resolvePolicyWithSource(input: PolicyInput): { policy: ToolPolicy; source: PolicySource } {
+  const explicit = matchPolicy(input.toolPolicies, input.tool);
+  if (explicit) return { policy: explicit, source: 'owner' };
+  if (input.defaultPolicy && input.defaultPolicy !== 'allowed') return { policy: input.defaultPolicy, source: 'owner' };
+  const suggested = matchPolicy(input.suggested, input.tool);
+  if (suggested) return { policy: suggested, source: 'default' };
+  return { policy: input.risk === 'high' && !input.builtin ? 'ask' : 'allowed', source: 'default' };
+}
+
+export function resolvePolicy(input: PolicyInput): ToolPolicy {
+  return resolvePolicyWithSource(input).policy;
+}
+
+/** Risk of a call from its assessed intent (`intent.ts`), keeping internal tools internal. */
+export function riskOfIntent(level: 'read' | 'write' | 'destructive', toolRisk: ToolRisk): ToolRisk {
+  if (level === 'destructive') return 'high';
+  if (level === 'write') return isExternalRisk(toolRisk) ? 'external_write' : 'write';
+  return isExternalRisk(toolRisk) ? 'external_read' : 'read';
+}
+
+export type EscalationReason = 'policy' | 'untrusted_content' | 'autonomy' | 'destructive';
 
 /**
  * Autonomy and untrusted-content escalation on top of the configured policy.
@@ -91,24 +113,32 @@ export type EscalationReason = 'policy' | 'untrusted_content' | 'autonomy';
  *   `high` — become Ask-first. Ordinary writes and page interaction (click,
  *   type, select, upload) are NOT escalated: nearly every run reads something,
  *   and a browser agent that had to ask before every click could not work.
+ *   `egress` (a call shipping data out in a way no recipient gate sees, from
+ *   `intent.ts`) is escalated too: that is how injected instructions exfiltrate.
  * - Autonomy (PRD levels): level 0 asks before every external change; level 1
- *   asks before external writes but not before plain page interaction, whose
- *   consequential cases (submits / purchases on sensitive domains) the browser
- *   service gates itself; level 2+ follows the configured policy.
+ *   asks only before high-risk actions (destructive, code execution the
+ *   gateway could not read, anything classed `high`) — ordinary writes run,
+ *   and sends / payments / publishes meet their own default gates; level 2+
+ *   follows the configured policy. The point of the platform is that agents
+ *   work without the owner approving routine steps.
  */
 export function escalate(
-  policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean, category: ActionCategory = 'other',
+  policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean, category: ActionCategory = 'other', egress = false,
 ): { policy: ToolPolicy; reason: EscalationReason | null } {
   if (policy === 'off') return { policy: 'off', reason: null };
   if (policy === 'ask') return { policy: 'ask', reason: 'policy' };
+  if (ingestedUntrusted && egress) return { policy: 'ask', reason: 'untrusted_content' };
   if (!isGuardedRisk(risk)) return { policy, reason: null };
   if (ingestedUntrusted && (risk === 'high' || isHighRiskCategory(category))) return { policy: 'ask', reason: 'untrusted_content' };
-  if (autonomyLevel <= 0 || (autonomyLevel <= 1 && !isInteraction(category))) return { policy: 'ask', reason: 'autonomy' };
+  if (autonomyLevel <= 0) return { policy: 'ask', reason: 'autonomy' };
+  if (autonomyLevel <= 1 && !isInteraction(category) && (risk === 'high' || category === 'destructive' || category === 'exec')) {
+    return { policy: 'ask', reason: 'autonomy' };
+  }
   return { policy, reason: null };
 }
 
-export function escalatePolicy(policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean, category: ActionCategory = 'other'): ToolPolicy {
-  return escalate(policy, risk, autonomyLevel, ingestedUntrusted, category).policy;
+export function escalatePolicy(policy: ToolPolicy, risk: ToolRisk, autonomyLevel: number, ingestedUntrusted: boolean, category: ActionCategory = 'other', egress = false): ToolPolicy {
+  return escalate(policy, risk, autonomyLevel, ingestedUntrusted, category, egress).policy;
 }
 
 /** Null allowlist = everything. */

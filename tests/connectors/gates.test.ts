@@ -58,10 +58,13 @@ describe('action categories (unit)', () => {
     expect((['send', 'publish', 'destructive'] as const).map((c) => esc('external_write', 3, true, c))).toEqual(['ask', 'ask', 'ask']);
     expect([esc('high', 3, true, 'payment'), esc('high', 3, true, 'exec'), esc('high', 3, true, 'other')]).toEqual(['ask', 'ask', 'ask']);
     expect((['interaction', 'credential', 'write'] as const).map((c) => esc('external_write', 2, true, c))).toEqual(['allowed', 'allowed', 'allowed']);
-    // Autonomy: level 0 asks before any external change; level 1 not before page interaction; level 2 follows policy.
+    // Autonomy: level 0 asks before any external change; level 1 only before high-risk ones; level 2 follows policy.
     expect([esc('external_write', 0, false, 'interaction'), esc('external_write', 1, false, 'interaction'), esc('external_write', 1, false, 'write'), esc('external_write', 2, false, 'write')])
-      .toEqual(['ask', 'allowed', 'ask', 'allowed']);
+      .toEqual(['ask', 'allowed', 'allowed', 'allowed']);
+    expect([esc('high', 1, false, 'other'), esc('external_write', 1, false, 'destructive'), esc('high', 2, false, 'other')]).toEqual(['ask', 'ask', 'allowed']);
     expect([escalatePolicy('off', 'high', 0, true, 'payment'), esc('external_read', 0, true, 'other')]).toEqual(['off', 'allowed']);
+    // Egress (data leaving in a way no recipient gate sees) asks only once the run has read untrusted content.
+    expect([escalatePolicy('allowed', 'read', 2, false, 'other', true), escalatePolicy('allowed', 'read', 2, true, 'other', true)]).toEqual(['allowed', 'ask']);
   });
 
   it('toolkitDefault keeps only the preferred source when Composio and Arcade offer the same tool', () => {

@@ -101,6 +101,32 @@ describe('hosted toolkits: Composio and Arcade', () => {
     expect(mcp.calls.some((c) => c.tool === 'COMPOSIO_MULTI_EXECUTE_TOOL')).toBe(false);
   });
 
+  it('Composio executor meta-tools run routine calls on their own and ask only for destructive ones', async () => {
+    const ok = (name: string) => ({ name, description: name, handler: () => ({ text: `${name} ran` }) });
+    const mcp = await startHttpMcp([ok('COMPOSIO_MULTI_EXECUTE_TOOL'), ok('COMPOSIO_PROXY_EXECUTE'), ok('COMPOSIO_REMOTE_BASH_TOOL')]);
+    closers.push(mcp.close);
+    const row = await gw.installFromTemplate(org.id, 'composio', { secrets: { COMPOSIO_API_KEY: 'ck_consumer_key_123' }, config: { mcpUrl: mcp.url } }, OWNER);
+    gw.grant(org.id, row.id, agent.id, {}, OWNER);
+    const ctx = runCtx(k, agent);
+    const call = async (tool: string, args: Record<string, unknown>) => textOf(await gw.callTool(ctx, `composio__${tool}`, args));
+
+    // The calls that used to need the owner every few seconds (all read-only, and after the run read outside content).
+    expect(await call('COMPOSIO_PROXY_EXECUTE', { toolkit_slug: 'github', method: 'GET', endpoint: '/user/repos' })).toContain('ran');
+    expect(await call('COMPOSIO_REMOTE_BASH_TOOL', { command: `jq -r '.items[] | .path' /mnt/files/x.json` })).toContain('ran');
+    expect(await call('COMPOSIO_MULTI_EXECUTE_TOOL', { tools: [{ tool_slug: 'GITHUB_GET_A_REPOSITORY', arguments: { repo: 'x' } }] })).toContain('ran');
+    expect(await call('COMPOSIO_PROXY_EXECUTE', { toolkit_slug: 'github', method: 'POST', endpoint: '/repos/me/x/issues' })).toContain('ran');
+
+    // Destructive: asks.
+    expect(await call('COMPOSIO_PROXY_EXECUTE', { toolkit_slug: 'github', method: 'DELETE', endpoint: '/repos/me/x' })).toMatch(/Approval required/);
+    expect(await call('COMPOSIO_REMOTE_BASH_TOOL', { command: 'rm -rf /mnt/files' })).toMatch(/Approval required/);
+    // Unreadable arguments keep the conservative default.
+    expect(await call('COMPOSIO_MULTI_EXECUTE_TOOL', {})).toMatch(/Approval required/);
+
+    // An Ask-first the owner set on the grant always stands, even for a read.
+    gw.grant(org.id, row.id, agent.id, { toolPolicies: { '*PROXY*': 'ask' } }, OWNER);
+    expect(await call('COMPOSIO_PROXY_EXECUTE', { toolkit_slug: 'github', method: 'GET', endpoint: '/user' })).toMatch(/Approval required/);
+  });
+
   it('Composio errors say what to fix: a rejected key, an unknown server', async () => {
     const mcp = await startHttpMcp([]);
     closers.push(mcp.close);
@@ -127,5 +153,15 @@ describe('hosted toolkits: Composio and Arcade', () => {
     await expect(gw.discoverTools(org.id, legacy.id)).rejects.toThrow(/has no MCP gateway yet\. Create an MCP gateway in the Arcade dashboard with user mode "Arcade Headers"/);
     const unknown = await gw.installFromTemplate(org.id, 'arcade', { name: 'arcade-unknown', secrets: { ARCADE_API_KEY: 'arcade-key' }, config: { gateway: 'nope', baseUrl: `${missing.origin}/mcp` } }, OWNER);
     await expect(gw.discoverTools(org.id, unknown.id)).rejects.toThrow(/Arcade has no MCP gateway at nope\./);
+  });
+
+  it('Arcade: a gateway in OAuth ("Arcade Auth") mode says to switch to "Arcade Headers" instead of failing as internal', async () => {
+    const oauthOnly = await listen((_req, res) => res.writeHead(401, {
+      'content-type': 'application/json',
+      'www-authenticate': 'Bearer resource_metadata="https://api.arcade.dev/.well-known/oauth-protected-resource/mcp/gw_x", scope="mcp", error="invalid_token"',
+    }).end(JSON.stringify({ name: 'invalid_authorization', message: 'Invalid OAuth token' })));
+    closers.push(oauthOnly.close);
+    const row = await gw.installFromTemplate(org.id, 'arcade', { name: 'arcade-oauth', secrets: { ARCADE_API_KEY: 'arcade-key' }, config: { gateway: 'gw_x', baseUrl: `${oauthOnly.origin}/mcp` } }, OWNER);
+    await expect(gw.discoverTools(org.id, row.id)).rejects.toThrow(/user mode is "Arcade Headers"/);
   });
 });

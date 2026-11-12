@@ -131,11 +131,17 @@ describe('conductor-files builtin', () => {
   describe.runIf(sandboxAvailable())('run_command under sandbox-exec', () => {
     const run = (command: string, extra: Record<string, unknown> = {}, c: ToolCallContext = ctx) => call('run_command', { command, ...extra }, c);
 
-    it('is Ask-first for supervised agents and runs for autonomous ones', async () => {
+    it('runs routine commands without approval at any autonomy above assist; destructive ones ask', async () => {
       const supervised = runCtx(k, agent, { workspacePath: workspace, autonomyLevel: 1 });
-      expect(textOf(await run('echo hi', {}, supervised))).toMatch(/Approval required/);
-      expect(approvals.all()[0]).toMatchObject({ kind: 'tool_call', payload: { tool: 'conductor-files__run_command', risk: 'high' } });
+      expect(textOf(await run('echo hi', {}, supervised))).toMatch(/exit code: 0\nstdout:\nhi/);
       expect(textOf(await run('echo hi'))).toMatch(/exit code: 0\nstdout:\nhi/);
+      expect(approvals.all()).toEqual([]);
+      expect(textOf(await run('rm -rf build', {}, supervised))).toMatch(/Approval required/);
+      expect(textOf(await run('rm -rf dist', {}, ctx))).toMatch(/Approval required/);
+      expect(approvals.all()[0]).toMatchObject({ kind: 'tool_call', payload: { tool: 'conductor-files__run_command', risk: 'high', category: 'destructive' } });
+      expect(approvals.all().at(-1)).toMatchObject({ title: 'Destructive action: conductor-files__run_command', payload: { reason: 'destructive' } });
+      const assist = runCtx(k, agent, { workspacePath: workspace, autonomyLevel: 0 });
+      expect(textOf(await run('touch made.txt', {}, assist))).toMatch(/Approval required/);
     });
 
     it('runs in the workspace with a minimal environment and can write there', async () => {

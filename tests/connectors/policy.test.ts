@@ -106,15 +106,18 @@ describe('connector gateway — policy, approvals and trust over Streamable HTTP
     expect(textOf(await gw.callTool(ctx, 'crm__search_docs', { q: 'a' }))).toMatch(/Approval required/);
   });
 
-  it('escalates by autonomy level: supervised agents ask before external writes and high-risk tools', async () => {
+  it('escalates by autonomy level: assist asks before any external write, supervised only before high-risk tools', async () => {
     gw.grant(org.id, crm.id, agent.id, { toolPolicies: { '*': 'allowed' } }, OWNER);
-    for (const level of [0, 1]) {
-      const ctx = runCtx(k, agent, { autonomyLevel: level });
-      expect(textOf(await gw.callTool(ctx, 'crm__send_email', { to: `l${level}@example.com` }))).toMatch(/Approval required/);
-      expect(textOf(await gw.callTool(ctx, 'crm__delete_record', { id: level }))).toMatch(/Approval required/);
-      expect(textOf(await gw.callTool(ctx, 'crm__search_docs', { q: 'ok' }))).toContain('search_docs ok');
-    }
-    expect(upstream.calls.map((c) => c.tool)).toEqual(['search_docs', 'search_docs']);
+    const assist = runCtx(k, agent, { autonomyLevel: 0 });
+    expect(textOf(await gw.callTool(assist, 'crm__send_email', { to: 'l0@example.com' }))).toMatch(/Approval required/);
+    expect(textOf(await gw.callTool(assist, 'crm__delete_record', { id: 0 }))).toMatch(/Approval required/);
+    expect(textOf(await gw.callTool(assist, 'crm__search_docs', { q: 'ok' }))).toContain('search_docs ok');
+    // Supervised: an ordinary external write runs (sends still meet the first-send gate, disabled in this suite).
+    const supervised = runCtx(k, agent, { autonomyLevel: 1 });
+    expect(textOf(await gw.callTool(supervised, 'crm__send_email', { to: 'l1@example.com' }))).toContain('send_email ok');
+    expect(textOf(await gw.callTool(supervised, 'crm__delete_record', { id: 1 }))).toMatch(/Approval required/);
+    expect(textOf(await gw.callTool(supervised, 'crm__search_docs', { q: 'ok' }))).toContain('search_docs ok');
+    expect(upstream.calls.map((c) => c.tool)).toEqual(['search_docs', 'send_email', 'search_docs']);
     // Autonomy >= 2: the configured policy decides.
     const free = runCtx(k, agent, { autonomyLevel: 2 });
     expect((await gw.callTool(free, 'crm__delete_record', { id: 9 })).untrusted).toBe(true);
