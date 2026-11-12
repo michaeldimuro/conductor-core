@@ -71,6 +71,8 @@ export interface RunRequest {
    */
   mode?: 'loop' | 'chat' | 'eval';
   prompt?: string;
+  /** Text to recall memories by when `prompt` carries more than the request itself (chat history). */
+  recallHint?: string;
   triggerNote?: string;
   /** Provider session to resume. Honoured only when the run checks out the issue the session belonged to. */
   resumeSessionId?: string;

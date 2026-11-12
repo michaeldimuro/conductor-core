@@ -26,6 +26,10 @@ export interface DomainEvents {
   /** A reviewer's verdict on an in_review issue (feeds run grading, scorecards and skill adaptation). */
   'issue.reviewed': { orgId: string; issueId: string; outcome: 'accepted' | 'edited' | 'rejected' };
   'comment.created': { orgId: string; issueId: string; commentId: string; mentions: string[] };
+  /** A file entered the org's artifact store (`path` relative to `orgs/<org>/artifacts/`). */
+  'artifact.saved': { orgId: string; path: string; issueId: string | null; runId: string | null };
+  /** A file left the org's artifact store (the owner detached a task file). */
+  'artifact.removed': { orgId: string; path: string; issueId: string | null };
   'approval.requested': { orgId: string; approvalId: string; kind: string };
   'approval.decided': { orgId: string; approvalId: string; status: 'approved' | 'denied'; requesterAgentId: string | null };
   /**
@@ -34,6 +38,8 @@ export interface DomainEvents {
    * consumed within its use-by window.
    */
   'approval.expired': { orgId: string; approvalId: string; requesterAgentId: string | null; phase: 'pending' | 'unused' };
+  /** A message was added to the direct chat with an agent (operator message or agent reply). */
+  'chat.message': { orgId: string; agentId: string; messageId: string; role: 'user' | 'agent' };
   'run.started': { orgId: string; runId: string; agentId: string; issueId: string | null };
   'run.event': { orgId: string; runId: string; seq: number; event: unknown };
   'run.paused': { orgId: string; runId: string; reason: string };

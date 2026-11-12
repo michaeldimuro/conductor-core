@@ -129,7 +129,7 @@ Agents wake on **heartbeats** (cron per agent, e.g. every 30 min for a lead, hou
 | Level | Behavior |
 | --- | --- |
 | 0 · Assist | Only acts on explicitly assigned issues; every external action needs approval. |
-| 1 · Supervised | Creates its own sub-issues; external writes (send, post, pay) need approval. |
+| 1 · Supervised | Creates its own sub-issues; routine work (including ordinary external writes) runs on its own. Destructive actions, payments, publishing and first sends to new recipients need approval. |
 | 2 · Autonomous | Pursues goals proactively, creates issues, acts within budget and policy; only policy-flagged actions need approval. |
 | 3 · Lead | Level 2 plus may propose hires, reassign work and set department goals (hires still board-approved). |
 
@@ -312,7 +312,7 @@ Always approval-gated by default: hiring or terminating an agent; raising a budg
 | Threat | Control |
 | --- | --- |
 | Secret leakage into prompts or logs | Secrets in Keychain; tools and browser take `secret_ref`, never raw values; log redaction |
-| Prompt injection from web pages, emails, tool output | Tool output marked untrusted in context; high-risk tools (send, pay, delete, shell) require Ask-first when the run has ingested untrusted content |
+| Prompt injection from web pages, emails, tool output | Tool output marked untrusted in context; high-risk actions (send, pay, delete, destructive shell commands, data uploads) require Ask-first when the run has ingested untrusted content; shell / proxy / multi-action calls are judged by their arguments, so read-only and routine ones are not escalated |
 | Agent escaping its scope | Per-run sandbox: workspace dir, macOS sandbox profile or container for shell tools, network allowlist; run-scoped API token with only that agent's permissions |
 | Cross-org bleed | `org_id` enforced in every query; separate browser profiles, memory partitions and credential sets |
 | Malicious or drifting skills/tools | Hash pinning, static scan, draft-until-reviewed for imports, schema-change quarantine |

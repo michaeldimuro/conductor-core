@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join, sep } from 'node:path';
 import { errorMessage } from '../shared/errors.js';
 import type { Call } from './tool-runtime.js';
 
@@ -57,6 +57,8 @@ export function saveArtifact(c: Call, name: string, source: { data: Buffer } | {
       entityId: c.ctx.issueId ?? c.ctx.runId, runId: c.ctx.runId, issueId: c.ctx.issueId ?? undefined,
       data: { name: basename(path), bytes, source: 'conductor-browser' },
     });
+    const root = c.env.kernel.paths.artifacts(c.env.org.getOrg(c.ctx.orgId).slug);
+    c.env.kernel.bus.emit('artifact.saved', { orgId: c.ctx.orgId, path: path.slice(root.length + 1).split(sep).join('/'), issueId: c.ctx.issueId ?? null, runId: c.ctx.runId });
     return { name: basename(path), path, bytes };
   } catch (e) {
     c.env.kernel.log.warn({ err: errorMessage(e), runId: c.ctx.runId }, 'could not save a browser artifact');

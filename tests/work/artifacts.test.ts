@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OrgService, WorkService } from '../../src/contracts/org-work.js';
@@ -146,5 +146,62 @@ describe('work: comment attachments are stored under the org artifacts directory
     expect(list.every((a) => a.bytes === 9 && a.file.startsWith(k.paths.artifactDir(f.org.slug, issue.id) + sep))).toBe(true);
     // Org isolation: the issue id of one org lists nothing through another org.
     expect(codeOf(() => work.listIssueArtifacts!('org_other', issue.id))).toBe('not_found');
+  });
+
+  it('save_artifact publishes a workspace file to the store, per issue or per chat run, and refuses escapes', async () => {
+    const issue = issueFor();
+    const events: unknown[] = [];
+    k.bus.on('artifact.saved', (e) => { events.push(e); });
+    const onIssue = toolCtx(f.dev, { issueId: issue.id, runId: 'run_a', workspacePath: workspace });
+    const saved = payloadOf<{ saved: string; path: string; bytes: number }>(await tools.call(onIssue, 'save_artifact', { path: 'out/report.md' }));
+    expect(saved).toMatchObject({ saved: 'report.md', path: join(artifactsDir, issue.id, 'run_a', 'report.md'), bytes: 20 });
+    // Same name again: never overwritten.
+    const again = payloadOf<{ path: string }>(await tools.call(onIssue, 'save_artifact', { path: 'out/report.md', name: 'report.md' }));
+    expect(again.path).toBe(join(artifactsDir, issue.id, 'run_a', 'report-2.md'));
+
+    const chat = toolCtx(f.dev, { issueId: null, runId: 'run_chat', workspacePath: workspace });
+    const fromChat = payloadOf<{ path: string }>(await tools.call(chat, 'save_artifact', { path: join(workspace, 'out', 'report.md'), name: 'Q3 summary.md' }));
+    expect(fromChat.path).toBe(join(artifactsDir, 'run_chat', 'Q3 summary.md'));
+    expect(events).toEqual([
+      { orgId: f.org.id, path: `${issue.id}/run_a/report.md`, issueId: issue.id, runId: 'run_a' },
+      { orgId: f.org.id, path: `${issue.id}/run_a/report-2.md`, issueId: issue.id, runId: 'run_a' },
+      { orgId: f.org.id, path: 'run_chat/Q3 summary.md', issueId: null, runId: 'run_chat' },
+    ]);
+
+    const outside = join(k.paths.home, 'outside-secret.txt');
+    writeFileSync(outside, 'TOP SECRET');
+    symlinkSync(outside, join(workspace, 'innocent.txt'));
+    expect(errorOf(await tools.call(chat, 'save_artifact', { path: outside }))).toMatch(/validation/);
+    expect(errorOf(await tools.call(chat, 'save_artifact', { path: 'innocent.txt' }))).toMatch(/validation/);
+    expect(errorOf(await tools.call(chat, 'save_artifact', { path: 'out' }))).toMatch(/validation.*not a regular file/);
+    expect(errorOf(await tools.call(chat, 'save_artifact', { path: 'nope.txt' }))).toMatch(/validation.*not found/);
+    expect(readdirSync(join(artifactsDir, 'run_chat'))).toEqual(['Q3 summary.md']);
+  });
+
+  it('lists the whole org store with the issue, run and comment each file belongs to', () => {
+    const issue = issueFor();
+    const comment = work.addComment(f.org.id, issue.id, { body: 'Done', attachments: [{ name: 'report.md', path: join(workspace, 'out', 'report.md') }] }, as(f.dev));
+    const write = (scope: string, name: string, at: number) => {
+      const file = k.paths.artifactFile(f.org.slug, scope, name);
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(file, 'x');
+      utimesSync(file, at / 1000, at / 1000);
+    };
+    write(issue.id, 'run_01X/chart.png', 3_000_000);
+    write('run_chat1', 'notes.txt', 2_000_000);
+    symlinkSync(join(k.paths.home, 'owner.token'), k.paths.artifactFile(f.org.slug, 'run_chat1', 'token.txt'));
+    utimesSync(join(artifactsDir, issue.id, comment.id, 'report.md'), 1_000, 1_000);
+
+    const all = work.listArtifacts!(f.org.id);
+    expect(all.map((a) => [a.path, a.issueId, a.runId, a.commentId])).toEqual([
+      [`${issue.id}/run_01X/chart.png`, issue.id, 'run_01X', null],
+      ['run_chat1/notes.txt', null, 'run_chat1', null],
+      [`${issue.id}/${comment.id}/report.md`, issue.id, null, comment.id],
+    ]);
+    expect(work.listArtifacts!(f.org.id, { runId: 'run_chat1' }).map((a) => a.name)).toEqual(['notes.txt']);
+    expect(work.listArtifacts!(f.org.id, { issueId: issue.id }).map((a) => a.name)).toEqual(['chart.png', 'report.md']);
+    expect(work.listArtifacts!(f.org.id, { search: 'CHART' }).map((a) => a.name)).toEqual(['chart.png']);
+    expect(work.listArtifacts!(f.org.id, { limit: 1 })).toHaveLength(1);
+    expect(work.listArtifacts!(seedCompany(k, 'Other').org.id)).toEqual([]);
   });
 });

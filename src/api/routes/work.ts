@@ -7,6 +7,7 @@ import { notFound } from '../../shared/errors.js';
 import { body, orgOf, param, query, resolveIssue, supported } from '../http.js';
 import * as q from '../schemas/org-work.js';
 import { attachmentRoutes } from './attachments.js';
+import { confineOwnerAttachments, discardStaged, uploadRoutes } from './uploads.js';
 import type { Ok, Page } from '../types.js';
 
 const DEFAULT_PAGE = 100;
@@ -77,8 +78,13 @@ export function workRoutes(app: FastifyInstance, s: Services): void {
     return work.listComments(orgId, issue.id, query(req, q.listCommentsQ));
   });
   app.post('/orgs/:orgId/issues/:issueId/comments', async (req) => {
-    const { orgId, issue } = issueOf(req);
-    return work.addComment(orgId, issue.id, body(req, q.addComment), OWNER);
+    const org = orgOf(s, req);
+    const issue = resolveIssue(s, org.id, param(req, 'issueId'));
+    const input = body(req, q.addComment);
+    const attachments = confineOwnerAttachments(s, org, input.attachments);
+    const comment = work.addComment(org.id, issue.id, input.attachments ? { ...input, attachments } : input, OWNER);
+    discardStaged(s, org, attachments);
+    return comment;
   });
   app.get('/orgs/:orgId/issues/:issueId/timeline', async (req) => {
     const { orgId, issue } = issueOf(req);
@@ -86,6 +92,7 @@ export function workRoutes(app: FastifyInstance, s: Services): void {
   });
 
   attachmentRoutes(app, s);
+  uploadRoutes(app, s);
 
   /* ── Playbooks ── */
   app.get('/orgs/:orgId/playbooks', async (req) => work.listPlaybooks(oid(req)));

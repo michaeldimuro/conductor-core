@@ -6,10 +6,11 @@ import * as issues from './issues.js';
 import * as checkout from './checkout.js';
 import * as inbox from './inbox.js';
 import * as comments from './comments.js';
-import { listIssueArtifacts } from './artifacts.js';
+import { listIssueArtifacts, listOrgArtifacts } from './artifacts.js';
 import * as flows from './flows.js';
 import * as playbooks from './playbooks.js';
 import * as projects from './projects.js';
+import * as uploads from './uploads.js';
 
 export { createTasksToolProvider } from './tools/index.js';
 export type { TasksToolDeps } from './tools/index.js';
@@ -24,7 +25,7 @@ export interface WorkDeps {
  */
 /** The Work context's full surface: every optional `WorkService` method is implemented. */
 export type WorkContext = WorkService &
-  Required<Pick<WorkService, 'deleteGoal' | 'updateProject' | 'updatePlaybook' | 'deletePlaybook' | 'listIssueArtifacts'>>;
+  Required<Pick<WorkService, 'deleteGoal' | 'updateProject' | 'updatePlaybook' | 'deletePlaybook' | 'listIssueArtifacts' | 'listArtifacts' | 'listIssueFiles' | 'addIssueFile' | 'removeIssueFile'>>;
 
 export function createWorkService(kernel: Kernel, deps: WorkDeps): WorkContext {
   const ctx = createWorkCtx(kernel, deps.org);
@@ -64,6 +65,30 @@ export function createWorkService(kernel: Kernel, deps: WorkDeps): WorkContext {
     listIssueArtifacts(orgId, issueId) {
       const issue = issues.getIssue(ctx, orgId, issueId);
       return listIssueArtifacts(ctx, deps.org.getOrg(orgId), issue.id);
+    },
+    listArtifacts: (orgId, filter) => listOrgArtifacts(ctx, deps.org.getOrg(orgId), filter),
+    listIssueFiles(orgId, issueId) {
+      const issue = issues.getIssue(ctx, orgId, issueId);
+      return uploads.listIssueFiles(kernel.paths, deps.org.getOrg(orgId).slug, issue.id);
+    },
+    addIssueFile(orgId, issueId, input, actor) {
+      const issue = issues.getIssue(ctx, orgId, issueId);
+      const saved = uploads.addIssueFile(kernel.paths, deps.org.getOrg(orgId).slug, issue.id, input.name, input.data);
+      kernel.audit.record({
+        orgId, actor, action: 'issue.file_attached', entityKind: 'issue', entityId: issue.id, issueId: issue.id,
+        data: { name: saved.name, bytes: saved.bytes },
+      });
+      ctx.emit('artifact.saved', { orgId, path: saved.path, issueId: issue.id, runId: null });
+      return saved;
+    },
+    removeIssueFile(orgId, issueId, name, actor) {
+      const issue = issues.getIssue(ctx, orgId, issueId);
+      const gone = uploads.removeIssueFile(kernel.paths, deps.org.getOrg(orgId).slug, issue.id, name);
+      kernel.audit.record({
+        orgId, actor, action: 'issue.file_removed', entityKind: 'issue', entityId: issue.id, issueId: issue.id, data: { name: gone.name },
+      });
+      ctx.emit('artifact.removed', { orgId, path: gone.path, issueId: issue.id });
+      return gone;
     },
 
     createPlaybook: (orgId, input, actor) => playbooks.createPlaybook(ctx, orgId, input, actor),

@@ -5,7 +5,7 @@ import { OWNER } from '../../contracts/types.js';
 import { body, orgOf, param, query, resolveAgent, supported } from '../http.js';
 import * as q from '../schemas/org-work.js';
 import { optionalBody } from '../schemas/common.js';
-import type { AgentActionResponse, ChatResponse, DocResponse, KillSwitchResponse, RunNowResponse } from '../types.js';
+import type { AgentActionResponse, ChatHistoryResponse, ChatResponse, DocResponse, KillSwitchResponse, RunNowResponse } from '../types.js';
 
 /** Organizations, departments, agents, org chart. Human callers act as OWNER. (Config revisions: `routes/revisions.ts`.) */
 export function orgRoutes(app: FastifyInstance, s: Services): void {
@@ -119,6 +119,16 @@ export function orgRoutes(app: FastifyInstance, s: Services): void {
   app.post('/orgs/:orgId/agents/:agentId/chat', async (req): Promise<ChatResponse> => {
     const { o, agent } = agentOf(req);
     const input = body(req, q.chat);
-    return s.runtime.chat(o.id, agent.id, input.message, { issueId: input.issueId ?? null });
+    // The UI's agent chat keeps its history; messaging gateways thread through issues instead.
+    return s.runtime.chat(o.id, agent.id, input.message, { issueId: input.issueId ?? null, history: true });
+  });
+  app.get('/orgs/:orgId/agents/:agentId/chat', async (req): Promise<ChatHistoryResponse> => {
+    const { o, agent } = agentOf(req);
+    return { messages: s.runtime.chatHistory(o.id, agent.id, query(req, q.chatHistoryQ)) };
+  });
+  app.delete('/orgs/:orgId/agents/:agentId/chat', async (req): Promise<ChatHistoryResponse> => {
+    const { o, agent } = agentOf(req);
+    s.runtime.clearChat(o.id, agent.id);
+    return { messages: [] };
   });
 }

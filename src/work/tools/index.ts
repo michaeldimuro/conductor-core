@@ -5,11 +5,12 @@ import { isConductorError } from '../../shared/errors.js';
 import { TOOL_SPECS, isToolName, toolDefsFor, type ToolName } from './defs.js';
 import { issueHandlers } from './issue-handlers.js';
 import { orgHandlers } from './org-handlers.js';
-import type { Handlers, TasksToolDeps, ToolEnv } from './support.js';
+import { fileHandlers } from './file-handlers.js';
+import { unwrapRawResult, type Handlers, type TasksToolDeps, type ToolEnv } from './support.js';
 
 export type { TasksToolDeps } from './support.js';
 
-const HANDLERS: Handlers<ToolName> = { ...issueHandlers, ...orgHandlers };
+const HANDLERS: Handlers<ToolName> = { ...issueHandlers, ...orgHandlers, ...fileHandlers };
 
 const fail = (message: string): ToolResult => textResult(message, { isError: true });
 
@@ -43,7 +44,8 @@ export function createTasksToolProvider(kernel: Kernel, deps: TasksToolDeps): Bu
       }
       try {
         const handler = HANDLERS[tool] as (env: ToolEnv, ctx: ToolCallContext, args: unknown) => unknown;
-        return jsonResult(await handler(env, ctx, parsed.data));
+        const value = await handler(env, ctx, parsed.data);
+        return unwrapRawResult(value) ?? jsonResult(value);
       } catch (e) {
         if (isConductorError(e)) return fail(`${e.code}: ${e.message}`);
         kernel.log.error({ err: e, tool, runId: ctx.runId }, 'conductor-tasks tool failed');

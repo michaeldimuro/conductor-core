@@ -281,6 +281,44 @@ export interface IssueArtifact {
   originId: string | null;
 }
 
+/** A file attached to an issue itself (not to one of its comments). */
+export interface IssueFile {
+  name: string;
+  /** Absolute path on this machine (what agents read, and what an attachment `path` may name). */
+  file: string;
+  /** Path relative to the org's artifacts folder, `/`-separated (`<issue>/files/<name>`). */
+  path: string;
+  bytes: number;
+  modifiedAt: number;
+}
+
+/**
+ * One file anywhere under `orgs/<org>/artifacts/`: what the org-wide artifact
+ * store lists. The folder layout says where it came from —
+ * `<issue>/<comment>/…` (comment attachment), `<issue>/<run>/…` (a run working
+ * the issue), `<run>/…` (a run without an issue, e.g. an agent chat turn).
+ */
+export interface OrgArtifact {
+  name: string;
+  /** Path relative to the org's artifacts folder, `/`-separated. Stable id of the artifact. */
+  path: string;
+  /** Absolute path on this machine. */
+  file: string;
+  bytes: number;
+  modifiedAt: number;
+  issueId: string | null;
+  runId: string | null;
+  commentId: string | null;
+}
+
+export interface ArtifactFilter {
+  issueId?: string;
+  runId?: string;
+  /** Case-insensitive substring of the file name. */
+  search?: string;
+  limit?: number;
+}
+
 export interface WorkService {
   createGoal(orgId: string, input: CreateGoalInput, actor: Actor): Goal;
   updateGoal(orgId: string, goalId: string, patch: Partial<CreateGoalInput> & { status?: Goal['status'] }, actor: Actor): Goal;
@@ -347,6 +385,14 @@ export interface WorkService {
    * Newest first. An issue of another org behaves as not found.
    */
   listIssueArtifacts?(orgId: string, issueId: string): IssueArtifact[];
+  /** Every file in the org's artifacts folder (tasks, chats, other runs), newest first. */
+  listArtifacts?(orgId: string, filter?: ArtifactFilter): OrgArtifact[];
+  /** Files attached to the issue itself (`artifacts/<issue>/files/`), in the order they were added. */
+  listIssueFiles?(orgId: string, issueId: string): IssueFile[];
+  /** Attach a file to the issue itself. A name clash gets a `-2`, `-3`… suffix; nothing is overwritten. */
+  addIssueFile?(orgId: string, issueId: string, input: { name: string; data: Buffer }, actor: Actor): IssueFile;
+  /** Detach (delete) one of the issue's own files by name. */
+  removeIssueFile?(orgId: string, issueId: string, name: string, actor: Actor): IssueFile;
 
   createPlaybook(orgId: string, input: { name: string; description?: string; process?: 'sequential' | 'hierarchical'; managerAgentId?: string | null; steps: Playbook['steps'] }, actor: Actor): Playbook;
   listPlaybooks(orgId: string): Playbook[];

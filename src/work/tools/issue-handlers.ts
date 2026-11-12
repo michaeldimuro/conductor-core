@@ -1,7 +1,9 @@
+import { basename } from 'node:path';
 import type { CreateIssueInput } from '../../contracts/org-work.js';
 import { AUTONOMY } from '../../contracts/types.js';
 import type { IssueStatus } from '../../db/schema/work.js';
 import { truncate } from '../../shared/util.js';
+import { publishRunArtifact } from '../artifacts.js';
 import {
   actorOf, commentView, issueBrief, issueFull, resolveAgent, resolveIssue, sanitizeArtifacts,
   type Handlers,
@@ -9,7 +11,7 @@ import {
 
 type IssueTools =
   | 'inbox' | 'get_issue' | 'search_issues' | 'create_issue' | 'update_issue' | 'comment'
-  | 'delegate' | 'escalate' | 'report_progress' | 'review_issue' | 'reassign';
+  | 'delegate' | 'escalate' | 'report_progress' | 'save_artifact' | 'review_issue' | 'reassign';
 
 export const issueHandlers: Handlers<IssueTools> = {
   inbox(env, ctx) {
@@ -31,6 +33,7 @@ export const issueHandlers: Handlers<IssueTools> = {
       issue: issueFull(issue),
       blockers,
       children: env.work.listIssues(ctx.orgId, { parentIssueId: issue.id, limit: 200 }).map(issueBrief),
+      files: (env.work.listIssueFiles?.(ctx.orgId, issue.id) ?? []).map((f) => ({ name: f.name, path: f.file, bytes: f.bytes })),
       comments: env.work.listComments(ctx.orgId, issue.id).map(commentView),
     };
   },
@@ -159,6 +162,23 @@ export const issueHandlers: Handlers<IssueTools> = {
     );
     const comment = env.work.addComment(ctx.orgId, issue.id, { body, attachments, runId: ctx.runId }, actor);
     return { issue: issueBrief(updated), status: updated.status, commentId: comment.id, ...(note ? { note } : {}) };
+  },
+
+  /** Put a workspace file in the org's artifact store, where the dashboard can show it. */
+  save_artifact(env, ctx, args) {
+    const [checked] = sanitizeArtifacts(env, ctx, [{ name: args.name ?? basename(args.path), path: args.path }]);
+    const org = env.org.getOrg(ctx.orgId);
+    const issueId = ctx.issueId ?? null;
+    const saved = publishRunArtifact(env.kernel.paths, org.slug, { issueId, runId: ctx.runId }, checked!.path, checked!.name);
+    env.kernel.audit.record({
+      orgId: ctx.orgId, actor: actorOf(ctx), action: 'artifact.saved', entityKind: 'issue', entityId: issueId ?? ctx.runId,
+      runId: ctx.runId, issueId: issueId ?? undefined, data: { name: saved.name, bytes: saved.bytes, source: 'save_artifact' },
+    });
+    env.kernel.bus.emit('artifact.saved', { orgId: ctx.orgId, path: saved.path, issueId, runId: ctx.runId });
+    return {
+      saved: saved.name, path: saved.file, bytes: saved.bytes,
+      note: issueId ? 'Visible on the issue and in the dashboard\'s Artifacts. Attach it to your report with this path.' : 'The operator can open it from this chat and the dashboard\'s Artifacts page.',
+    };
   },
 
   review_issue(env, ctx, args) {

@@ -69,6 +69,24 @@ export const runEvents = sqliteTable(
   (t) => [uniqueIndex('run_event_seq_uq').on(t.runId, t.seq)],
 );
 
+/** Direct conversation with an agent from the UI: the durable chat history, one row per message. */
+export const chatMessages = sqliteTable(
+  'chat_messages',
+  {
+    id: text('id').primaryKey(),
+    orgId: text('org_id').notNull().references(() => organizations.id),
+    agentId: text('agent_id').notNull(),
+    /** `user` — the operator; `agent` — the agent's reply (or why there was none). */
+    role: text('role', { enum: ['user', 'agent'] }).notNull(),
+    body: text('body').notNull(),
+    runId: text('run_id'),
+    /** Set on an agent row when the turn failed and `body` is empty. */
+    error: text('error'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('chat_agent_idx').on(t.orgId, t.agentId, t.createdAt)],
+);
+
 export const JOB_KINDS = ['heartbeat', 'event', 'reflect', 'dream', 'weekly_review', 'digest', 'backup', 'skill_eval', 'skill_retire', 'webhook_out'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 

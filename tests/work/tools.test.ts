@@ -42,10 +42,11 @@ describe('conductor-tasks tool provider', () => {
       [
         'inbox', 'get_issue', 'search_issues', 'create_issue', 'update_issue', 'comment', 'delegate', 'escalate',
         'report_progress', 'review_issue', 'list_goals', 'create_goal', 'list_team', 'propose_hire', 'reassign',
-        'request_approval', 'run_playbook', 'list_playbooks', 'propose_termination', 'propose_budget_change', 'propose_skill_grant',
+        'request_approval', 'run_playbook', 'list_playbooks', 'propose_termination', 'propose_budget_change', 'propose_skill_grant', 'save_artifact',
+        'view_attachment',
       ].sort(),
     );
-    const reads = ['inbox', 'get_issue', 'search_issues', 'list_goals', 'list_team', 'list_playbooks'];
+    const reads = ['inbox', 'get_issue', 'search_issues', 'list_goals', 'list_team', 'list_playbooks', 'view_attachment'];
     for (const def of defs) {
       expect(def.description.length).toBeGreaterThan(20);
       expect(def.risk).toBe(reads.includes(def.name) ? 'read' : 'write');

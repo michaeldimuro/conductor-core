@@ -31,6 +31,7 @@ export const ID_PREFIX = {
   playbook: 'pb',
   scorecard: 'sc',
   loginSession: 'lgn',
+  chatMessage: 'chm',
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIX;

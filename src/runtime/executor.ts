@@ -198,7 +198,7 @@ export class RunExecutor {
         mode === 'eval'
           ? EMPTY_RECALL
           : await this.d.memory
-              .recall(org.id, agent.id, { title: issue?.title ?? req.prompt ?? agent.goal, body: issue?.body ?? '', taskType: issue?.taskType ?? null })
+              .recall(org.id, agent.id, { title: issue?.title ?? req.recallHint ?? req.prompt ?? agent.goal, body: issue?.body ?? '', taskType: issue?.taskType ?? null })
               .catch((err) => {
                 this.k.log.warn({ err, runId: run.id }, 'memory recall failed; continuing without it');
                 return EMPTY_RECALL;
@@ -231,6 +231,7 @@ export class RunExecutor {
         task.parent = issue.parentIssueId ? this.d.work.findIssue(org.id, issue.parentIssueId) : null;
         task.children = this.d.work.listIssues(org.id, { parentIssueId: issue.id });
         task.comments = this.d.work.listComments(org.id, issue.id);
+        task.files = this.d.work.listIssueFiles?.(org.id, issue.id) ?? [];
         task.approvalNote = approvalNote;
         if (req.prompt) task.triggerNote = [req.triggerNote, req.prompt].filter(Boolean).join(' — ');
       } else if (hasReplies && inbox) {

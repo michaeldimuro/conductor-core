@@ -179,10 +179,11 @@ describe('local CLIs: MCP timeouts cover a human takeover', () => {
     expect(args.join(' ')).not.toContain('run-token-abcdefghijklmnop');
   });
 
-  it('claude_local passes MCP_TIMEOUT / MCP_TOOL_TIMEOUT (milliseconds) in the CLI environment', () => {
+  it('claude_local passes MCP_TIMEOUT / MCP_TOOL_TIMEOUT / the idle timeout (milliseconds) in the CLI environment', () => {
     expect(claudeMcpEnv({ maxWallMs: 30 * 60_000 })).toEqual({
       MCP_TIMEOUT: String(CLI_MCP_STARTUP_TIMEOUT_MS),
       MCP_TOOL_TIMEOUT: String(30 * 60_000 + HUMAN_WAIT_ALLOWANCE_MS),
+      CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(30 * 60_000 + HUMAN_WAIT_ALLOWANCE_MS),
     });
   });
 });

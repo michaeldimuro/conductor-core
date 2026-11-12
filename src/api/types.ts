@@ -5,7 +5,7 @@
  */
 import type {
   Organization, Department, Agent, Goal, Project, Issue, Comment, Playbook, Run, Approval, Skill, SkillVersion, Memory,
-  Connector, ConnectorGrant, BrowserProfile, BrowserSession, Gateway, Webhook, ConfigRevision, LedgerRow,
+  Connector, ConnectorGrant, BrowserProfile, BrowserSession, Gateway, Webhook, ConfigRevision, LedgerRow, ChatMessage,
 } from '../contracts/rows.js';
 import type {
   CreateOrgInput, CreateDeptInput, HireAgentInput, CreateGoalInput, CreateIssueInput, IssueFilter, OrgChartNode, CapabilityRefs,
@@ -43,7 +43,7 @@ export interface StartLoginBody {
 
 export type {
   Organization, Department, Agent, Goal, Project, Issue, Comment, Playbook, Run, Approval, Skill, SkillVersion, Memory,
-  Connector, ConnectorGrant, BrowserProfile, BrowserSession, Gateway, Webhook, ConfigRevision, LedgerRow,
+  Connector, ConnectorGrant, BrowserProfile, BrowserSession, Gateway, Webhook, ConfigRevision, LedgerRow, ChatMessage,
   CreateOrgInput, CreateDeptInput, HireAgentInput, CreateGoalInput, CreateIssueInput, IssueFilter, OrgChartNode, CapabilityRefs,
   OrgTemplate, OrgBundle, GoalNode, TimelineEntry, AgentScorecard, BudgetStatus, ConnectorTemplate, GrantInput, InstallConnectorInput,
   ScoredMemory, BrowserInputEvent, AuditRecord, ProviderBinding, SkillEvalResult, ToolDef, ToolResult, RunEvent, Principal, AdapterHealth,
@@ -203,6 +203,12 @@ export interface ChatRequest {
 export interface ChatResponse {
   reply: string;
   runId: string;
+  /** The stored agent message (UI chats, which keep history). */
+  messageId?: string;
+}
+/** `GET /orgs/:orgId/agents/:agentId/chat`: the conversation, oldest first. */
+export interface ChatHistoryResponse {
+  messages: ChatMessage[];
 }
 
 /* ── Work ── */
@@ -221,8 +227,62 @@ export interface AddCommentRequest {
   parentCommentId?: string | null;
   attachments?: Comment['attachments'];
 }
+/**
+ * `POST /orgs/:orgId/uploads`: a file uploaded for a comment that is not
+ * written yet. Pass `{ name, path, mime }` as one of the comment's
+ * `attachments`; the comment keeps its own copy and the upload is discarded.
+ */
+export interface StagedUploadDto {
+  id: string;
+  name: string;
+  path: string;
+  bytes: number;
+  mime: string;
+}
+/** A file attached to the issue itself (`GET|POST /orgs/:orgId/issues/:issueId/files`). */
+export interface IssueFileDto {
+  name: string;
+  /** Path relative to the org's artifacts folder. */
+  path: string;
+  bytes: number;
+  modifiedAt: number;
+  contentType: string;
+  downloadPath: string;
+  /** Served for display in the dashboard (sandboxed). */
+  viewPath: string;
+}
 /** A file in the issue's artifact folder, with where to download it from (server-relative; needs the session cookie or a bearer token). */
 export type IssueArtifactDto = IssueArtifact & { contentType: string; downloadPath: string };
+/** `GET /orgs/:orgId/artifacts`: one file of the org-wide artifact store. */
+export interface ArtifactDto {
+  name: string;
+  /** Path relative to the org's artifacts folder: the artifact's stable id. */
+  path: string;
+  bytes: number;
+  modifiedAt: number;
+  contentType: string;
+  /** `task`: produced on an issue; `chat`: in a direct chat with an agent; `run`: any other run. */
+  source: 'task' | 'chat' | 'run';
+  issue: { id: string; number: number; title: string } | null;
+  runId: string | null;
+  commentId: string | null;
+  agentId: string | null;
+  trigger: string | null;
+  /** Who put it there: an agent, a human (comment upload) or the system. */
+  author: 'agent' | 'human' | 'system' | null;
+  /** Server-relative; a download. */
+  downloadPath: string;
+  /** Server-relative; served for viewing inside the dashboard (sandboxed). */
+  viewPath: string;
+}
+export interface ListArtifactsQuery {
+  issueId?: string;
+  runId?: string;
+  agentId?: string;
+  source?: ArtifactDto['source'];
+  q?: string;
+  limit?: number;
+}
 export interface ReviewRequest {
   outcome: 'accepted' | 'edited' | 'rejected';
   note?: string;

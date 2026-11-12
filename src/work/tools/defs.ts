@@ -150,6 +150,28 @@ export const TOOL_SPECS = {
       artifacts: z.array(artifact).max(50).optional(),
     }),
   }),
+  save_artifact: spec({
+    description:
+      'Save a file you produced (a report, document, spreadsheet, chart, image, data export, HTML page) to the artifact store, so the operator can open and view it in the dashboard. ' +
+      'Works in chats and on issues: in a chat, call this for every file you mention in your reply; on an issue, the saved file also appears with the issue. Returns the stored `path`, which you can pass as an attachment.',
+    risk: 'write',
+    minAutonomy: AUTONOMY.ASSIST,
+    schema: z.strictObject({
+      path: z.string().min(1).max(4096).describe('The file, relative to the run workspace (or absolute inside it).'),
+      name: z.string().trim().min(1).max(255).optional().describe('File name to show. Default: the file\'s own name.'),
+    }),
+  }),
+  view_attachment: spec({
+    description:
+      'Look at a file attached to an issue or a comment (or any file in the artifact store): images are shown to you, text files are returned as text, other files are described with their path so you can open them with your own tools. ' +
+      'Use it for every attachment the owner or another agent points you at before you act on the comment.',
+    risk: 'read',
+    minAutonomy: AUTONOMY.ASSIST,
+    schema: z.strictObject({
+      path: z.string().min(1).max(4096).describe('The attachment\'s absolute `path`, exactly as listed on the issue, the comment or by get_issue.'),
+      offset: z.number().int().min(0).optional().describe('Text files: start reading at this character (for files longer than one read).'),
+    }),
+  }),
   review_issue: spec({
     description:
       'Give your verdict on an in_review issue you review (or that belongs to one of your reports): accepted → done, edited → done (you fixed it yourself), rejected → back to todo with your note.',
@@ -252,7 +274,8 @@ export const TOOL_SPECS = {
   }),
   request_approval: spec({
     description:
-      'Ask the board (owner) to approve an action before you take it: a payment, an external send, publishing, a budget raise, or anything else outside your remit.',
+      'Ask the board (owner) for a decision only it can make: a directional choice (strategy, which path to take), spending money or a budget raise, publishing publicly, or a destructive / irreversible action. ' +
+      'Do NOT use it for routine work or to confirm a plan you can carry out — the gateway already asks automatically for the tool calls that need it (payments, first sends to new recipients, destructive commands, account logins).',
     risk: 'write',
     minAutonomy: AUTONOMY.ASSIST,
     schema: z.strictObject({

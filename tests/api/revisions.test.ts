@@ -3,11 +3,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { configRevisions, gateways } from '../../src/db/schema/index.js';
-import type { ConfigRevision, Skill } from '../../src/contracts/rows.js';
-import type { IssueArtifact } from '../../src/contracts/org-work.js';
+import type { ConfigRevision, Run, Skill } from '../../src/contracts/rows.js';
+import type { IssueArtifact, OrgArtifact } from '../../src/contracts/org-work.js';
 import { OWNER } from '../../src/contracts/types.js';
 import { notFound } from '../../src/shared/errors.js';
-import type { GatewayDto, WebhookDto } from '../../src/api/types.js';
+import type { ArtifactDto, GatewayDto, WebhookDto } from '../../src/api/types.js';
 import { createHarness, type Harness } from './fake-services.js';
 
 let h: Harness;
@@ -242,5 +242,72 @@ describe('issue artifacts', () => {
     expect((await call('GET', `${base}/run_1/report%20q3.csv`, undefined, {})).statusCode).toBe(401);
     const run = h.startRun();
     expect((await call('GET', `${base}/run_1/report%20q3.csv`, undefined, { authorization: `Bearer ${run.token}` })).statusCode).toBe(403);
+  });
+});
+
+describe('the org artifact store', () => {
+  it('lists files from tasks and chats with their context and serves them for viewing, sandboxed', async () => {
+    await call('POST', '/orgs/acme/issues', { title: 'Pull the report' });
+    const issue = h.issues.find((i) => i.orgId === h.orgA.id)!;
+    const put = (scope: string, name: string, content: string): string => {
+      const file = h.kernel.paths.artifactFile(h.orgA.slug, scope, name);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, content);
+      return file;
+    };
+    const chartFile = put(issue.id, 'run_task/chart.html', '<script>alert(1)</script>');
+    const notesFile = put('run_chat', 'notes.md', '# Notes');
+    const pdfFile = put('run_chat', 'brief.pdf', '%PDF-1.4');
+    const rows: OrgArtifact[] = [
+      { name: 'chart.html', path: `${issue.id}/run_task/chart.html`, file: chartFile, bytes: 25, modifiedAt: 3, issueId: issue.id, runId: 'run_task', commentId: null },
+      { name: 'notes.md', path: 'run_chat/notes.md', file: notesFile, bytes: 7, modifiedAt: 2, issueId: null, runId: 'run_chat', commentId: null },
+      { name: 'brief.pdf', path: 'run_chat/brief.pdf', file: pdfFile, bytes: 8, modifiedAt: 1, issueId: null, runId: 'run_chat', commentId: null },
+    ];
+    h.work.listArtifacts.mockReturnValue(rows);
+    const runs: Record<string, Partial<Run>> = {
+      run_task: { id: 'run_task', orgId: h.orgA.id, agentId: 'agt_dev', trigger: 'assignment', issueId: issue.id },
+      run_chat: { id: 'run_chat', orgId: h.orgA.id, agentId: 'agt_ceo', trigger: 'chat', issueId: null },
+    };
+    h.runtime.getRun.mockImplementation((_org: string, id: string) => {
+      if (!runs[id]) throw notFound('run', id);
+      return runs[id] as Run;
+    });
+
+    const list = (await call('GET', '/orgs/acme/artifacts')).json() as ArtifactDto[];
+    expect(h.work.listArtifacts).toHaveBeenCalledWith(h.orgA.id, { issueId: undefined, runId: undefined, search: undefined, limit: 500 });
+    expect(list.map((a) => [a.name, a.source, a.agentId, a.issue?.number ?? null, a.contentType])).toEqual([
+      ['chart.html', 'task', 'agt_dev', issue.number, 'text/html; charset=utf-8'],
+      ['notes.md', 'chat', 'agt_ceo', null, 'text/markdown; charset=utf-8'],
+      ['brief.pdf', 'chat', 'agt_ceo', null, 'application/pdf'],
+    ]);
+    expect(list[1]).toMatchObject({ downloadPath: `/api/v1/orgs/${h.orgA.id}/artifacts/files/run_chat/notes.md`, viewPath: `/api/v1/orgs/${h.orgA.id}/artifacts/files/run_chat/notes.md?inline=1` });
+    expect(JSON.stringify(list)).not.toContain(h.kernel.paths.home);
+    expect(((await call('GET', '/orgs/acme/artifacts?source=chat&agentId=agt_ceo')).json() as ArtifactDto[]).map((a) => a.name)).toEqual(['notes.md', 'brief.pdf']);
+    expect((await call('GET', '/orgs/acme/artifacts?source=nope')).statusCode).toBe(400);
+
+    const get = (url: string, headers = h.owner) => h.api.app.inject({ method: 'GET', url, headers });
+    const download = await get(list[0]!.downloadPath);
+    expect(download.headers['content-disposition']).toMatch(/^attachment;/);
+    const view = await get(list[0]!.viewPath);
+    expect(view.statusCode).toBe(200);
+    expect(view.headers['content-disposition']).toMatch(/^inline;/);
+    expect(view.headers['content-security-policy']).toMatch(/^sandbox allow-scripts/);
+    expect(view.headers['content-security-policy']).toContain("connect-src 'none'");
+    expect(view.headers['content-security-policy']).not.toContain('allow-same-origin');
+    expect(view.headers['x-frame-options']).toBe('SAMEORIGIN');
+    const pdf = await get(list[2]!.viewPath);
+    expect(pdf.headers['content-security-policy']).toBe("default-src 'none'; frame-ancestors 'self'");
+    expect(pdf.body).toBe('%PDF-1.4');
+
+    // Confined to this org's artifacts folder; another org, anonymous callers and run tokens get nothing.
+    const base = `/orgs/acme/artifacts/files`;
+    for (const escape of ['..%2F..%2Fowner.token', 'run_chat/..%2F..%2F..%2Fowner.token', '%2E%2E/x', 'notes.md']) {
+      expect((await call('GET', `${base}/${escape}`)).statusCode, escape).toBeGreaterThanOrEqual(400);
+    }
+    expect((await call('GET', '/orgs/globex/artifacts/files/run_chat/notes.md')).statusCode).toBe(404);
+    expect((await call('GET', `${base}/run_chat/notes.md`, undefined, {})).statusCode).toBe(401);
+    const run = h.startRun();
+    expect((await call('GET', `${base}/run_chat/notes.md`, undefined, { authorization: `Bearer ${run.token}` })).statusCode).toBe(403);
+    expect((await call('GET', '/orgs/acme/artifacts', undefined, { authorization: `Bearer ${run.token}` })).statusCode).toBe(403);
   });
 });

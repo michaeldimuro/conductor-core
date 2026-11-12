@@ -90,6 +90,10 @@ export class ConductorPaths {
     if (file === dir) throw invalid(`artifact name is empty: ${name}`);
     return file;
   }
+  /** Files the owner uploaded from the dashboard that are not attached to a comment yet (pruned after a day). */
+  uploads(orgSlug: string): string {
+    return join(this.org(orgSlug), 'uploads');
+  }
   transcripts(orgSlug: string): string {
     return join(this.org(orgSlug), 'transcripts');
   }

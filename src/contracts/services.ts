@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Actor, CapabilitySnapshot, EvalExpectations, RunGrade, SkillEvalCase, SkillEvalResult, ToolPolicy, ProviderBinding } from './types.js';
 import type {
-  Approval, Skill, SkillVersion, Memory, Connector, ConnectorGrant, BrowserProfile, BrowserSession, Run, Scorecard, LedgerRow,
+  Approval, Skill, SkillVersion, Memory, Connector, ConnectorGrant, BrowserProfile, BrowserSession, Run, Scorecard, LedgerRow, ChatMessage,
 } from './rows.js';
 import type { ApprovalKind } from '../db/schema/governance.js';
 import type { MemoryKind, MemoryScope } from '../db/schema/memory.js';
@@ -508,7 +508,10 @@ export interface RuntimeService extends RunControl {
   syncSchedules(): void;
   status(): { running: number; queued: number; perOrg: Record<string, number>; perProvider: Record<string, number>; uptimeMs: number };
   /** One-shot chat turn with an agent outside the issue loop (messaging gateways / UI). */
-  chat(orgId: string, agentId: string, message: string, opts?: { issueId?: string | null }): Promise<{ reply: string; runId: string }>;
+  chat(orgId: string, agentId: string, message: string, opts?: { issueId?: string | null; history?: boolean }): Promise<{ reply: string; runId: string; messageId?: string }>;
+  /** `history: true` chat turns with an agent, oldest first (the newest `limit`, optionally before a timestamp). */
+  chatHistory(orgId: string, agentId: string, opts?: { limit?: number; before?: number }): ChatMessage[];
+  clearChat(orgId: string, agentId: string): void;
 }
 
 /** What a run worker (child process) needs to execute one adapter run. Serializable. */

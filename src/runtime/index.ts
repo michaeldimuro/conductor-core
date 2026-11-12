@@ -8,6 +8,7 @@ import type { JobKind } from '../db/schema/index.js';
 import { ConductorError, notFound } from '../shared/errors.js';
 import { JobQueue } from './jobs.js';
 import { RunJournal } from './journal.js';
+import { ChatHistory } from './chat-history.js';
 import { RunExecutor } from './executor.js';
 import { Scheduler, type JobHandler } from './scheduler.js';
 import { ProcessSupervisor } from './supervisor.js';
@@ -38,6 +39,7 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
   const d = deps;
   const startedAt = k.clock.now();
   const journal = new RunJournal(k);
+  const history = new ChatHistory(k);
   const queue = new JobQueue(k, `conductord-${process.pid}-${randomUUID().slice(0, 8)}`);
   const supervisor = d.supervisor ?? new ProcessSupervisor({ pluginDir: k.paths.adapters, log: k.log });
   const executor = new RunExecutor(k, d, journal, supervisor);
@@ -70,6 +72,17 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
       }
     }
     return [...ids];
+  }
+
+  /** One chat run. `recallHint` is the operator's own words, so memory recall is not skewed by replayed history. */
+  async function chatTurn(orgId: string, agentId: string, prompt: string, recallHint: string, issueId: string | null): Promise<{ reply: string; runId: string }> {
+    const summary = await executeDirect('chat', { orgId, agentId, trigger: 'chat', prompt, recallHint, issueId });
+    if (!summary.runId) throw new ConductorError('unavailable', `agent cannot chat right now: ${summary.skipped ?? 'unknown'}`);
+    if (summary.outcome !== 'completed' && !summary.finalText) {
+      const run = journal.get(orgId, summary.runId);
+      throw new ConductorError('unavailable', `chat run ${summary.outcome}: ${run.error ?? 'no reply'}`);
+    }
+    return { reply: summary.finalText, runId: summary.runId };
   }
 
   /**
@@ -175,13 +188,33 @@ export function createRuntime(kernel: Kernel, deps: RuntimeDeps): Runtime {
     },
 
     async chat(orgId, agentId, message, opts = {}) {
-      const summary = await executeDirect('chat', { orgId, agentId, trigger: 'chat', prompt: message, issueId: opts.issueId ?? null });
-      if (!summary.runId) throw new ConductorError('unavailable', `agent cannot chat right now: ${summary.skipped ?? 'unknown'}`);
-      if (summary.outcome !== 'completed' && !summary.finalText) {
-        const run = journal.get(orgId, summary.runId);
-        throw new ConductorError('unavailable', `chat run ${summary.outcome}: ${run.error ?? 'no reply'}`);
+      if (!opts.history) return chatTurn(orgId, agentId, message, message, opts.issueId ?? null);
+      // The UI conversation: keep both sides and replay the recent turns into the next one.
+      const agent = d.org.getAgent(orgId, agentId);
+      const prior = history.list(orgId, agentId, { limit: 40 });
+      const mine = history.append(orgId, agentId, { role: 'user', body: message });
+      k.bus.emit('chat.message', { orgId, agentId, messageId: mine.id, role: 'user' });
+      try {
+        const res = await chatTurn(orgId, agentId, history.prompt(prior, message, agent.name), message, opts.issueId ?? null);
+        const reply = history.append(orgId, agentId, { role: 'agent', body: res.reply, runId: res.runId });
+        k.bus.emit('chat.message', { orgId, agentId, messageId: reply.id, role: 'agent' });
+        return { ...res, messageId: reply.id };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        const failed = history.append(orgId, agentId, { role: 'agent', body: '', error: reason });
+        k.bus.emit('chat.message', { orgId, agentId, messageId: failed.id, role: 'agent' });
+        throw err;
       }
-      return { reply: summary.finalText, runId: summary.runId };
+    },
+
+    chatHistory(orgId, agentId, opts = {}) {
+      d.org.getAgent(orgId, agentId);
+      return history.list(orgId, agentId, opts);
+    },
+
+    clearChat(orgId, agentId) {
+      d.org.getAgent(orgId, agentId);
+      history.clear(orgId, agentId);
     },
 
     // ── RunControl ─────────────────────────────────────────────────────────

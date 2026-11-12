@@ -15,6 +15,13 @@
       "when": 1794376317822,
       "tag": "0001_mysterious_fantastic_four",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794416670648,
+      "tag": "0002_shocking_rick_jones",
+      "breakpoints": true
     }
   ]
 }

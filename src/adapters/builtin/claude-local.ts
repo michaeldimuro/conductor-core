@@ -74,10 +74,13 @@ export function buildClaudeMcpConfig(ctx: Pick<RunContext, 'mcpEndpoints'>): { m
  * Claude Code's MCP timeouts are environment variables (milliseconds): `MCP_TIMEOUT` for server
  * startup, `MCP_TOOL_TIMEOUT` for one tool call. A gateway call can wait on a human (request_human,
  * takeover) far longer than the CLI's default, so the tool timeout covers the run's wall time plus
- * a takeover allowance. Adapter `env` config can override both.
+ * a takeover allowance. Newer CLIs also abort a call that sends no response or progress for 300s
+ * (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`); a takeover is silent while the human works, so that limit
+ * gets the same value. Adapter `env` config can override all three.
  */
 export function claudeMcpEnv(ctx: Pick<RunContext, 'maxWallMs'>): Record<string, string> {
-  return { MCP_TIMEOUT: String(CLI_MCP_STARTUP_TIMEOUT_MS), MCP_TOOL_TIMEOUT: String(cliToolTimeoutMs(ctx.maxWallMs)) };
+  const toolTimeout = String(cliToolTimeoutMs(ctx.maxWallMs));
+  return { MCP_TIMEOUT: String(CLI_MCP_STARTUP_TIMEOUT_MS), MCP_TOOL_TIMEOUT: toolTimeout, CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: toolTimeout };
 }
 
 /**

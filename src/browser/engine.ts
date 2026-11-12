@@ -96,6 +96,11 @@ export class BrowserEngine {
           headless: settings.headed === null ? this.opts.headless : !settings.headed,
           viewport: { width: 1280, height: 800 },
           acceptDownloads: true,
+          // Playwright's `--enable-automation` sets `navigator.webdriver` and shows the automation
+          // infobar; bot checks (Cloudflare Turnstile on LinkedIn) then fail every time, including
+          // when a human clicks the checkbox during a takeover. Launch like a normal browser instead.
+          ignoreDefaultArgs: ['--enable-automation'],
+          args: ['--disable-blink-features=AutomationControlled'],
           ...(engine.kind === 'channel' ? { channel: engine.channel } : {}),
         });
       }

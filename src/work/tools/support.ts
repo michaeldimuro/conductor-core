@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import type { Kernel } from '../../contracts/kernel.js';
 import type { OrgService, WorkService } from '../../contracts/org-work.js';
 import type { ApprovalService } from '../../contracts/services.js';
-import type { ToolCallContext } from '../../contracts/tools.js';
+import type { ToolCallContext, ToolResult } from '../../contracts/tools.js';
 import type { Actor } from '../../contracts/types.js';
 import type { Agent, Comment, Goal, Issue } from '../../contracts/rows.js';
 import { organizations } from '../../db/schema/index.js';
@@ -22,7 +22,13 @@ export interface ToolEnv extends TasksToolDeps {
   kernel: Kernel;
 }
 
-/** A handler returns a JSON-serializable value; domain failures are thrown as ConductorError. */
+const RAW_RESULT = Symbol('conductor-tasks raw result');
+/** A handler result passed to the agent as-is (e.g. image content) instead of being JSON-encoded. */
+export const rawResult = (result: ToolResult): { [RAW_RESULT]: ToolResult } => ({ [RAW_RESULT]: result });
+export const unwrapRawResult = (value: unknown): ToolResult | null =>
+  value !== null && typeof value === 'object' && RAW_RESULT in value ? (value as { [RAW_RESULT]: ToolResult })[RAW_RESULT] : null;
+
+/** A handler returns a JSON-serializable value (or a `rawResult`); domain failures are thrown as ConductorError. */
 export type Handler<K extends ToolName> = (env: ToolEnv, ctx: ToolCallContext, args: ToolArgs<K>) => unknown;
 export type Handlers<K extends ToolName> = { [N in K]: Handler<N> };
 

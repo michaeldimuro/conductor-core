@@ -50,11 +50,14 @@ export class ConductorClient {
   }
 
   /** Low-level call; `path` is relative to the server root. */
-  async request<T>(method: string, path: string, opts: { query?: Query; body?: unknown } = {}): Promise<T> {
+  async request<T>(method: string, path: string, opts: { query?: Query; body?: unknown; raw?: Blob } = {}): Promise<T> {
     const headers: Record<string, string> = { accept: 'application/json', ...this.headers };
     if (this.token) headers.authorization = `Bearer ${this.token}`;
-    let body: string | undefined;
-    if (opts.body !== undefined) {
+    let body: string | Blob | undefined;
+    if (opts.raw !== undefined) {
+      headers['content-type'] = 'application/octet-stream';
+      body = opts.raw;
+    } else if (opts.body !== undefined) {
       headers['content-type'] = 'application/json';
       body = JSON.stringify(opts.body);
     }
@@ -165,6 +168,8 @@ export class ConductorClient {
   putAgentMemoryDoc = (org: string, agent: string, content: string) => this.put<t.DocResponse>(`${this.agent(org, agent)}/memory-doc`, { content });
   runAgent = (org: string, agent: string, input: t.RunNowRequest = {}) => this.post<t.RunNowResponse>(`${this.agent(org, agent)}/run`, input);
   chatWithAgent = (org: string, agent: string, input: t.ChatRequest) => this.post<t.ChatResponse>(`${this.agent(org, agent)}/chat`, input);
+  chatHistory = (org: string, agent: string, query?: { limit?: number; before?: number }) => this.get<t.ChatHistoryResponse>(`${this.agent(org, agent)}/chat`, query);
+  clearChat = (org: string, agent: string) => this.del<t.ChatHistoryResponse>(`${this.agent(org, agent)}/chat`);
 
   /* ── Goals / projects ── */
   listGoals = (org: string, query?: { ownerAgentId?: string; deptId?: string; status?: t.Goal['status'] }) => this.get<t.Goal[]>(`/orgs/${e(org)}/goals`, query);
@@ -195,8 +200,18 @@ export class ConductorClient {
   listIssueArtifacts = (org: string, issue: string | number) => this.get<t.IssueArtifactDto[]>(`${this.issue(org, issue)}/artifacts`);
   /** Server-relative download URL of one artifact (`path` as returned by `listIssueArtifacts`). */
   artifactPath = (org: string, issue: string | number, path: string) => `${V1}${this.issue(org, issue)}/artifacts/${path.split('/').map(e).join('/')}`;
+  /** The org-wide artifact store: files from tasks, agent chats and other runs, newest first. */
+  listArtifacts = (org: string, query?: t.ListArtifactsQuery) => this.get<t.ArtifactDto[]>(`/orgs/${e(org)}/artifacts`, query as Query);
   /** Server-relative URL of a comment attachment (a download; needs the session cookie or a bearer token). */
   attachmentPath = (org: string, issue: string | number, commentId: string, index: number) => `${V1}${this.issue(org, issue)}/comments/${e(commentId)}/attachments/${index}`;
+  /** Upload a file for a comment about to be posted; pass the result as one of its `attachments`. */
+  stageUpload = (org: string, file: Blob, name: string) =>
+    this.request<t.StagedUploadDto>('POST', `${V1}/orgs/${e(org)}/uploads`, { query: { name, type: file.type || undefined }, raw: file });
+  /** Files attached to the task itself. */
+  listIssueFiles = (org: string, issue: string | number) => this.get<t.IssueFileDto[]>(`${this.issue(org, issue)}/files`);
+  addIssueFile = (org: string, issue: string | number, file: Blob, name: string) =>
+    this.request<t.IssueFileDto>('POST', `${V1}${this.issue(org, issue)}/files`, { query: { name, type: file.type || undefined }, raw: file });
+  removeIssueFile = (org: string, issue: string | number, name: string) => this.del<t.Ok>(`${this.issue(org, issue)}/files/${e(name)}`);
 
   /* ── Playbooks ── */
   listPlaybooks = (org: string) => this.get<t.Playbook[]>(`/orgs/${e(org)}/playbooks`);

@@ -11,6 +11,7 @@ export type Issue = typeof s.issues.$inferSelect;
 export type Comment = typeof s.comments.$inferSelect;
 export type Run = typeof s.runs.$inferSelect;
 export type RunEventRow = typeof s.runEvents.$inferSelect;
+export type ChatMessage = typeof s.chatMessages.$inferSelect;
 export type Job = typeof s.jobs.$inferSelect;
 export type LedgerRow = typeof s.costLedger.$inferSelect;
 export type Scorecard = typeof s.scorecards.$inferSelect;

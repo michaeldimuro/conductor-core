@@ -103,6 +103,7 @@ export const scorecardQ = z.object({ days: intQ(1, 365).optional() });
 export const docBody = z.strictObject({ content: text(200_000) });
 export const runNow = z.strictObject({ issueId: idStr.nullable().optional(), prompt: text(50_000).optional() });
 export const chat = z.strictObject({ message: z.string().min(1).max(50_000), issueId: idStr.nullable().optional() });
+export const chatHistoryQ = z.object({ limit: intQ(1, 500).optional(), before: intQ(0, Number.MAX_SAFE_INTEGER).optional() });
 export const budgetStatusQ = z.object({ projectId: idStr.optional() });
 
 /* ── Goals / projects ── */
