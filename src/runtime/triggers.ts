@@ -22,6 +22,8 @@ export function wireTriggers(k: Kernel, d: RuntimeDeps, s: Scheduler, executor: 
     return off;
   };
 
+  // Reassignment reopens the issue for its new holder (work/status `statusForNewHolder`), so this wake finds it workable —
+  // or, handed to its reviewer while in review, runs the review.
   on('issue.assigned', (e) => void s.wake(e.orgId, e.agentId, { trigger: 'assignment', issueId: e.issueId, triggerNote: 'You were assigned an issue.' }));
 
   on('comment.created', (e) => {
@@ -32,8 +34,16 @@ export function wireTriggers(k: Kernel, d: RuntimeDeps, s: Scheduler, executor: 
     // A human or another agent replying on an issue wakes its assignee. System notes do not.
     const issue = d.work.findIssue(e.orgId, e.issueId);
     if (issue?.assigneeAgentId && c.authorKind !== 'system' && !['done', 'cancelled'].includes(issue.status)) targets.add(issue.assigneeAgentId);
+    // Work waiting for review: its reviewer is woken ON the issue (a review ping, or a reply on the thread),
+    // so the run gives the verdict instead of the ping folding into a run about something else.
+    const reviewer = issue?.status === 'in_review' ? issue.reviewerAgentId : null;
+    if (reviewer) targets.add(reviewer);
     for (const agentId of targets) {
       if (agentId === author) continue;
+      if (agentId === reviewer) {
+        s.wake(e.orgId, agentId, { trigger: 'mention', issueId: e.issueId, triggerNote: `Issue #${issue!.number} is waiting for your review.` });
+        continue;
+      }
       s.wake(e.orgId, agentId, {
         trigger: 'mention', issueId: e.mentions.includes(agentId) ? null : e.issueId,
         triggerNote: e.mentions.includes(agentId) ? 'You were mentioned in a comment.' : 'There is a new comment on your issue.',

@@ -5,6 +5,7 @@ import { Empty, ErrorNote, Loading } from './components/ui.js';
 import { api, isUnauthorized } from './lib/api.js';
 import type { Organization } from './lib/api.js';
 import { OrgContext, useOrgs } from './lib/org.js';
+import { ApprovalRefs } from './components/approvals.js';
 import { useQuery } from './lib/query.js';
 import { lastOrg, rememberOrg } from './lib/theme.js';
 import { Activity } from './pages/Activity.js';
@@ -53,6 +54,7 @@ function OrgRoutes({ orgs }: { orgs: Organization[] }) {
   if (!value) return <NotFound what="Organization" />;
   return (
     <OrgContext.Provider value={value}>
+      <ApprovalRefs org={value.org}>
       <Routes>
         <Route index element={<Overview />} />
         <Route path="issues" element={<Board />} />
@@ -71,6 +73,7 @@ function OrgRoutes({ orgs }: { orgs: Organization[] }) {
         <Route path="settings/:section" element={<Settings />} />
         <Route path="*" element={<NotFound what="Page" />} />
       </Routes>
+      </ApprovalRefs>
     </OrgContext.Provider>
   );
 }

@@ -51,6 +51,7 @@ export function createWorkService(kernel: Kernel, deps: WorkDeps): WorkContext {
     delegate: (orgId, parentIssueId, children, actor) => flows.delegate(ctx, orgId, parentIssueId, children, actor),
     escalate: (orgId, issueId, reason, actor) => flows.escalate(ctx, orgId, issueId, reason, actor),
     review: (orgId, issueId, outcome, note, actor) => flows.review(ctx, orgId, issueId, outcome, note, actor),
+    handOff: (orgId, issueId, toAgentId, note, actor) => flows.handOff(ctx, orgId, issueId, toAgentId, note, actor),
 
     checkout: (orgId, issueId, runId) => checkout.checkout(ctx, orgId, issueId, runId),
     release: (orgId, issueId, runId, to) => checkout.release(ctx, orgId, issueId, runId, to),

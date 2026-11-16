@@ -111,15 +111,18 @@ export class RunExecutor {
     // ── 3–4. Inbox and atomic checkout ─────────────────────────────────────
     // (Done before the run row exists so an idle heartbeat costs nothing.)
     const inbox = mode === 'loop' ? this.d.work.inbox(org.id, agent.id) : null;
+    // Reviews waiting for this agent's verdict. A wake pinned to one runs that review (nothing is checked out).
+    const reviews = !planGoal ? (inbox?.reviews ?? []) : [];
+    const pinnedReview = pinned ? (reviews.find((r) => r.id === pinned.id) ?? null) : null;
     const candidates: Issue[] = [];
-    if (mode === 'loop' && !planGoal) {
+    if (mode === 'loop' && !planGoal && !pinnedReview) {
       if (pinned && pinned.assigneeAgentId === agent.id) candidates.push(pinned);
       for (const i of inbox?.issues ?? []) if (i.id !== pinned?.id) candidates.push(i);
     }
     const goals = mode === 'loop' ? this.d.work.listGoals(org.id, { ownerAgentId: agent.id, status: 'active' }) : [];
     const hasReplies = !planGoal && !!inbox && (inbox.mentions.length > 0 || inbox.newComments.length > 0);
     const proactive = agent.autonomyLevel >= 2 && goals.length > 0 && req.trigger === 'heartbeat';
-    const hasOtherWork = hasReplies || proactive || !!req.prompt || !!planGoal || !!approvalNote;
+    const hasOtherWork = hasReplies || proactive || !!req.prompt || !!planGoal || !!approvalNote || reviews.length > 0;
     if (mode === 'loop' && candidates.length === 0 && !hasOtherWork) return noWork();
 
     // Checkout first (it only needs a run id) so losing every race leaves no trace.
@@ -149,6 +152,9 @@ export class RunExecutor {
     } else if (pinned) {
       issue = pinned;
     }
+    // Nothing checked out: review instead (the pinned review, else the oldest waiting). Not linked to the
+    // run row — a review run is not work on the issue, and must not be graded as such.
+    const reviewing = mode === 'loop' && !issue ? (pinnedReview ?? reviews[0] ?? null) : null;
 
     const run = this.journal.create({ id: runId, orgId: org.id, orgSlug: org.slug, agentId: agent.id, issueId: issue?.id ?? null, trigger: req.trigger });
     const entry: ActiveRun = {
@@ -198,7 +204,7 @@ export class RunExecutor {
         mode === 'eval'
           ? EMPTY_RECALL
           : await this.d.memory
-              .recall(org.id, agent.id, { title: issue?.title ?? req.recallHint ?? req.prompt ?? agent.goal, body: issue?.body ?? '', taskType: issue?.taskType ?? null })
+              .recall(org.id, agent.id, { title: (issue ?? reviewing)?.title ?? req.recallHint ?? req.prompt ?? agent.goal, body: (issue ?? reviewing)?.body ?? '', taskType: (issue ?? reviewing)?.taskType ?? null })
               .catch((err) => {
                 this.k.log.warn({ err, runId: run.id }, 'memory recall failed; continuing without it');
                 return EMPTY_RECALL;
@@ -210,7 +216,8 @@ export class RunExecutor {
         evalDir = mkdtempSync(join(root, 'eval-'));
         entry.workspacePath = evalDir;
       } else {
-        const project = issue?.projectId ? this.d.work.getProject(org.id, issue.projectId) : null;
+        const focus = issue ?? reviewing;
+        const project = focus?.projectId ? this.d.work.getProject(org.id, focus.projectId) : null;
         entry.workspacePath = project?.workspacePath ?? this.k.paths.agentWorkspace(org.slug, agent.slug);
         mkdirSync(entry.workspacePath, { recursive: true });
       }
@@ -224,6 +231,13 @@ export class RunExecutor {
         task.mode = mode === 'chat' ? 'chat' : 'custom';
         task.customPrompt = [approvalNote, req.prompt].filter(Boolean).join('\n\n');
         task.issue = issue;
+      } else if (reviewing) {
+        task.mode = 'review';
+        task.issue = reviewing;
+        task.goal = reviewing.goalId ? this.d.work.getGoal(org.id, reviewing.goalId) : null;
+        task.comments = this.d.work.listComments(org.id, reviewing.id);
+        task.files = this.d.work.listIssueFiles?.(org.id, reviewing.id) ?? [];
+        task.inbox = inbox ?? undefined;
       } else if (issue) {
         task.mode = 'issue';
         task.issue = issue;
@@ -234,6 +248,7 @@ export class RunExecutor {
         task.files = this.d.work.listIssueFiles?.(org.id, issue.id) ?? [];
         task.approvalNote = approvalNote;
         if (req.prompt) task.triggerNote = [req.triggerNote, req.prompt].filter(Boolean).join(' — ');
+        task.inbox = inbox ?? undefined;
       } else if (hasReplies && inbox) {
         task.mode = 'inbox';
         task.inbox = inbox;

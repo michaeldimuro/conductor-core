@@ -205,6 +205,10 @@ export const cancelRun = z.strictObject({ reason: z.string().trim().min(1).max(5
 export const listApprovalsQ = z.object({
   status: z.enum(['pending', 'approved', 'denied', 'expired', 'cancelled']).optional(),
   kind: z.string().min(1).max(100).optional(),
+  /** Only approvals raised while working on this issue. */
+  issueId: idStr.optional(),
+  /** Only these approval ids (comma-separated, at most 100). */
+  ids: z.string().transform((v) => [...new Set(v.split(',').map((x) => x.trim()).filter(Boolean))]).pipe(z.array(z.string().min(1).max(200)).max(100)).optional(),
   limit: intQ(1, 1000).optional(),
 });
 export const decideApproval = z.strictObject({ decision: z.enum(['approved', 'denied']), note: text(4000).optional() });

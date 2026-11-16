@@ -53,7 +53,7 @@ const spec = <S extends z.ZodType>(s: Spec<S>): Spec<S> => s;
 export const TOOL_SPECS = {
   inbox: spec({
     description:
-      'Your work queue: assigned, workable issues (by priority, goal weight, age) plus new comments and @mentions since you last looked.',
+      'Your work queue: assigned, workable issues (by priority, goal weight, age), issues waiting for your review verdict, plus new comments and @mentions since you last looked.',
     risk: 'read',
     minAutonomy: AUTONOMY.ASSIST,
     schema: empty,
@@ -129,6 +129,19 @@ export const TOOL_SPECS = {
     risk: 'write',
     minAutonomy: AUTONOMY.SUPERVISED,
     schema: z.strictObject({ issue: optionalIssue, children: z.array(childIssue).min(1).max(50) }),
+  }),
+  hand_off: spec({
+    description:
+      'Hand an issue to the agent who owns its next step — the reviewer, the agent whose decision or input it now waits on, QA, or the specialist for the rest of the work. ' +
+      'The issue is reassigned to them, reopened so they can pick it up, and they are woken on it; your note is posted on the thread. ' +
+      'Use this instead of only @mentioning someone you are waiting on: the assignee must always be whoever acts next. Allowed targets: your manager, peers and reports, and the issue\'s reviewer or creator.',
+    risk: 'write',
+    minAutonomy: AUTONOMY.ASSIST,
+    schema: z.strictObject({
+      issue: optionalIssue,
+      to: agentRef.describe('Agent id or slug of the new holder.'),
+      note: z.string().trim().min(1).max(5000).describe('What they need to do next and where things stand.'),
+    }),
   }),
   escalate: spec({
     description:

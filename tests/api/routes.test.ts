@@ -249,6 +249,9 @@ describe('runs, approvals, budgets, activity', () => {
     expect((await call('GET', '/approvals?status=pending')).json()).toHaveLength(2);
     expect((await call('GET', '/orgs/acme/approvals')).json()).toHaveLength(1);
     expect((await call('GET', `/orgs/globex/approvals/${a.id}`)).statusCode).toBe(404);
+    const b = approvals.request({ orgId: h.orgA.id, kind: 'publish', title: 'Post here', issueId: 'iss_x' });
+    expect((await call('GET', '/orgs/acme/approvals?issueId=iss_x')).json().map((x: { id: string }) => x.id)).toEqual([b.id]);
+    expect((await call('GET', `/orgs/acme/approvals?ids=${a.id},${b.id},${a.id}`)).json()).toHaveLength(2);
 
     const decided = await call('POST', `/orgs/acme/approvals/${a.id}/decide`, { decision: 'approved', note: 'ok' });
     expect(decided.json()).toMatchObject({ status: 'approved', decisionNote: 'ok' });

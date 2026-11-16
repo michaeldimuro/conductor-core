@@ -259,6 +259,8 @@ export interface Inbox {
   newComments: Comment[];
   /** Comments mentioning the agent since its cursor. */
   mentions: Comment[];
+  /** in_review issues waiting for this agent's verdict as their named reviewer (oldest first). Standing work, not cursor-based. */
+  reviews: Issue[];
 }
 
 export type TimelineEntry =
@@ -358,6 +360,8 @@ export interface WorkService {
   escalate(orgId: string, issueId: string, reason: string, actor: Actor): Issue;
   /** Reviewer verdict on an in_review issue: accepted → done; edited → done (+flag); rejected → todo (+rework). */
   review(orgId: string, issueId: string, outcome: 'accepted' | 'edited' | 'rejected', note: string | undefined, actor: Actor): Issue;
+  /** Hand the issue to the agent who owns its next step; it reopens for them and they are woken on it. */
+  handOff(orgId: string, issueId: string, toAgentId: string, note: string, actor: Actor): Issue;
 
   /**
    * Atomic checkout: `UPDATE … SET checkout_lock = runId WHERE checkout_lock IS NULL`.

@@ -294,6 +294,10 @@ export type TranscriptEntry = ReturnType<RuntimeService['transcript']>[number];
 export interface ListApprovalsQuery {
   status?: Approval['status'];
   kind?: string;
+  /** Only approvals raised while working on this issue. */
+  issueId?: string;
+  /** Only these approval ids; sent comma-separated (at most 100). */
+  ids?: string[];
   limit?: number;
 }
 export interface DecideRequest {

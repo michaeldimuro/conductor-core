@@ -196,6 +196,17 @@ describe('governance / approvals', () => {
       expect(gov.approvals.list(null, { limit: 1 })).toHaveLength(1);
       expect(codeOf(() => gov.approvals.list(org.id, { status: 'bogus' as never }))).toBe('validation');
     });
+
+    it('filters by issue and by explicit ids, never crossing orgs', () => {
+      const a = gov.approvals.request({ orgId: org.id, kind: 'publish', title: 'A', issueId: 'iss_1' });
+      k.clock.advance(10);
+      const b = gov.approvals.request({ orgId: org.id, kind: 'payment', title: 'B' });
+      const c = gov.approvals.request({ orgId: other.id, kind: 'publish', title: 'C', issueId: 'iss_1' });
+      expect(gov.approvals.list(org.id, { issueId: 'iss_1' }).map((x) => x.id)).toEqual([a.id]);
+      expect(gov.approvals.list(org.id, { ids: [a.id, b.id, c.id] }).map((x) => x.id)).toEqual([b.id, a.id]);
+      expect(gov.approvals.list(org.id, { ids: [b.id], status: 'pending' }).map((x) => x.id)).toEqual([b.id]);
+      expect(gov.approvals.list(org.id, { ids: [] })).toHaveLength(0);
+    });
   });
 
   describe('consume / findOpen', () => {

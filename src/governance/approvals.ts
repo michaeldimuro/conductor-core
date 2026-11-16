@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { approvals, knownRecipients, organizations } from '../db/schema/index.js';
 import { APPROVAL_KINDS, type ApprovalKind } from '../db/schema/governance.js';
@@ -222,7 +222,7 @@ export class Approvals implements ApprovalService {
     return row;
   }
 
-  list(orgId: string | null, filter: { status?: Approval['status']; kind?: string; limit?: number } = {}): Approval[] {
+  list(orgId: string | null, filter: { status?: Approval['status']; kind?: string; issueId?: string; ids?: string[]; limit?: number } = {}): Approval[] {
     const where: SQL[] = [];
     if (orgId !== null) where.push(eq(approvals.orgId, orgId));
     if (filter.status !== undefined) {
@@ -230,6 +230,8 @@ export class Approvals implements ApprovalService {
       where.push(eq(approvals.status, filter.status));
     }
     if (filter.kind !== undefined) where.push(sql`${approvals.kind} = ${filter.kind}`);
+    if (filter.issueId !== undefined) where.push(eq(approvals.issueId, filter.issueId));
+    if (filter.ids !== undefined) where.push(filter.ids.length ? inArray(approvals.id, filter.ids) : sql`0 = 1`);
     const limit = Math.max(1, Math.min(Math.trunc(filter.limit ?? 100) || 100, 1000));
     return this.k.db
       .select()

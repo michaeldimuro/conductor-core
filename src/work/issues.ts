@@ -11,7 +11,7 @@ import { activeGoalOfAgent, ensureDefaultGoal, getGoal } from './goals.js';
 import { getProject } from './projects.js';
 import { actingAgent, assertCanAssign, assertCanTouch, assertMayCreateIssues } from './permissions.js';
 import { issueFilter, issueInput, issuePatch } from './schemas.js';
-import { CREATABLE_STATUSES, assertTransition, isClosed } from './status.js';
+import { CREATABLE_STATUSES, assertTransition, isClosed, statusForNewHolder } from './status.js';
 
 /**
  * True when every issue listed in `issues.blocked_by` is done. Written against
@@ -331,8 +331,8 @@ export function updateIssue(
       if (patch.assigneeAgentId) {
         assertCanAssign(ctx, orgId, agent, patch.assigneeAgentId);
         requireAssignable(ctx, orgId, patch.assigneeAgentId);
-        // Assigned work is ready work.
-        if (issue.status === 'backlog' && status === undefined) status = 'todo';
+        // The new holder is woken on it, so it must be able to act: reopen work it could not otherwise pick up.
+        if (status === undefined) status = statusForNewHolder(issue, patch.assigneeAgentId);
       }
       changes.assigneeAgentId = patch.assigneeAgentId;
     }

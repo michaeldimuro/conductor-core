@@ -11,7 +11,7 @@ import {
 
 type IssueTools =
   | 'inbox' | 'get_issue' | 'search_issues' | 'create_issue' | 'update_issue' | 'comment'
-  | 'delegate' | 'escalate' | 'report_progress' | 'save_artifact' | 'review_issue' | 'reassign';
+  | 'delegate' | 'escalate' | 'report_progress' | 'save_artifact' | 'review_issue' | 'reassign' | 'hand_off';
 
 export const issueHandlers: Handlers<IssueTools> = {
   inbox(env, ctx) {
@@ -20,6 +20,7 @@ export const issueHandlers: Handlers<IssueTools> = {
       issues: box.issues.map((i) => ({ ...issueBrief(i), expectedOutput: i.expectedOutput })),
       newComments: box.newComments.map(commentView),
       mentions: box.mentions.map(commentView),
+      reviews: box.reviews.map(issueBrief),
     };
   },
 
@@ -185,6 +186,13 @@ export const issueHandlers: Handlers<IssueTools> = {
     const issue = resolveIssue(env, ctx, args.issue);
     const updated = env.work.review(ctx.orgId, issue.id, args.outcome, args.note || undefined, actorOf(ctx));
     return { issue: issueBrief(updated), reviewOutcome: updated.reviewOutcome, reworkCount: updated.reworkCount };
+  },
+
+  hand_off(env, ctx, args) {
+    const issue = resolveIssue(env, ctx, args.issue);
+    const to = resolveAgent(env, ctx, args.to);
+    const updated = env.work.handOff(ctx.orgId, issue.id, to.id, args.note, actorOf(ctx));
+    return { issue: issueBrief(updated), handedTo: to.slug, status: updated.status };
   },
 
   reassign(env, ctx, args) {

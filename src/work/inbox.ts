@@ -5,6 +5,7 @@ import { comments, goals, inboxCursors, issues, runs } from '../db/schema/index.
 import { invalid } from '../shared/errors.js';
 import { requireAgent, type WorkCtx } from './context.js';
 import { BLOCKERS_DONE_SQL } from './issues.js';
+import { reviewsOwnWork } from './permissions.js';
 import { WORKABLE_STATUSES } from './status.js';
 
 const COMMENT_LIMIT = 500;
@@ -22,9 +23,11 @@ function cursorOf(ctx: WorkCtx, orgId: string, agentId: string): number {
  * PRD heartbeat step 3. Issues: assigned to the agent, workable, not locked
  * by another agent's run, every blocker done — by priority, then goal weight,
  * then age. Comments/mentions: since the agent's cursor, never its own.
+ * Reviews: in_review issues naming the agent as reviewer, until it gives a
+ * verdict — never cursor-based, so a review ping cannot be lost.
  */
 export function inbox(ctx: WorkCtx, orgId: string, agentId: string): Inbox {
-  requireAgent(ctx, orgId, agentId);
+  const agent = requireAgent(ctx, orgId, agentId);
   const db = ctx.kernel.db;
 
   const ownRuns = db
@@ -82,7 +85,16 @@ export function inbox(ctx: WorkCtx, orgId: string, agentId: string): Inbox {
     .limit(COMMENT_LIMIT)
     .all();
 
-  return { issues: rows.map((r) => r.issue), newComments, mentions };
+  const reviews = db
+    .select()
+    .from(issues)
+    .where(and(eq(issues.orgId, orgId), eq(issues.reviewerAgentId, agentId), eq(issues.status, 'in_review'), isNull(issues.checkoutLock)))
+    .orderBy(asc(issues.updatedAt), asc(issues.number))
+    .all()
+    // A review it may not give (its own work) is not its to do: listing it would wake it for nothing, forever.
+    .filter((i) => !reviewsOwnWork(ctx, orgId, agent, i));
+
+  return { issues: rows.map((r) => r.issue), newComments, mentions, reviews };
 }
 
 export function markInboxSeen(ctx: WorkCtx, orgId: string, agentId: string, at?: number): void {

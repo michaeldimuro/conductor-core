@@ -16,6 +16,7 @@ import { Markdown } from '../components/markdown.js';
 import { ArtifactChips, ArtifactViewer } from '../components/artifacts.js';
 import { fromArtifact, guessType, type ViewerFile } from '../lib/artifacts.js';
 import { ARTIFACT_EVENTS } from './Artifacts.js';
+import { ApprovalChip, PendingApprovals, approvalIdsIn } from '../components/approvals.js';
 
 type CommentAttachments = NonNullable<AddCommentRequest['attachments']>;
 
@@ -128,6 +129,15 @@ const attachmentFiles = (c: Extract<TimelineEntry, { kind: 'comment' }>['comment
   return { key: `${c.id}:${i}`, name: a.name, contentType: guessType(a.name, a.mime), viewUrl: `${url}?inline=1`, downloadUrl: url };
 });
 
+type AuditEntry = Extract<TimelineEntry, { kind: 'activity' }>['activity'];
+
+/** The approval an activity row is about: an approval event, or a tool call that was held for one. */
+function approvalOf(a: AuditEntry): string | null {
+  if (a.entityKind === 'approval' && a.entityId) return a.entityId;
+  const id = (a.data ?? {}).approvalId;
+  return typeof id === 'string' && id.startsWith('apr_') ? id : null;
+}
+
 function Timeline({ entries, dir, base, onOpen }: { entries: TimelineEntry[]; dir: Directory; base: string; onOpen: (f: ViewerFile, list: ViewerFile[]) => void }) {
   if (entries.length === 0) return <Empty icon="activity" title="No activity on this issue yet" />;
   return (
@@ -160,7 +170,7 @@ function Timeline({ entries, dir, base, onOpen }: { entries: TimelineEntry[]; di
           <li key={`a-${a.id}`} className={`tl-activity${isTool ? ' tl-tool' : ''}`}>
             <details>
               <summary>
-                <span className="tl-line"><ActionBadge action={a.action} /><span><strong>{actorName(a, dir)}</strong> {isTool ? 'called a tool' : humanize(a.action).toLowerCase()}{summary ? <span className="dim">: {summary}</span> : null}</span></span>
+                <span className="tl-line"><ActionBadge action={a.action} /><span><strong>{actorName(a, dir)}</strong> {isTool ? 'called a tool' : humanize(a.action).toLowerCase()}{summary ? <span className="dim">: {summary}</span> : null}{approvalOf(a) ? <> <ApprovalChip id={approvalOf(a)!} /></> : null}</span></span>
                 <time className="muted" title={dateTime(a.ts)}>{ago(a.ts)}</time>
               </summary>
               <div className="tl-detail">
@@ -215,6 +225,20 @@ function IssueLinks({ ids, title }: { ids: string[]; title: string }) {
   );
 }
 
+/** Approval ids the issue's description, comments and activity point at. */
+function referencedApprovals(issue: Issue, entries: TimelineEntry[] | undefined): string[] {
+  const texts: string[] = [issue.body ?? '', issue.expectedOutput ?? ''];
+  const ids: string[] = [];
+  for (const e of entries ?? []) {
+    if (e.kind === 'comment') texts.push(e.comment.body);
+    else {
+      const id = approvalOf(e.activity);
+      if (id) ids.push(id);
+    }
+  }
+  return [...new Set([...approvalIdsIn(texts), ...ids])];
+}
+
 export function IssueDetail() {
   const { org, base } = useOrg();
   const { issue: ref = '' } = useParams();
@@ -240,6 +264,7 @@ export function IssueDetail() {
 
   if (!issue) return <div className="page page-narrow">{issueQ.error ? <ErrorNote error={issueQ.error} retry={issueQ.reload} /> : <Loading lines={5} />}</div>;
   const goal = goals.data?.find((g) => g.id === issue.goalId);
+  const referenced = referencedApprovals(issue, timeline.data);
   const ownerReviews = issue.status === 'in_review' && !issue.reviewerAgentId;
 
   return (
@@ -259,6 +284,7 @@ export function IssueDetail() {
       <div className="split">
         <div className="stack-lg">
           {issue.status === 'blocked' && issue.blockedReason ? <p className="note note-stop">Blocked: {blockedText(issue.blockedReason)}</p> : null}
+          <PendingApprovals org={org} issueId={issue.id} referencedIds={referenced} />
           {ownerReviews ? <Review issue={issue} /> : null}
           <Panel icon="description" title="Description">
             <div className="stack">

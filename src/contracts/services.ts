@@ -22,7 +22,7 @@ export interface ApprovalService {
   /** Emits `approval.decided`. The requesting context executes its own action on that event. */
   decide(orgId: string, approvalId: string, decision: 'approved' | 'denied', by: Actor, note?: string): Approval;
   get(orgId: string, approvalId: string): Approval;
-  list(orgId: string | null, filter?: { status?: Approval['status']; kind?: string; limit?: number }): Approval[];
+  list(orgId: string | null, filter?: { status?: Approval['status']; kind?: string; issueId?: string; ids?: string[]; limit?: number }): Approval[];
   /**
    * Find an approved, unconsumed approval for (kind, matchKey) and mark it
    * consumed. `payload.matchKey` identifies the exact action (e.g. agent+tool+argsHash).

@@ -2,12 +2,12 @@ import type { CreateIssueInput } from '../contracts/org-work.js';
 import type { Actor } from '../contracts/types.js';
 import type { Issue } from '../contracts/rows.js';
 import { conflict, forbidden, invalid } from '../shared/errors.js';
-import { parse, type WorkCtx } from './context.js';
+import { parse, requireAssignable, type WorkCtx } from './context.js';
 import { addComment } from './comments.js';
 import { applyChanges, createIssue, getIssue, type IssueChanges } from './issues.js';
-import { actingAgent, assertCanTouch, assertMayCreateIssues, canTouch } from './permissions.js';
+import { actingAgent, assertCanHandOff, assertCanTouch, assertMayCreateIssues, canTouch, reviewsOwnWork } from './permissions.js';
 import { reasonText, reviewOutcome } from './schemas.js';
-import { isClosed } from './status.js';
+import { assertTransition, isClosed, statusForNewHolder } from './status.js';
 
 const actorLabel = (actor: Actor): string => (actor.kind === 'human' ? 'the owner' : `${actor.kind} ${actor.id ?? ''}`.trim());
 
@@ -112,6 +112,40 @@ export function escalate(ctx: WorkCtx, orgId: string, issueId: string, rawReason
 }
 
 /**
+ * Hand an issue to the agent who owns its next step (a review, a decision, QA, another specialty) so the
+ * assignee is always whoever must act next. The handing run gives up its checkout and the issue reopens
+ * for the new holder (`statusForNewHolder`), who is woken on it by the assignment.
+ */
+export function handOff(ctx: WorkCtx, orgId: string, issueId: string, toAgentId: string, rawNote: string, actor: Actor): Issue {
+  const note = parse(reasonText, rawNote);
+  return ctx.tx(() => {
+    const issue = getIssue(ctx, orgId, issueId);
+    if (isClosed(issue.status)) throw conflict(`issue #${issue.number} is ${issue.status} and cannot be handed off`);
+    const agent = actingAgent(ctx, orgId, actor);
+    assertCanTouch(ctx, orgId, agent, issue);
+    const to = requireAssignable(ctx, orgId, toAgentId);
+    if (to.id === issue.assigneeAgentId) throw invalid(`issue #${issue.number} is already assigned to ${to.slug}`);
+    assertCanHandOff(ctx, orgId, agent, issue, to.id);
+
+    const releasing = !!actor.runId && issue.checkoutLock === actor.runId;
+    const changes: IssueChanges = releasing ? { checkoutLock: null, checkoutAt: null } : {};
+    changes.assigneeAgentId = to.id;
+    // Work this run was in the middle of goes back to ready for the new holder to check out.
+    const status = releasing && issue.status === 'in_progress' ? 'todo' : statusForNewHolder(issue, to.id);
+    if (status && status !== issue.status) {
+      assertTransition(issue.status, status);
+      changes.status = status;
+    }
+    const updated = applyChanges(ctx, issue, changes, actor, {
+      action: 'issue.handed_off',
+      data: { note, fromAgentId: issue.assigneeAgentId, toAgentId: to.id },
+    });
+    addComment(ctx, orgId, issueId, { body: `Handed to @${to.slug} by ${agent ? agent.name : actorLabel(actor)}: ${note}` }, actor);
+    return updated;
+  });
+}
+
+/**
  * Reviewer verdict on an in_review issue. accepted → done; edited → done with
  * `reviewOutcome = 'edited'`; rejected → todo, `reworkCount + 1`, and the note
  * posted as a comment. Agent reviewers must be the named reviewer or manage
@@ -134,7 +168,7 @@ export function review(
     }
     const agent = actingAgent(ctx, orgId, actor);
     if (agent) {
-      if (issue.assigneeAgentId === agent.id) throw forbidden('an agent cannot review its own work');
+      if (reviewsOwnWork(ctx, orgId, agent, issue)) throw forbidden('an agent cannot review its own work');
       if (issue.reviewerAgentId !== agent.id && !canTouch(ctx, orgId, agent, issue)) {
         throw forbidden(`agent ${agent.slug} is not the reviewer of issue #${issue.number}`);
       }

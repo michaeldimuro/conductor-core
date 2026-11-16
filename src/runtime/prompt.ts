@@ -69,6 +69,8 @@ export function buildSystemPrompt(i: SystemPromptInput): string {
     '- Work happens on issues. When you finish, call `conductor-tasks__report_progress` with status `done`, `in_review` or `blocked` (with a reason) and a concise summary of results and artifacts. If you do not, your final message is posted as the result.',
     '- Files you produce for the owner (reports, documents, spreadsheets, charts, images, HTML pages) belong in the artifact store: call `conductor-tasks__save_artifact` with the file\'s path so they can open it in the dashboard, and attach it to your report. In a chat, save every file you mention in your reply.',
     '- If an issue is too large for one sitting, split it into child issues and delegate down your reporting line with `conductor-tasks__delegate`. Before filing new issues, search for open duplicates.',
+    '- The assignee of an issue is whoever owns its NEXT step. When that is someone else — a review, a decision or input you are waiting on, QA, another specialty — hand the issue to them with `conductor-tasks__hand_off` and a note on what they must do; they are woken on it. Do not leave an issue assigned to yourself while it waits on another agent, and do not rely on an @mention alone to move work. When an issue is handed to you, act on it in that run.',
+    '- Choosing how to do something: (1) when a connector tool covers the task (e.g. Gmail for email, Calendar for scheduling), use it; (2) when none does, do it on this computer directly: files, shell and local CLIs (git, gh, npm and the like) or local apps when you have a shell, otherwise the browser tools (`conductor-browser__*`). A missing connector is never a reason to stop or report `blocked`. Work that can run on this machine (cloning, editing and building code, running tests, pushing) runs here, not in a remote sandbox or workbench tool.',
     '- Escalate up your reporting line only when you are genuinely blocked. Do not ask questions you can answer with your tools.',
     '- Work autonomously. The owner wants to be interrupted only for (a) directional decisions that change what the business does or which path to take, (b) logging in or authorizing an account, (c) spending money, and (d) destructive or irreversible actions (deleting data, force-pushing, production deploys or rollbacks, publishing publicly). Everything else — reading, researching, running commands, building, testing, committing, drafting, ordinary API reads and writes — just do it. Do not call `conductor-tasks__request_approval` for routine steps or to confirm a plan you can carry out; pick a sensible default, note it in your progress report, and keep going.',
     '- Some actions need board approval. When a tool reports that approval is pending, do NOT retry in a loop: continue with whatever else the issue needs, then end the run WITHOUT reporting the issue done — it is parked for you. You are woken on it when the board decides; then repeat the exact same call (or change course if it was denied).',
@@ -82,7 +84,8 @@ export function buildSystemPrompt(i: SystemPromptInput): string {
 }
 
 export interface TaskPromptInput {
-  mode: 'issue' | 'inbox' | 'proactive' | 'plan' | 'chat' | 'custom';
+  mode: 'issue' | 'review' | 'inbox' | 'proactive' | 'plan' | 'chat' | 'custom';
+  /** `issue`: the checked-out issue. `review`: the in_review issue to give a verdict on. */
   issue?: Issue | null;
   goal?: Goal | null;
   parent?: Issue | null;
@@ -90,6 +93,7 @@ export interface TaskPromptInput {
   comments?: Comment[];
   /** `issue` mode: files attached to the issue itself. */
   files?: IssueFile[];
+  /** `inbox` mode: the replies to answer. `issue`/`review` mode: other reviews waiting for this agent. */
   inbox?: Inbox;
   goals?: Goal[];
   /** `plan` mode: the goal to break down into issues. */
@@ -142,7 +146,32 @@ export function buildTaskPrompt(i: TaskPromptInput): string {
     if (i.approvalNote) {
       p.push('\n## Board decisions', i.approvalNote, 'Act on these first, then finish the issue.');
     }
-    p.push('\nDo the work now, then report with `conductor-tasks__report_progress`.');
+    p.push(...waitingReviews(i, is.id));
+    p.push('\nDo the work now, then report with `conductor-tasks__report_progress`. If the next step belongs to another agent, hand the issue to them with `conductor-tasks__hand_off`.');
+    return p.filter(Boolean).join('\n');
+  }
+
+  if (i.mode === 'review' && i.issue) {
+    const is = i.issue;
+    p.push(
+      `Issue ${ref(i)} (id ${is.id}) is waiting for YOUR review: you are its reviewer${is.assigneeAgentId ? ` (assignee: agent ${is.assigneeAgentId})` : ''}. Nothing is checked out for this run.`,
+      `\n# ${is.title}`,
+      is.body || '(no description)',
+      is.expectedOutput ? `\n**Expected output:** ${is.expectedOutput}` : '',
+      i.goal ? `Goal: ${i.goal.title}` : '',
+      is.reworkCount > 0 ? `It has been sent back for rework ${is.reworkCount} time(s) already.` : '',
+    );
+    if (i.files?.length) p.push('\n## Files attached to this issue', ...i.files.map((f) => `- ${fmtFile(f.name, f.file)}`));
+    const thread = i.comments?.slice(-20) ?? [];
+    if (thread.length) p.push('\n## Thread (oldest first)', ...thread.map(fmtComment));
+    if (i.files?.length || thread.some((c) => c.attachments.length > 0)) p.push(`\n${VIEW_FILES}`);
+    p.push(
+      '\nCheck the result against the expected output (read the linked work: PRs, artifacts, files). Then you MUST give a verdict with `conductor-tasks__review_issue`:',
+      '- `accepted` when it is good, `edited` when you fixed small things yourself, `rejected` with a concrete note when it needs rework.',
+      '- When rejecting, make sure the issue sits with whoever does the rework: if it is assigned to you, hand it back with `conductor-tasks__hand_off` after the verdict.',
+      '- If the verdict is not yours to give (it needs the owner or another specialist), hand the issue to them with `conductor-tasks__hand_off` and say why. Never end this run without a verdict or a hand-off.',
+    );
+    p.push(...waitingReviews(i, is.id));
     return p.filter(Boolean).join('\n');
   }
 
@@ -155,7 +184,8 @@ export function buildTaskPrompt(i: TaskPromptInput): string {
       p.push(`- on issue ${c.issueId}: ${fmtComment(c)}`);
     }
     if ([...i.inbox.mentions, ...i.inbox.newComments].some((c) => c.attachments.length > 0)) p.push(`\n${VIEW_FILES}`);
-    p.push('\nRead the relevant issues, reply with `conductor-tasks__comment`, and take any action that is yours to take.');
+    p.push(...waitingReviews(i, null));
+    p.push('\nRead the relevant issues, reply with `conductor-tasks__comment`, and take any action that is yours to take. If someone is waiting on you for an issue, act on it now; if the next step on an issue is someone else\'s, hand it to them with `conductor-tasks__hand_off`.');
     return p.join('\n');
   }
 
@@ -184,6 +214,17 @@ export function buildTaskPrompt(i: TaskPromptInput): string {
     '\nDecide the most valuable next step toward these goals. Check existing issues first to avoid duplicates, then create well-scoped issues (with an expected output) for yourself or your reports. Do not invent busywork: if nothing useful can be done now, say so and stop.',
   );
   return p.join('\n');
+}
+
+/** Other reviews waiting for this agent, so a run on something else still sees them. */
+function waitingReviews(i: TaskPromptInput, except: string | null): string[] {
+  const others = (i.inbox?.reviews ?? []).filter((r) => r.id !== except);
+  if (others.length === 0) return [];
+  return [
+    `\n## Also waiting for your review (${others.length})`,
+    ...others.slice(0, 10).map((r) => `- ${i.orgSlug.toUpperCase()}-${r.number} "${r.title}" (id ${r.id})`),
+    'Give each a verdict with `conductor-tasks__review_issue` once you are done here — other agents are blocked on them.',
+  ];
 }
 
 function ref(i: TaskPromptInput): string {
