@@ -36,6 +36,9 @@ const CODEX_MODELS = {
   ],
 };
 
+/** Steps that wait on a spawned (fake) CLI: generous, because a fully loaded test run can delay process start. */
+const CLI_WAIT = 20_000;
+
 /**
  * Fake `claude` and `codex` binaries: canned help, status and catalog; a device login that flips a state file.
  * The device login completes only once the test has seen its code (it writes `codex-approved`), the way a person
@@ -211,29 +214,31 @@ describe.skipIf(!ready)('web console: models and provider accounts', () => {
     await page.goto(`${origin}/o/${slug}/settings/providers`);
     const claude = page.getByRole('region', { name: 'Claude Code account' });
     const codex = page.getByRole('region', { name: 'Codex account' });
-    await claude.getByText('Logged in with Claude subscription', { exact: true }).waitFor();
+    await claude.getByText('Logged in with Claude subscription', { exact: true }).waitFor({ timeout: CLI_WAIT });
     await claude.getByText('max', { exact: true }).waitFor();
     await claude.getByText(`org/${slug}/claude-oauth-token`).waitFor();
-    await codex.getByText('Not logged in', { exact: true }).waitFor();
+    await codex.getByText('Not logged in', { exact: true }).waitFor({ timeout: CLI_WAIT });
 
     await codex.getByRole('button', { name: 'Log in' }).click();
     await codex.getByText('Only at the Mac').waitFor();
     await codex.getByRole('radio', { name: /ChatGPT \(device code\)/ }).check();
     await codex.getByRole('button', { name: 'Start login' }).click();
-    await codex.getByText('https://auth.openai.com/codex/device').waitFor();
-    await codex.getByText('FAKE-CODE42').waitFor();
+    await codex.getByText('https://auth.openai.com/codex/device').waitFor({ timeout: CLI_WAIT });
+    await codex.getByText('FAKE-CODE42').waitFor({ timeout: CLI_WAIT });
     writeFileSync(approveFile, ''); // the person finishes signing in
     await codex.getByRole('link', { name: 'Open the sign-in page' }).waitFor();
-    await codex.getByText('Logged in with ChatGPT account', { exact: true }).waitFor({ timeout: 15_000 });
+    await codex.getByText('Logged in with ChatGPT account', { exact: true }).waitFor({ timeout: CLI_WAIT });
     expect(await codex.getByText('Logged in', { exact: true }).count()).toBe(1);
     expect(problems).toEqual([]);
-  }, 30_000);
+  }, 60_000);
 
   it('fits a phone screen without horizontal overflow', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     await page.goto(`${origin}/o/${slug}/settings/providers`);
-    await page.getByRole('region', { name: 'Codex account' }).getByText('Logged in with ChatGPT account', { exact: true }).waitFor();
+    // Layout only: wait for the account to render in whatever state the previous test left it, so this test
+    // never depends on the login test having finished.
+    await page.getByRole('region', { name: 'Codex account' }).getByText(/^(Logged in with ChatGPT account|Not logged in)$/).waitFor({ timeout: CLI_WAIT });
     expect(await overflow()).toBeLessThanOrEqual(0);
     await page.goto(`${origin}/o/${slug}/agents/${codexAgent.slug}`);
     // On a phone the agent's secondary actions sit behind Actions.

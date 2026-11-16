@@ -175,7 +175,7 @@ export function RunView() {
   const agent = dir.agent(run.agentId);
   const snap = run.capabilitySnapshot;
   return (
-    <div className="page">
+    <div className="page run-page">
       <header className="page-head">
         <div className="page-head-text">
           <nav className="crumbs" aria-label="Breadcrumb">
@@ -184,6 +184,7 @@ export function RunView() {
           </nav>
           <h1 className="row"><Status value={run.status} /> <span>{humanize(run.trigger)} run</span></h1>
           {issue.data ? <p>Working on <Link to={`${base}/issues/${issue.data.number}`}>#{issue.data.number} {issue.data.title}</Link></p> : null}
+          {isLive && run.phase ? <p className="run-phase"><span className="lamp lamp-go lamp-live" aria-hidden="true" />{agent?.name ?? 'The agent'} is {run.phase.toLowerCase()}</p> : null}
         </div>
         {isLive ? (
           <ConfirmButton icon="stop" label="Cancel run" danger title="Cancel this run" confirmLabel="Cancel run" message="The agent stops at the next step and the issue it holds is released." onConfirm={() => cancel.run()} />
@@ -191,7 +192,7 @@ export function RunView() {
       </header>
       {run.error ? <p className="note note-stop">{run.error}</p> : null}
       {isLive ? <OrgTakeovers org={org} runId={run.id} /> : null}
-      <div className="tiles">
+      <div className="tiles run-tiles">
         <div className="tile"><span className="tile-label"><Icon name="calendar" size={14} />Started</span><span className="tile-sub">{dateTime(run.startedAt ?? run.createdAt)}</span></div>
         <div className="tile"><span className="tile-label"><Icon name="duration" size={14} />Duration</span><span className="tile-value">{run.startedAt ? duration((run.endedAt ?? Date.now()) - run.startedAt) : 'Queued'}</span></div>
         <div className="tile"><span className="tile-label"><Icon name="steps" size={14} />Steps</span><span className="tile-value">{run.steps}</span></div>

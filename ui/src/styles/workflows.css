@@ -314,3 +314,21 @@ a.need-title:hover { color: var(--accent-hover); }
   .costs-page .costs-ledger { order: 6; }
 }
 @media (max-width: 860px) { .costs-page .grid-2 > :first-child { order: 2; } }
+
+/* ── Run transcript: on a phone the stats are a strip, the transcript is the page ── */
+.run-phase { display: flex; align-items: center; gap: 8px; color: var(--go) !important; font-weight: 500; }
+@media (max-width: 860px) {
+  .run-tiles { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 -14px; padding: 0 14px; }
+  .run-tiles::-webkit-scrollbar { display: none; }
+  .run-tiles .tile { flex: none; min-width: 132px; padding: 10px 14px; gap: 2px; }
+  .run-tiles .tile-value { font-size: 19px; }
+  .run-tiles .tile-sub { font-size: 12px; white-space: nowrap; }
+  .run-tiles .tile::after { display: none; }
+  .run-page .page-head p.run-phase { -webkit-line-clamp: unset; display: flex; }
+}
+@media (max-width: 860px) {
+  /* Artifacts: the grid suits a phone, so the layout toggle goes; the source filter scrolls in one line. */
+  .artifact-toolbar .segmented-sm { display: none; }
+  .artifact-toolbar > .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+  .artifact-toolbar > .segmented button { flex: none; }
+}
