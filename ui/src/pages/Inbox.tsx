@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/icons.js';
 import { NeedCard, needLabel } from '../components/needs.js';
+import { LearnedSection } from '../components/learned.js';
 import { Loading } from '../components/ui.js';
 import { useDirectory, useOrg } from '../lib/org.js';
 import { useLiveRuns, useNeeds, type NeedKind } from '../lib/work.js';
@@ -52,6 +53,7 @@ export function Inbox() {
           <div className="row"><Link className="btn" to={base}>Back to Today</Link><Link className="btn btn-quiet" to={`${base}/issues`}>All tasks</Link></div>
         </div>
       )}
+      {filter ? null : <LearnedSection org={org} base={base} />}
     </div>
   );
 }

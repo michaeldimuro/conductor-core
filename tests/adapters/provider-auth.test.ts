@@ -100,6 +100,17 @@ describe('provider auth: Conductor drives the Claude Code / Codex logins', () =>
     expect(changed).toEqual(['codex']);
   });
 
+  it('Codex device login: a code printed after the link still reaches the person', async () => {
+    const split = createProviderAuth(k, { commands: { codex: fakeCli(dir, 'codex', { FAKE_DEVICE_SPLIT_MS: '400', FAKE_DEVICE_MS: '1500' }) } });
+    const s = await split.startLogin('codex', { method: 'device' });
+    const linkOnly = await until(split, s.id, (x) => x.state === 'waiting');
+    expect(linkOnly.url).toBe('https://auth.example/codex/device');
+    const withCode = await until(split, s.id, (x) => x.userCode !== null);
+    expect(withCode).toMatchObject({ state: 'waiting', userCode: 'ABCD-12345', message: 'open the link and enter the code' });
+    await until(split, s.id, (x) => x.state === 'succeeded');
+    split.dispose();
+  });
+
   it('a device login can be cancelled, which kills the CLI', async () => {
     const slow = createProviderAuth(k, { commands: { codex: fakeCli(dir, 'codex', { FAKE_DEVICE_MS: '20000' }) } });
     const s = await slow.startLogin('codex', { method: 'device' });

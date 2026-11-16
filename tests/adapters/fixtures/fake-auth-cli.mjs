@@ -91,7 +91,15 @@ if (cli === 'claude') {
       process.exit(0);
     });
   } else if (has('login', '--device-auth')) {
-    out('\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \u001b[94mhttps://auth.example/codex/device\u001b[0m\n\n2. Enter this one-time code \u001b[90m(expires in 15 minutes)\u001b[0m\n   \u001b[94mABCD-12345\u001b[0m\n');
+    const link = '\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \u001b[94mhttps://auth.example/codex/device\u001b[0m\n\n';
+    const code = '2. Enter this one-time code \u001b[90m(expires in 15 minutes)\u001b[0m\n   \u001b[94mABCD-12345\u001b[0m\n';
+    // FAKE_DEVICE_SPLIT_MS: the link and the code arrive as separate writes, as on a loaded machine.
+    const split = Number(process.env.FAKE_DEVICE_SPLIT_MS ?? 0);
+    if (split) {
+      out(link);
+      await new Promise((r) => setTimeout(r, split));
+      out(code);
+    } else out(link + code);
     const ms = Number(process.env.FAKE_DEVICE_MS ?? 300);
     setTimeout(() => {
       if (process.env.FAKE_DEVICE_FAIL) {

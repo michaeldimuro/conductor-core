@@ -332,3 +332,10 @@ a.need-title:hover { color: var(--accent-hover); }
   .artifact-toolbar > .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
   .artifact-toolbar > .segmented button { flex: none; }
 }
+
+/* ── Learning that waits on the owner ── */
+.learned-row { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: var(--r-2); background: var(--glass); border: 1px solid var(--line-soft); color: var(--ink); }
+.learned-row:hover { color: var(--ink); border-color: var(--line); }
+.learned-row > .grow { display: grid; gap: 2px; min-width: 0; }
+.learned-row .muted { font-size: 13px; }
+.need-memory-text { color: var(--ink); }

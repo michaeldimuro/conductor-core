@@ -107,7 +107,15 @@ export class LoginRun {
           state: 'waiting', url: p.url, userCode: p.userCode, needsCode: p.needsCode,
           message: p.userCode ? 'open the link and enter the code' : p.needsCode ? 'open the link, sign in, then paste the code it shows' : 'finish signing in in the browser',
         });
-      } else if (this.session.state === 'waiting' && p.needsCode && !this.session.needsCode) this.update({ needsCode: true });
+      } else if (this.session.state === 'waiting') {
+        // The CLI's output can arrive in pieces (a loaded machine splits its writes): a device code or prompt that
+        // lands after the link must still reach the person, or they are left with a link and no code.
+        const patch: Partial<LoginSession> = {};
+        if (p.userCode && !this.session.userCode) Object.assign(patch, { userCode: p.userCode, message: 'open the link and enter the code' });
+        if (p.url && !this.session.url) patch.url = p.url;
+        if (p.needsCode && !this.session.needsCode) patch.needsCode = true;
+        if (Object.keys(patch).length) this.update(patch);
+      }
       else if (this.session.state === 'verifying' && this.submittedAt !== null) {
         // Claude Code rejects a bad paste ("Invalid code. Please make sure the full code was copied.") and keeps
         // waiting: hand the prompt back to the human instead of sitting in "verifying".
