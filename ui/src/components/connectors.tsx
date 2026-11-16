@@ -35,8 +35,8 @@ function InstallBody({ onClose, template }: { onClose: () => void; template: Con
   const install = useAction(async () => {
     const target = { scope, scopeId: scope === 'dept' ? deptId : null };
     if (!template) {
-      await api.installConnector(org.id, { name: name.trim(), kind, config, authRef: authRef.trim() || null, ...target });
-      return;
+      // Return the connector: the sheet closes only on a value, so a bare return left it open after a success.
+      return api.installConnector(org.id, { name: name.trim(), kind, config, authRef: authRef.trim() || null, ...target });
     }
     const connector = await api.installConnectorFromTemplate(org.id, { templateId: template.id, name: name.trim(), config, ...target });
     // Secret values travel only through the write-only secrets API, under the connector's own reference.
@@ -47,6 +47,7 @@ function InstallBody({ onClose, template }: { onClose: () => void; template: Con
       else missing.push(secret);
     }
     if (missing.length) toast(`Installed, but still missing: ${missing.join(', ')}. Add them from the connector's row.`, 'info');
+    return connector;
   }, { invalidate: [k(org.id, 'connector')], success: 'Connector installed' });
 
   return (

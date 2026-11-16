@@ -74,6 +74,8 @@ describe.skipIf(!ready)('owner workflows on a phone', () => {
     await services.memory.update(org.id, memory.id, { status: 'review' }, OWNER);
     ids.memory = memory.id;
 
+    services.governance.budgets.record({ orgId: org.id, agentId: lead.id, costUsd: 3.5, tokensIn: 1000, tokensOut: 200, provider: 'claude_api', model: 'claude-sonnet-5-5' });
+
     browser = await chromium.launch({ headless: true });
     page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })).newPage();
     page.setDefaultTimeout(10_000);
@@ -190,5 +192,60 @@ describe.skipIf(!ready)('owner workflows on a phone', () => {
     const org = services.org.getOrgBySlug('phone-co')!;
     await expect.poll(async () => (await api.app.inject({ method: 'GET', url: `/api/v1/orgs/${org.id}/onboarding`, headers: { authorization: `Bearer ${services.governance.tokens.issueOwnerToken('check')}` } })).json().state?.answers?.length).toBe(1);
     clean('new organization');
+  });
+  it('Costs: switches the period and opens every charge', async () => {
+    await page.goto(`${origin}${base}/costs`);
+    await page.getByText('What each agent delivered').waitFor();
+    await page.getByLabel('Period').selectOption('30');
+    await page.getByRole('button', { name: 'Show every charge' }).tap();
+    const ledger = page.locator('.costs-ledger table tbody tr');
+    await ledger.first().waitFor();
+    expect(await ledger.first().textContent()).toContain('$3.50');
+    clean('costs');
+  });
+
+  it('Connectors: installs one with its key, which lands in the secret store, never the page', async () => {
+    await page.goto(`${origin}${base}/connectors`);
+    await page.getByRole('searchbox', { name: 'Search the catalog' }).fill('github');
+    await page.locator('.cat-card', { hasText: 'GitHub' }).first().getByRole('button', { name: 'Install' }).tap();
+    const sheet = page.getByRole('dialog', { name: /Install GitHub/ });
+    await sheet.locator('input[type="password"]').first().fill('ghp_test_value_123');
+    await sheet.getByRole('button', { name: 'Install connector' }).tap();
+    await sheet.waitFor({ state: 'hidden' });
+    const installed = services.connectors.list(orgId).find((c) => c.templateId === 'github');
+    expect(installed).toBeTruthy();
+    expect(await services.kernel.secrets.has(`${installed!.authRef}/GITHUB_PERSONAL_ACCESS_TOKEN`)).toBe(true);
+    expect(await page.content()).not.toContain('ghp_test_value_123');
+    clean('connector install');
+  });
+
+  it('Settings on a phone: from the section list, adds a webhook and a playbook, and opens a messaging gateway form', async () => {
+    await page.goto(`${origin}${base}/settings`);
+    await page.getByRole('link', { name: /Webhooks/ }).tap();
+    await page.getByRole('link', { name: 'Settings' }).waitFor();
+    await page.getByRole('button', { name: 'Add webhook' }).tap();
+    let sheet = page.getByRole('dialog');
+    await sheet.getByLabel('Name', { exact: true }).fill('Stripe payouts');
+    await sheet.getByRole('button', { name: 'Add webhook' }).tap();
+    await sheet.waitFor({ state: 'hidden' });
+    await page.getByText('Stripe payouts').first().waitFor();
+
+    await page.getByRole('link', { name: 'Settings' }).tap();
+    await page.getByRole('link', { name: /Playbooks/ }).tap();
+    await page.getByRole('button', { name: 'New playbook' }).tap();
+    sheet = page.getByRole('dialog');
+    await sheet.getByLabel('Name', { exact: true }).fill('Weekly newsletter');
+    await sheet.getByLabel('Title').first().fill('Draft the issue');
+    await sheet.getByRole('button', { name: 'Create playbook' }).tap();
+    await sheet.waitFor({ state: 'hidden' });
+    await page.getByText('Weekly newsletter').waitFor();
+
+    await page.getByRole('link', { name: 'Settings' }).tap();
+    await page.getByRole('link', { name: /Messaging/ }).tap();
+    await page.getByRole('button', { name: 'Add gateway' }).tap();
+    await page.getByRole('dialog').getByRole('button', { name: 'Add gateway' }).waitFor();
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).tap();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    clean('settings');
   });
 });
