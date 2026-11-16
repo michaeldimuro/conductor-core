@@ -121,6 +121,35 @@ describe.skipIf(!ready)('web console smoke test', () => {
     clean('owner workflows');
   });
 
+  it('renders every screen at phone and desktop size with no script error and no sideways scrolling', async () => {
+    const b = `/o/${slug}`;
+    const a = `${b}/agents/${agentSlug}`;
+    const routes = [
+      '/new-org', '/approvals', b, `${b}/inbox`, `${b}/team`, `${b}/issues`, `${b}/issues?view=board`, `${b}/issues?view=tree`, `${b}/issues/1`,
+      `${b}/goals`, `${b}/artifacts`, `${b}/chart`, `${b}/costs`, `${b}/skills`, `${b}/connectors`, `${b}/activity`,
+      ...['interview', 'models', 'team', 'connectors', 'skills', 'guardrails', 'launch'].map((st) => `${b}/setup/${st}`),
+      ...['', 'tasks', 'runs', 'config', 'skills', 'connectors', 'memory', 'scorecard', 'browser'].map((t) => (t ? `${a}/${t}` : a)),
+      `${b}/settings`, ...['providers', 'secrets', 'remote', 'gateways', 'webhooks', 'playbooks', 'data'].map((x) => `${b}/settings/${x}`),
+    ];
+    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    const wide: string[] = [];
+    try {
+      for (const size of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+        await page.setViewportSize(size);
+        for (const route of routes) {
+          await page.goto(`${origin}${route}`);
+          await page.locator('#content h1, #content .setup-head h1').first().waitFor();
+          await page.waitForTimeout(150);
+          if ((await overflow()) > 0) wide.push(`${route} at ${size.width}px`);
+        }
+      }
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 720 });
+    }
+    expect(wide, 'screens that scroll sideways').toEqual([]);
+    clean('every screen');
+  }, 180_000);
+
   it('renders the issue board with the seeded issue', async () => {
     await page.goto(`${origin}/o/${slug}/issues`);
     await page.getByText('Render the issue board').first().waitFor();
