@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { Icon } from '../../components/icons.js';
+import { SETUP_STEPS, useOnboarding } from '../../lib/setup.js';
 import { BindingEditor, cleanBinding } from '../../components/binding.js';
 import { useConnectors } from '../../components/connectors.js';
 import { Button, Check, ConfirmButton, ErrorNote, Field, Panel, TagInput } from '../../components/ui.js';
@@ -10,12 +12,34 @@ import { useOrg } from '../../lib/org.js';
 import { useAction } from '../../lib/query.js';
 import { ArchivedOrgs, MemoryBackendPanel } from './OrgExtras.js';
 
-const GATED: ReadonlyArray<{ id: string; label: string }> = [
+export const GATED: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'hire_agent', label: 'Hiring an agent' }, { id: 'terminate_agent', label: 'Terminating an agent' }, { id: 'budget_raise', label: 'Raising a budget' },
   { id: 'payment', label: 'Any payment or purchase' }, { id: 'external_send', label: 'First send to a new external recipient' }, { id: 'publish', label: 'Publishing public content' },
   { id: 'grant_connector', label: 'Granting a connector to an agent' }, { id: 'grant_skill', label: 'Granting a skill to an agent' }, { id: 'promote_skill', label: 'Promoting a skill to organization or global scope' },
 ];
 type Policies = NonNullable<UpdateOrgRequest['policies']>;
+
+/** Re-entry to guided setup: re-run the interview when how the organization operates changes, or revisit one step. */
+function GuidedSetupPanel() {
+  const { org, base } = useOrg();
+  const q = useOnboarding(org.id);
+  const state = q.data?.state;
+  const done = new Set(state?.done ?? []);
+  return (
+    <Panel icon="launch" title="Guided setup" actions={<Link to={`${base}/setup/${state && state.status !== 'complete' ? state.step : 'interview'}`}>{state && state.status !== 'complete' ? 'Resume' : state ? 'Run again' : 'Start'}</Link>}>
+      <div className="stack">
+        <p className="dim">{state?.status === 'complete' ? 'Setup is complete. When the way this organization works changes, run the interview again: it drafts fresh prompts and guardrails for you to review.' : 'Walk through the interview, models, team prompts, tools and guardrails one step at a time.'}</p>
+        <div className="setup-card-steps">
+          {SETUP_STEPS.map((s) => (
+            <span key={s.id} className={done.has(s.id) ? 'is-done' : ''}>
+              <Link to={`${base}/setup/${s.id}`}><span className="check-dot" aria-hidden="true">{done.has(s.id) ? <Icon name="check" size={11} strokeWidth={3} /> : null}</span>{s.label}</Link>
+            </span>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 export function OrgSettings() {
   const { org } = useOrg();
@@ -51,6 +75,7 @@ export function OrgSettings() {
 
   return (
     <div className="stack-lg page-narrow">
+    <GuidedSetupPanel />
     <form className="stack-lg" onSubmit={(e) => { e.preventDefault(); void save.run(); }}>
       <Panel icon="org" title="Identity and limits">
         <div className="form-grid">

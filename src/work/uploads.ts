@@ -106,10 +106,19 @@ export function listIssueFiles(paths: ConductorPaths, orgSlug: string, issueId: 
   } catch {
     return [];
   }
+  // Order of attachment: nanosecond mtime (two files saved in the same millisecond still order), then a
+  // clash copy (`name-2.ext`) after its original, then the name.
   return entries
     .filter((e) => e.isFile())
-    .map((e) => describe(paths, orgSlug, join(dir, e.name)))
-    .sort((a, b) => a.modifiedAt - b.modifiedAt || a.name.localeCompare(b.name));
+    .map((e) => ({ file: describe(paths, orgSlug, join(dir, e.name)), ns: lstatSync(join(dir, e.name), { bigint: true }).mtimeNs, copy: copyOf(e.name) }))
+    .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0) || a.copy.stem.localeCompare(b.copy.stem) || a.copy.n - b.copy.n || a.file.name.localeCompare(b.file.name))
+    .map((x) => x.file);
+}
+
+/** `report-2.pdf` → { stem: 'report.pdf', n: 2 }; an original is copy 1. */
+function copyOf(name: string): { stem: string; n: number } {
+  const m = /^(.*)-(\d+)(\.[^.]*)?$/.exec(name);
+  return m && Number(m[2]) >= 2 ? { stem: `${m[1]}${m[3] ?? ''}`, n: Number(m[2]) } : { stem: name, n: 1 };
 }
 
 /** Detach (delete) one task file by name. */

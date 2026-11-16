@@ -5,6 +5,8 @@ import './styles/components.css';
 import './styles/views.css';
 import './styles/artifacts.css';
 import './styles/icons.css';
+import './styles/setup.css';
+import './styles/workflows.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app.js';

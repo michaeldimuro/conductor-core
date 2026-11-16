@@ -90,6 +90,37 @@ describe.skipIf(!ready)('web console smoke test', () => {
     clean('sign-in');
   });
 
+  it('renders guided setup and the command palette', async () => {
+    await page.goto(`${origin}/o/${slug}/setup/interview`);
+    await page.getByRole('heading', { name: 'Tell the team how you work' }).waitFor();
+    await page.getByRole('textbox', { name: 'Your answer' }).waitFor();
+    await page.goto(`${origin}/o/${slug}/setup/guardrails`);
+    await page.getByRole('radio', { name: /Balanced/ }).click();
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox').fill('issues');
+    await page.getByRole('option', { name: /Issues/ }).first().waitFor();
+    await page.keyboard.press('Escape');
+    clean('guided setup');
+  });
+
+  it('renders the owner workflows: Today, Needs you, Team and the phone task list', async () => {
+    await page.goto(`${origin}/o/${slug}`);
+    await page.getByRole('heading', { name: 'Needs you' }).first().waitFor();
+    await page.getByRole('heading', { name: 'Recently done' }).waitFor();
+    await page.goto(`${origin}/o/${slug}/inbox`);
+    await page.getByRole('heading', { name: 'Needs you', level: 1 }).waitFor();
+    await page.getByRole('button', { name: 'Approve' }).first().waitFor();
+    await page.goto(`${origin}/o/${slug}/team`);
+    await page.getByText('Ada Tester').first().waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${origin}/o/${slug}/issues`);
+    await page.getByRole('tablist', { name: 'Task status' }).waitFor();
+    await page.getByRole('tab', { name: /Up next/ }).click();
+    await page.getByText('Render the issue board').first().waitFor();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    clean('owner workflows');
+  });
+
   it('renders the issue board with the seeded issue', async () => {
     await page.goto(`${origin}/o/${slug}/issues`);
     await page.getByText('Render the issue board').first().waitFor();

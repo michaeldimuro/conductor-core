@@ -4,6 +4,7 @@ import { Button, Chip, ConfirmButton, Empty, Load, PageHead, Panel, Status } fro
 import { api } from '../lib/api.js';
 import type { Connector, ConnectorTemplate } from '../lib/api.js';
 import { humanize } from '../lib/format.js';
+import { CatalogCard } from './setup/CapabilitySteps.js';
 import { k, useDirectory, useOrg } from '../lib/org.js';
 import { Icon } from '../components/icons.js';
 import { useAction } from '../lib/query.js';
@@ -42,6 +43,8 @@ export function Connectors() {
   const installed = useConnectors(org.id);
   const catalog = useCatalog();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('');
   const [install, setInstall] = useState<{ template: ConnectorTemplate | null } | null>(null);
   const toggle = (id: string) => setExpanded((prev) => {
     const next = new Set(prev);
@@ -54,40 +57,35 @@ export function Connectors() {
   return (
     <div className="page">
       <PageHead icon="connectors" eyebrow="Tool gateway" title="Connectors" sub="Tools agents reach through the Conductor gateway. Install here, then grant each agent only the tools it needs from its Connectors tab." actions={<Button icon="add" onClick={() => setInstall({ template: null })}>Add a custom connector</Button>} />
-      <Panel icon="installed" title="Installed" flush actions={installed.data?.length ? <Button icon="refresh" small onClick={() => setExpanded(new Set(installed.data!.map((c) => c.id)))}>Check all for changed tools</Button> : null}>
-        <Load q={installed} empty={<Empty icon="connectors" title="No connectors installed"><p>Pick one from the catalog below.</p></Empty>}>
+      <Panel icon="installed" title={(() => { const bad = (installed.data ?? []).filter((c) => c.status === 'error' || c.lastError).length; return bad ? `Installed · ${bad} need attention` : 'Installed'; })()} flush actions={installed.data?.length ? <Button icon="refresh" small onClick={() => setExpanded(new Set(installed.data!.map((c) => c.id)))}>Check all for changed tools</Button> : null}>
+        <Load q={installed} empty={<p className="panel-body muted">Nothing installed yet. Pick a tool below; agents only get the tools you grant them.</p>}>
           {(list) => (
             <ul className="connectors">
-              {list.map((c) => <ConnectorRow key={c.id} connector={c} template={catalog.data?.find((t) => t.id === c.templateId)} expanded={expanded.has(c.id)} onToggle={() => toggle(c.id)} />)}
+              {[...list].sort((x, y) => Number(y.status === 'error' || !!y.lastError) - Number(x.status === 'error' || !!x.lastError)).map((c) => <ConnectorRow key={c.id} connector={c} template={catalog.data?.find((t) => t.id === c.templateId)} expanded={expanded.has(c.id)} onToggle={() => toggle(c.id)} />)}
             </ul>
           )}
         </Load>
       </Panel>
-      <Panel icon="catalog" title="Catalog">
+      <section className="stack">
+        <div className="setup-toolbar">
+          <h2 className="section-title grow"><Icon name="catalog" size={15} />Add a tool</h2>
+          <input className="toolbar-search" type="search" data-search placeholder="Search the catalog" aria-label="Search the catalog" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        {byCategory.size > 1 ? (
+          <div className="filter-chips scroll-chips" role="group" aria-label="Category">
+            <button type="button" aria-pressed={!category} onClick={() => setCategory('')}>All</button>
+            {[...byCategory.keys()].map((c) => <button key={c} type="button" aria-pressed={category === c} onClick={() => setCategory(category === c ? '' : c)}>{humanize(c)}</button>)}
+          </div>
+        ) : null}
         <Load q={catalog} empty={<Empty icon="catalog" title="The catalog is empty" />}>
-          {() => (
-            <div className="stack-lg">
-              {[...byCategory.entries()].map(([category, templates]) => (
-                <section key={category} className="stack">
-                  <h3>{humanize(category)}</h3>
-                  <ul className="catalog">
-                    {templates.map((t) => (
-                      <li key={t.id}>
-                        <span className="tile-glyph" aria-hidden="true"><Icon name="connectors" size={15} /></span>
-                        <div className="grow">
-                          <strong>{t.name}</strong> <Chip>{humanize(t.kind)}</Chip>
-                          <span className="field-hint">{t.description}</span>
-                        </div>
-                        <Button icon="add" small onClick={() => setInstall({ template: t })}>Install</Button>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
-            </div>
-          )}
+          {(all) => {
+            const needle = search.trim().toLowerCase();
+            const shown = all.filter((t) => (!category || t.category === category) && (!needle || `${t.name} ${t.description}`.toLowerCase().includes(needle)));
+            const have = new Set((installed.data ?? []).map((c) => c.templateId));
+            return shown.length ? <ul className="cat-grid">{shown.map((t) => <CatalogCard key={t.id} t={t} installed={have.has(t.id)} onInstall={() => setInstall({ template: t })} />)}</ul> : <Empty icon="search" title="Nothing matches" />;
+          }}
         </Load>
-      </Panel>
+      </section>
       <InstallConnector open={install !== null} onClose={() => setInstall(null)} template={install?.template} />
     </div>
   );

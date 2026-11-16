@@ -1,38 +1,51 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BindingEditor, cleanBinding } from '../components/binding.js';
-import { Button, ErrorNote, Field, Load, PageHead, Panel, Segmented } from '../components/ui.js';
+import { Icon, type IconName } from '../components/icons.js';
+import { Button, ErrorNote, Field, Load, Panel } from '../components/ui.js';
 import { api } from '../lib/api.js';
-import type { OrgBundle, Organization, ProviderBinding } from '../lib/api.js';
-import { numOrNull } from '../lib/format.js';
-import { useAction, useQuery } from '../lib/query.js';
+import type { OrgBundle, Organization } from '../lib/api.js';
+import { setQueryData, useAction, useQuery } from '../lib/query.js';
+import { useOrgs } from '../lib/org.js';
+import { SETUP_STEPS, saveOnboarding } from '../lib/setup.js';
+import { initials } from './setup/TeamStep.js';
 
 type Mode = 'template' | 'blank' | 'import';
 
+const MODES: ReadonlyArray<{ id: Mode; icon: IconName; title: string; blurb: string }> = [
+  { id: 'template', icon: 'grid', title: 'From a template', blurb: 'A ready-made team with departments, roles and prompts you can tune.' },
+  { id: 'blank', icon: 'add', title: 'From scratch', blurb: 'An empty organization. You design the team during setup.' },
+  { id: 'import', icon: 'upload', title: 'Import a bundle', blurb: 'Bring over an organization exported from another Mac.' },
+];
+
 export function NewOrg() {
   const nav = useNavigate();
+  const first = useOrgs().data?.length === 0;
   const templates = useQuery('org-templates', () => api.listOrgTemplates());
   const [mode, setMode] = useState<Mode>('template');
   const [templateId, setTemplateId] = useState('');
   const [name, setName] = useState('');
-  const [mission, setMission] = useState('');
-  const [budget, setBudget] = useState('');
-  const [binding, setBinding] = useState<ProviderBinding | null>(null);
   const [bundle, setBundle] = useState<OrgBundle | null>(null);
   const [bundleError, setBundleError] = useState<string | null>(null);
   const selected = templates.data?.find((t) => t.id === templateId) ?? templates.data?.[0];
 
   const create = useAction(async (): Promise<Organization> => {
-    const defaultProvider = cleanBinding(binding);
+    let org: Organization;
     if (mode === 'template') {
       if (!selected) throw new Error('Choose a template first.');
-      return api.createOrgFromTemplate({ templateId: selected.id, name: name.trim(), mission: mission || undefined, defaultProvider });
-    }
-    if (mode === 'import') {
+      org = await api.createOrgFromTemplate({ templateId: selected.id, name: name.trim() });
+    } else if (mode === 'import') {
       if (!bundle) throw new Error('Choose a bundle file first.');
-      return api.importOrg({ name: name.trim(), bundle });
+      org = await api.importOrg({ name: name.trim(), bundle });
+    } else {
+      org = await api.createOrg({ name: name.trim() });
     }
-    return api.createOrg({ name: name.trim(), mission, budgetMonthlyUsd: numOrNull(budget), defaultProvider });
+    // An imported organization already has its prompts and goals: setup starts at the models it needs.
+    const step = mode === 'import' ? 'models' : 'interview';
+    await saveOnboarding(org.id, null, { status: 'in_progress', step, done: mode === 'import' ? ['interview'] : [] }).catch(() => undefined);
+    // Put the new organization in the cache before navigating, so its routes resolve at once.
+    setQueryData<Organization[]>('orgs', (prev) => [...(prev ?? []).filter((o) => o.id !== org.id), org]);
+    nav(`/o/${org.slug}/setup/${step}`);
+    return org;
   }, { invalidate: ['orgs', 'status'] });
 
   const readBundle = async (file: File | undefined) => {
@@ -49,39 +62,56 @@ export function NewOrg() {
     }
   };
 
+  const ready = !!name.trim() && (mode !== 'import' || !!bundle) && (mode !== 'template' || !!selected);
+
   return (
-    <div className="page page-narrow">
-      <PageHead icon="newOrg" eyebrow="Setup" title="New organization" sub="An organization is an isolated company of agents with its own goals, budget, memory and credentials." />
-      <Segmented label="How to start" value={mode} onChange={setMode} options={[{ value: 'template', label: 'From a template' }, { value: 'blank', label: 'Blank' }, { value: 'import', label: 'Import a bundle' }]} />
-      <form
-        className="stack-lg"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void create.run().then((org) => org && nav(`/o/${org.slug}`));
-        }}
-      >
+    <div className="page page-narrow new-org">
+      <header className="new-org-hero">
+        <span className="eyebrow">{first ? 'Welcome to Conductor' : 'New organization'}</span>
+        <h1>Build a team of agents <em>around your goals</em></h1>
+        <p>An organization is an isolated company of agents with its own mission, budget, memory and credentials. Pick a starting point; a short guided setup does the rest.</p>
+      </header>
+
+      <form className="stack-lg" onSubmit={(e) => { e.preventDefault(); if (ready) void create.run(); }}>
+        <div className="mode-cards" role="radiogroup" aria-label="How to start">
+          {MODES.map((m) => (
+            <button key={m.id} type="button" role="radio" aria-checked={mode === m.id} className={`mode-card${mode === m.id ? ' on' : ''}`} onClick={() => setMode(m.id)}>
+              <span className="mode-card-icon" aria-hidden="true"><Icon name={m.icon} size={18} /></span>
+              <strong>{m.title}</strong>
+              <span className="muted">{m.blurb}</span>
+            </button>
+          ))}
+        </div>
+
         {mode === 'template' ? (
-          <Load q={templates} empty={<Panel><p className="muted">No templates are installed. Start from a blank organization instead.</p></Panel>}>
+          <Load q={templates} empty={<Panel><p className="muted">No templates are installed. Start from scratch instead.</p></Panel>}>
             {(list) => (
-              <div className="choice-list" role="radiogroup" aria-label="Template">
-                {list.map((t) => (
-                  <label key={t.id} className={`choice${selected?.id === t.id ? ' on' : ''}`}>
-                    <input type="radio" name="template" checked={selected?.id === t.id} onChange={() => setTemplateId(t.id)} />
-                    <span className="grow">
-                      <strong>{t.name}</strong>
-                      <span className="field-hint">{t.description}</span>
-                      <span className="template-depts">
-                        {t.departments.map((d) => (
-                          <span key={d.name}><b>{d.name}</b> {d.agents.map((a) => a.name).join(', ')}</span>
-                        ))}
+              <div className="template-grid" role="radiogroup" aria-label="Template">
+                {list.map((t) => {
+                  const agents = t.departments.flatMap((d) => d.agents);
+                  const on = selected?.id === t.id;
+                  return (
+                    <button key={t.id} type="button" role="radio" aria-checked={on} className={`template-card${on ? ' on' : ''}`} onClick={() => setTemplateId(t.id)}>
+                      <span className="row row-tight template-card-top">
+                        <strong className="grow">{t.name}</strong>
+                        {on ? <span className="template-check" aria-hidden="true"><Icon name="check" size={13} strokeWidth={2.5} /></span> : null}
                       </span>
-                    </span>
-                  </label>
-                ))}
+                      <span className="muted template-card-desc">{t.description}</span>
+                      <span className="avatar-stack" aria-label={`${agents.length} agents`}>
+                        {agents.slice(0, 6).map((a) => <span key={a.name} className="avatar avatar-sm" title={`${a.name}, ${a.role}`}>{initials(a.name)}</span>)}
+                        {agents.length > 6 ? <span className="avatar avatar-sm avatar-more">+{agents.length - 6}</span> : null}
+                      </span>
+                      <span className="template-depts">
+                        {t.departments.map((d) => <span key={d.name} className="chip">{d.name} · {d.agents.length}</span>)}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </Load>
         ) : null}
+
         {mode === 'import' ? (
           <Panel icon="upload" title="Bundle file">
             <div className="stack">
@@ -93,16 +123,24 @@ export function NewOrg() {
             </div>
           </Panel>
         ) : null}
-        <Panel icon="org" title="Details">
-          <div className="form-grid">
-            <Field label="Name"><input value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} placeholder="Acme" /></Field>
-            {mode === 'blank' ? <Field label="Monthly budget (USD)" hint="Empty means no cap."><input type="number" min="0" step="0.01" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} /></Field> : null}
-            {mode !== 'import' ? <Field label="Mission" wide hint="One or two sentences every agent in this organization works toward."><textarea rows={2} value={mission} onChange={(e) => setMission(e.target.value)} /></Field> : null}
-          </div>
-        </Panel>
-        {mode !== 'import' ? <BindingEditor legend="Default model provider" value={binding} onChange={setBinding} inheritLabel="Decide later (agents cannot run until a provider is set)" /> : null}
+
+        <div className="name-field">
+          <label htmlFor="org-name" className="field-label">Name</label>
+          <input id="org-name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} placeholder="Acme" autoComplete="off" />
+        </div>
+
+        <div className="setup-preview">
+          <span className="mono-label">What happens next</span>
+          <ol>
+            {SETUP_STEPS.map((s) => <li key={s.id}><Icon name={s.icon} size={14} />{s.label}</li>)}
+          </ol>
+          <span className="muted">About five minutes. Every step can be skipped and revisited.</span>
+        </div>
+
         <ErrorNote error={create.error} />
-        <div className="form-actions"><Button icon="add" type="submit" variant="primary" busy={create.busy} disabled={!name.trim()}>Create organization</Button></div>
+        <div className="form-actions">
+          <Button type="submit" variant="primary" busy={create.busy} disabled={!ready}>Create and start setup<Icon name="right" size={15} /></Button>
+        </div>
       </form>
     </div>
   );

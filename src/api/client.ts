@@ -132,6 +132,10 @@ export class ConductorClient {
   createOrgFromTemplate = (input: t.FromTemplateRequest) => this.post<t.Organization>('/orgs/from-template', input);
   exportOrg = (org: string) => this.get<t.OrgBundle>(`/orgs/${e(org)}/export`);
   importOrg = (input: t.ImportOrgRequest) => this.post<t.Organization>('/orgs/import', input);
+  getOnboarding = (org: string) => this.get<t.OnboardingResponse>(`/orgs/${e(org)}/onboarding`);
+  putOnboarding = (org: string, state: Omit<t.OnboardingState, 'updatedAt' | 'draft'> & { draft?: t.OnboardingDraft | null }) => this.put<t.OnboardingResponse>(`/orgs/${e(org)}/onboarding`, state);
+  interviewNext = (org: string, answers: t.InterviewAnswer[]) => this.post<t.InterviewResponse>(`/orgs/${e(org)}/onboarding/interview`, { answers });
+  draftOnboarding = (org: string, answers: t.InterviewAnswer[]) => this.post<t.OnboardingDraft>(`/orgs/${e(org)}/onboarding/draft`, { answers });
   engageOrgKillSwitch = (org: string) => this.post<t.KillSwitchResponse>(`/orgs/${e(org)}/kill-switch`);
   releaseOrgKillSwitch = (org: string) => this.del<t.KillSwitchResponse>(`/orgs/${e(org)}/kill-switch`);
   /** Revision history of any revisioned kind (`t.REVISION_KINDS`) inside an org, newest first. */

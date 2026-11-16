@@ -1,150 +1,187 @@
+import { useEffect, useMemo, useRef } from 'react';
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ActivityList } from '../components/activity.js';
-import { TakeoverCallouts, useOpenTakeovers } from '../components/takeover.js';
-import { Empty, Load, Meter, PageHead, Panel, Status } from '../components/ui.js';
-import { api } from '../lib/api.js';
-import type { GoalNode, Issue, Run } from '../lib/api.js';
-import { ago, duration, money, monthStart, seatTime, blockedText } from '../lib/format.js';
-import { k, useDirectory, useOrg, type Directory } from '../lib/org.js';
 import { Icon, StatusIcon } from '../components/icons.js';
+import { NeedCard } from '../components/needs.js';
+import { SetupCard } from '../components/setup-card.js';
+import { Loading, Meter } from '../components/ui.js';
+import { api } from '../lib/api.js';
+import type { GoalNode, Issue } from '../lib/api.js';
+import { ago, money, monthStart } from '../lib/format.js';
+import { k, useDirectory, useOrg } from '../lib/org.js';
 import { useQuery } from '../lib/query.js';
+import { lastSeen, markSeen, useLiveRuns, useNeeds, useRecentlyDone } from '../lib/work.js';
+import { initials } from './setup/TeamStep.js';
 
+const countGoals = (tree: GoalNode[]): number => tree.reduce((n, g) => n + 1 + countGoals(g.children), 0);
 function goalProgress(n: GoalNode): { open: number; done: number } {
   return n.children.reduce((acc, c) => {
     const p = goalProgress(c);
     return { open: acc.open + p.open, done: acc.done + p.done };
   }, { ...n.issueCounts });
 }
+function greeting(now = new Date()): string {
+  const h = now.getHours();
+  return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function RunRow({ run, base, dir }: { run: Run; base: string; dir: Directory }) {
+function Section({ title, count, action, children, id }: { title: string; count?: number; action?: ReactNode; children: ReactNode; id: string }) {
   return (
-    <li className="line">
-      <Status value={run.status} />
-      <Link className="grow truncate line-agent" to={`${base}/runs/${run.id}`}><Icon name="agent" size={14} />{dir.agentName(run.agentId)}{run.phase ? <span className="muted"> {run.phase}</span> : null}</Link>
-      <span className="muted nowrap">{run.startedAt ? duration((run.endedAt ?? Date.now()) - run.startedAt) : ago(run.createdAt)}</span>
-    </li>
+    <section className="today-section" aria-labelledby={id}>
+      <header className="today-section-head">
+        <h2 id={id}>{title}{count ? <span className="today-count">{count}</span> : null}</h2>
+        {action}
+      </header>
+      {children}
+    </section>
   );
 }
 
-function IssueLine({ issue, base, dir }: { issue: Issue; base: string; dir: Directory }) {
+/** Finished work grouped by who did it: the "what did the team get done" answer in one glance. */
+function DoneDigest({ issues, seen, base }: { issues: Issue[]; seen: number; base: string }) {
+  const { org } = useOrg();
+  const dir = useDirectory(org.id);
+  const groups = useMemo(() => {
+    const m = new Map<string, Issue[]>();
+    for (const i of issues) m.set(i.assigneeAgentId ?? '', [...(m.get(i.assigneeAgentId ?? '') ?? []), i]);
+    return [...m.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [issues]);
   return (
-    <li className="line">
-      <StatusIcon status={issue.status} />
-      <Link className="grow truncate" to={`${base}/issues/${issue.number}`}><span className="muted">#{issue.number}</span> {issue.title}</Link>
-      <span className="muted nowrap truncate line-meta">{issue.blockedReason ? blockedText(issue.blockedReason) : dir.agentName(issue.assigneeAgentId)}</span>
-    </li>
+    <ul className="digest">
+      {groups.map(([agentId, list]) => {
+        const name = dir.agentName(agentId || null, 'Unassigned');
+        const fresh = list.filter((i) => (i.closedAt ?? i.updatedAt) > seen).length;
+        return (
+          <li key={agentId || 'none'} className="digest-agent">
+            <div className="digest-head">
+              <span className="avatar avatar-sm" aria-hidden="true">{initials(name)}</span>
+              <span className="grow"><strong>{name}</strong> <span className="muted">finished {plural(list.length, 'task')}</span></span>
+              {fresh ? <span className="new-pill">{fresh} new</span> : null}
+            </div>
+            <ul className="digest-items">
+              {list.slice(0, 3).map((i) => (
+                <li key={i.id}>
+                  <Link to={`${base}/issues/${i.number}`} className={(i.closedAt ?? i.updatedAt) > seen ? 'is-new' : undefined}>
+                    <StatusIcon status="done" size={14} /><span className="truncate">{i.title}</span><span className="muted nowrap">{ago(i.closedAt ?? i.updatedAt)}</span>
+                  </Link>
+                </li>
+              ))}
+              {list.length > 3 ? <li className="muted digest-more">and {list.length - 3} more</li> : null}
+            </ul>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
+/**
+ * Today: the owner's home. Answers, in order, "does anything need me?", "who is
+ * working on what?" and "what got done since I last looked?". Phone first: one
+ * column of short sections, each ending in the screen that goes deeper.
+ */
 export function Overview() {
   const { org, base } = useOrg();
   const dir = useDirectory(org.id);
-  const o = { orgId: org.id };
-  const goals = useQuery(k(org.id, 'goal-tree'), () => api.goalTree(org.id), { ...o, events: ['goal.', 'issue.'] });
-  const running = useQuery(k(org.id, 'runs', 'live'), async () => {
-    const [a, b, c] = await Promise.all([api.listRuns(org.id, { status: 'running', limit: 50 }), api.listRuns(org.id, { status: 'paused', limit: 50 }), api.listRuns(org.id, { status: 'queued', limit: 50 })]);
-    return [...a, ...b, ...c];
-  }, { ...o, events: ['run.started', 'run.finished', 'run.paused', 'run.resumed'], pollMs: 30_000 });
-  const needs = useQuery(k(org.id, 'issues', 'needs-owner'), () => api.listIssues(org.id, { status: ['blocked', 'in_review'], limit: 50 }), { ...o, events: ['issue.'] });
-  const approvals = useQuery(k(org.id, 'approvals', 'pending'), () => api.listApprovals(org.id, { status: 'pending', limit: 100 }), { ...o, events: ['approval.'] });
-  const takeovers = useOpenTakeovers(org.id);
-  const spend = useQuery(k(org.id, 'budget', 'month'), () => api.budgetSummary(org.id, { since: monthStart() }), { ...o, events: ['run.finished', 'budget.'] });
-  const activity = useQuery(k(org.id, 'activity', 'recent'), () => api.activity(org.id, { limit: 40 }), { ...o, events: ['issue.', 'run.started', 'run.finished', 'approval.', 'agent.', 'goal.', 'skill.', 'memory.', 'comment.'] });
-  const orgLine = spend.data?.lines.find((l) => l.scope === 'org');
-  const forOwner = (needs.data?.items ?? []).filter((i) => i.status === 'blocked' || !i.reviewerAgentId);
-  const runningNow = (running.data ?? []).filter((r) => r.status === 'running').length;
-  const queuedNow = (running.data ?? []).filter((r) => r.status === 'queued').length;
-  const waiting = (approvals.data?.length ?? 0) + forOwner.length + (takeovers.data?.length ?? 0);
+  const seenRef = useRef(lastSeen(org.id));
+  useEffect(() => {
+    seenRef.current = lastSeen(org.id);
+    return () => markSeen(org.id);
+  }, [org.id]);
+  const { needs, loading: needsLoading, open } = useNeeds(org.id);
+  const live = useLiveRuns(org.id);
+  const done = useRecentlyDone(org.id, 7);
+  const goals = useQuery(k(org.id, 'goal-tree'), () => api.goalTree(org.id), { orgId: org.id, events: ['goal.', 'issue.'] });
+  const spend = useQuery(k(org.id, 'budget', 'month'), () => api.budgetSummary(org.id, { since: monthStart() }), { orgId: org.id, events: ['run.finished', 'budget.'] });
+  const running = (live.data ?? []).filter((r) => r.status === 'running');
+  const queued = (live.data ?? []).filter((r) => r.status !== 'running');
+  const issueById = new Map(open.map((i) => [i.id, i]));
+  const fresh = (done.data ?? []).filter((i) => (i.closedAt ?? i.updatedAt) > seenRef.current).length;
+
+  const summary = [
+    needsLoading ? null : needs.length ? plural(needs.length, 'thing needs', 'things need') + ' you' : 'Nothing needs you',
+    live.data ? (running.length ? `${plural(running.length, 'agent')} working` : 'no one is working right now') : null,
+    done.data && fresh && seenRef.current ? `${fresh} finished since you last looked` : null,
+  ].filter(Boolean).join(' · ');
 
   return (
-    <div className="page">
-      <PageHead icon="overview" eyebrow="Organization overview" title={org.name} sub={org.mission || 'No mission set. Add one in Settings so every agent knows what this organization is for.'} />
-      <div className="tiles" role="group" aria-label="At a glance">
-        <div className="tile">
-          <span className="tile-label"><Icon name="live" size={14} />Running now</span>
-          <span className="tile-value">{running.data ? runningNow : '–'}</span>
-          <span className="tile-sub">{running.data ? `${queuedNow} queued` : ' '}</span>
+    <div className="page today">
+      <header className="screen-head today-head">
+        <span className="eyebrow">{greeting()} · {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</span>
+        <h1>{org.name}</h1>
+        <p className="today-summary">{summary || ' '}</p>
+      </header>
+      <SetupCard org={org} base={base} goals={goals.data ? countGoals(goals.data) : undefined} />
+
+      <div className="today-grid">
+        <div className="today-main">
+          <Section id="t-needs" title="Needs you" count={needs.length} action={needs.length ? <Link to={`${base}/inbox`}>Open inbox</Link> : null}>
+            {needsLoading ? <Loading lines={2} /> : needs.length ? (
+              <ul className="needs">
+                {needs.slice(0, 2).map((n) => <NeedCard key={n.key} need={n} org={org} base={base} />)}
+                {needs.length > 2 ? <li className="needs-more"><Link to={`${base}/inbox`}>{plural(needs.length - 2, 'more decision')}<Icon name="right" size={14} /></Link></li> : null}
+              </ul>
+            ) : <p className="today-empty"><Icon name="check" size={15} />You&apos;re all caught up.</p>}
+          </Section>
+
+          <Section id="t-done" title="Recently done" count={fresh || undefined} action={<Link to={`${base}/activity`}>Activity log</Link>}>
+            {done.data === undefined ? <Loading lines={2} /> : done.data.length ? <DoneDigest issues={done.data} seen={seenRef.current} base={base} /> : <p className="today-empty muted">Nothing finished this week yet. Finished tasks show up here, grouped by agent.</p>}
+          </Section>
         </div>
-        <div className="tile">
-          <span className="tile-label"><Icon name="notify" size={14} />Waiting on you</span>
-          <span className="tile-value">{needs.data && approvals.data ? waiting : '–'}</span>
-          <span className="tile-sub">Approvals, reviews and takeovers</span>
-        </div>
-        <div className="tile">
-          <span className="tile-label"><Icon name="costs" size={14} />Spend this month</span>
-          <span className="tile-value">{spend.data ? money(spend.data.totalUsd) : '–'}</span>
-          <span className="tile-sub">{org.budgetMonthlyUsd == null ? 'No monthly cap' : `of ${money(org.budgetMonthlyUsd)} cap`}</span>
-        </div>
-        <div className="tile">
-          <span className="tile-label"><Icon name="goals" size={14} />Goals</span>
-          <span className="tile-value">{goals.data ? goals.data.length : '–'}</span>
-          <span className="tile-sub">Top-level goals</span>
-        </div>
-      </div>
-      <div className="grid-3">
-        <Panel icon="goals" title="Goals" actions={<Link to={`${base}/goals`}>Goal tree</Link>} flush>
-          <Load q={goals} empty={<Empty icon="goals" title="No goals yet"><Link to={`${base}/goals`}>Set the first goal</Link></Empty>}>
-            {(tree) => (
-              <ul className="lines">
-                {tree.map((n) => {
-                  const p = goalProgress(n);
-                  const total = p.open + p.done;
+
+        <div className="today-side">
+          <Section id="t-now" title="Working now" count={running.length} action={<Link to={`${base}/team`}>Team</Link>}>
+            {live.data === undefined ? <Loading lines={2} /> : running.length || queued.length ? (
+              <ul className="now-list">
+                {[...running, ...queued].slice(0, 5).map((r) => {
+                  const issue = r.issueId ? issueById.get(r.issueId) : undefined;
+                  const name = dir.agentName(r.agentId);
                   return (
-                    <li key={n.goal.id} className="goal-line">
-                      <div className="spread"><span className="truncate">{n.goal.title}</span><span className="muted nowrap">{p.done} of {total} done</span></div>
-                      <div className="meter meter-go" role="meter" aria-label={`${n.goal.title} progress`} aria-valuemin={0} aria-valuemax={total} aria-valuenow={p.done}>
-                        <span className="meter-fill" style={{ width: `${total ? (p.done / total) * 100 : 0}%` }} />
-                      </div>
+                    <li key={r.id}>
+                      <Link to={`${base}/runs/${r.id}`} className="now-item">
+                        <span className={`avatar avatar-sm${r.status === 'running' ? ' avatar-live' : ''}`} aria-hidden="true">{initials(name)}</span>
+                        <span className="grow now-text">
+                          <strong>{name}</strong>
+                          <span className="muted truncate">{r.status === 'running' ? (issue ? issue.title : r.phase ?? 'Working') : r.status === 'queued' ? 'Up next' : 'Paused'}</span>
+                        </span>
+                        <span className="muted nowrap now-time">{r.startedAt ? ago(r.startedAt) : r.status}</span>
+                      </Link>
                     </li>
                   );
                 })}
               </ul>
-            )}
-          </Load>
-        </Panel>
+            ) : <p className="today-empty muted">No one is working right now. Agents wake on their schedule or when you assign something.</p>}
+          </Section>
 
-        <Panel icon="live" title="Active runs" flush>
-          <div aria-live="polite">
-            <Load q={running} lines={2} empty={<Empty icon="runs" title="No agent is running right now" />}>
-              {(runs) => <ul className="lines">{runs.map((r) => <RunRow key={r.id} run={r} base={base} dir={dir} />)}</ul>}
-            </Load>
-          </div>
-        </Panel>
+          <Section id="t-goals" title="Goals" action={<Link to={`${base}/goals`}>All goals</Link>}>
+            {goals.data === undefined ? <Loading lines={2} /> : goals.data.length ? (
+              <ul className="goal-mini">
+                {goals.data.slice(0, 4).map((n) => {
+                  const p = goalProgress(n);
+                  const total = p.open + p.done;
+                  return (
+                    <li key={n.goal.id}>
+                      <Link to={`${base}/issues?goal=${n.goal.id}`}>
+                        <span className="spread"><span className="truncate">{n.goal.title}</span><span className="muted nowrap">{total ? `${Math.round((p.done / total) * 100)}%` : 'Not started'}</span></span>
+                        <span className="meter meter-go" aria-hidden="true"><span className="meter-fill" style={{ width: `${total ? (p.done / total) * 100 : 0}%` }} /></span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : <p className="today-empty muted">No goals yet. <Link to={`${base}/goals`}>Set one</Link> so the team knows what to work toward.</p>}
+          </Section>
 
-        <Panel icon="costs" title="Spend this month" actions={<Link to={`${base}/costs`}>Cost dashboard</Link>}>
-          <Load q={spend} lines={2}>
-            {(s) => (
-              <div className="stack">
-                <p><span className="tile-value">{money(s.totalUsd)}</span> <span className="muted">of {org.budgetMonthlyUsd == null ? 'no cap' : money(org.budgetMonthlyUsd)}</span></p>
-                <Meter value={orgLine?.spentUsd ?? s.totalUsd} cap={org.budgetMonthlyUsd} label="Organization budget used" />
-                <p className="muted">Seat time {seatTime(s.seatSeconds)}{org.seatSecondsMonthly ? ` of ${seatTime(org.seatSecondsMonthly)}` : ''}</p>
+          <Section id="t-spend" title="Spend this month" action={<Link to={`${base}/costs`}>Costs</Link>}>
+            {spend.data ? (
+              <div className="spend-mini">
+                <p><strong>{money(spend.data.totalUsd)}</strong> <span className="muted">{org.budgetMonthlyUsd == null ? 'no cap set' : `of ${money(org.budgetMonthlyUsd)}`}</span></p>
+                <Meter value={spend.data.totalUsd} cap={org.budgetMonthlyUsd} label="Monthly budget used" />
               </div>
-            )}
-          </Load>
-        </Panel>
-      </div>
-
-      <div className="grid-2">
-        <Panel icon="notify" title="Needs you" actions={<Link to="/approvals">Approvals inbox</Link>} flush>
-          <div aria-live="polite">
-            {(approvals.data?.length ?? 0) > 0 ? (
-              <Link className="callout callout-warn" to="/approvals">
-                <strong>{approvals.data!.length}</strong> {approvals.data!.length === 1 ? 'approval is' : 'approvals are'} waiting for your decision
-              </Link>
-            ) : null}
-            <TakeoverCallouts orgId={org.id} sessions={takeovers.data ?? []} />
-            <Load q={needs} lines={2}>
-              {() => forOwner.length === 0 && !approvals.data?.length && !takeovers.data?.length
-                ? <Empty icon="approvals" title="Nothing is waiting on you" />
-                : <ul className="lines">{forOwner.map((i) => <IssueLine key={i.id} issue={i} base={base} dir={dir} />)}</ul>}
-            </Load>
-          </div>
-        </Panel>
-        <Panel icon="activity" title="Recent activity" actions={<Link to={`${base}/activity`}>Full log</Link>} flush>
-          <Load q={activity} empty={<Empty icon="activity" title="Nothing has happened yet" />}>
-            {(items) => <ActivityList items={items} base={base} dir={dir} />}
-          </Load>
-        </Panel>
+            ) : <Loading lines={1} />}
+          </Section>
+        </div>
       </div>
     </div>
   );

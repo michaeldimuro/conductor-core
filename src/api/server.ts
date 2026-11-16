@@ -9,6 +9,7 @@ import { takeoverRoutes } from './takeover.js';
 import { systemRoutes } from './routes/system.js';
 import { authRoutes } from './routes/auth.js';
 import { orgRoutes } from './routes/orgs.js';
+import { onboardingRoutes } from './routes/onboarding.js';
 import { workRoutes } from './routes/work.js';
 import { runRoutes } from './routes/runs.js';
 import { capabilityRoutes } from './routes/capabilities.js';
@@ -100,6 +101,7 @@ export async function createApiServer(services: Services, opts: ApiServerOptions
     authRoutes(api, app, s, guard);
     systemRoutes(api, s, bind);
     orgRoutes(api, s);
+    onboardingRoutes(api, s);
     workRoutes(api, s);
     runRoutes(api, s);
     capabilityRoutes(api, s);

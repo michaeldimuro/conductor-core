@@ -13,6 +13,8 @@ import { AgentPage } from './pages/agent/AgentPage.js';
 import { Approvals } from './pages/Approvals.js';
 import { Artifacts } from './pages/Artifacts.js';
 import { Board } from './pages/Board.js';
+import { Inbox } from './pages/Inbox.js';
+import { Team } from './pages/Team.js';
 import { Connectors } from './pages/Connectors.js';
 import { Costs } from './pages/Costs.js';
 import { Goals } from './pages/Goals.js';
@@ -22,6 +24,7 @@ import { OrgChart } from './pages/OrgChart.js';
 import { Overview } from './pages/Overview.js';
 import { RunView } from './pages/RunView.js';
 import { Settings } from './pages/settings/Settings.js';
+import { Setup } from './pages/setup/Setup.js';
 import { SignIn } from './pages/SignIn.js';
 import { Skills } from './pages/Skills.js';
 import { Takeover } from './pages/Takeover.js';
@@ -57,6 +60,10 @@ function OrgRoutes({ orgs }: { orgs: Organization[] }) {
       <ApprovalRefs org={value.org}>
       <Routes>
         <Route index element={<Overview />} />
+        <Route path="setup" element={<Setup />} />
+        <Route path="setup/:step" element={<Setup />} />
+        <Route path="inbox" element={<Inbox />} />
+        <Route path="team" element={<Team />} />
         <Route path="issues" element={<Board />} />
         <Route path="issues/:issue" element={<IssueDetail />} />
         <Route path="goals" element={<Goals />} />

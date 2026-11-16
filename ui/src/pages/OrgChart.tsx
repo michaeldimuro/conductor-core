@@ -53,7 +53,8 @@ function AgentCard({ agent, dept, isLead, onEdit }: { agent: Agent; dept?: Depar
           <span className="meta-item"><Icon name="budget" size={13} />{agent.budgetUsd == null ? 'No budget cap' : `${money(agent.budgetUsd)} a month`}</span>
         </p>
       </div>
-      <AgentActions agent={agent} onEdit={onEdit} />
+      <span className="chart-card-actions"><AgentActions agent={agent} onEdit={onEdit} /></span>
+      <Link className="chart-card-open" to={`${base}/agents/${agent.slug}`} aria-label={`Open ${agent.name}`}><Icon name="right" size={16} /></Link>
     </div>
   );
 }
@@ -126,11 +127,12 @@ function DeptFormBody({ onClose, dept, dir }: { onClose: () => void; dept?: Depa
 }
 
 export function OrgChart() {
-  const { org } = useOrg();
+  const { org, base } = useOrg();
   const dir = useDirectory(org.id);
   const chart = useQuery(k(org.id, 'chart'), () => api.orgChart(org.id), { events: ['agent.', 'org.updated'], orgId: org.id });
   const [view, setView] = useState<'lines' | 'departments'>('lines');
-  const [hire, setHire] = useState<{ deptId?: string } | null>(null);
+  // `?hire=1` (from the command palette) opens the hire form on arrival.
+  const [hire, setHire] = useState<{ deptId?: string } | null>(() => (new URLSearchParams(window.location.search).get('hire') === '1' ? {} : null));
   const [editAgent, setEditAgent] = useState<Agent | null>(null);
   const [deptForm, setDeptForm] = useState<{ dept?: Department } | null>(null);
   const deptStatus = useAction((d: Department, archive: boolean) => (archive ? api.archiveDepartment(org.id, d.id) : api.unarchiveDepartment(org.id, d.id)),
@@ -156,7 +158,7 @@ export function OrgChart() {
         </Panel>
       ) : null}
       {view === 'departments' || (chart.data?.length === 0 && dir.departments.length > 0) ? (
-        <Load q={{ ...chart, data: dir.loading ? undefined : dir.departments }} empty={<Panel><Empty icon="dept" title="No departments yet"><Button icon="add" variant="primary" onClick={() => setDeptForm({})}>Create the first department</Button></Empty></Panel>}>
+        <Load q={{ ...chart, data: dir.loading ? undefined : dir.departments }} empty={<Panel><Empty icon="dept" title="No departments yet"><Button icon="add" variant="primary" onClick={() => setDeptForm({})}>Create the first department</Button><Link to={`${base}/setup/team`}>Or build the team in guided setup</Link></Empty></Panel>}>
           {(depts) => (
             <div className="stack-lg">
               {depts.map((d) => {

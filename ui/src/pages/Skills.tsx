@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { SkillModal, SkillTable } from '../components/SkillDetail.js';
+import { SkillModal, SkillTable, scopeName } from '../components/SkillDetail.js';
+import { Icon } from '../components/icons.js';
 import { Button, Empty, Field, FormShell, Load, Modal, PageHead, Panel, Segmented } from '../components/ui.js';
 import { api } from '../lib/api.js';
 import type { Skill } from '../lib/api.js';
@@ -28,7 +29,7 @@ function ScopeFields({ scope, setScope, scopeId, setScopeId, dir }: { scope: Ski
   );
 }
 
-function SkillForm({ onClose, dir }: { onClose: () => void; dir: Directory }) {
+export function SkillForm({ onClose, dir }: { onClose: () => void; dir: Directory }) {
   const { org } = useOrg();
   const [mode, setMode] = useState<'write' | 'import'>('write');
   const [scope, setScope] = useState<Skill['scope']>('org');
@@ -78,10 +79,43 @@ export function Skills() {
   const needle = search.trim().toLowerCase();
   const shown = (skills.data ?? []).filter((s) => (!scope || s.scope === scope) && (!status || s.status === status) && (!needle || s.name.toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle)));
   const drafts = (skills.data ?? []).filter((s) => s.status === 'draft').length;
+  // Activation is gated on an evaluation; an untested draft can be tested first or activated anyway by the owner.
+  const activate = useAction((id: string, force?: boolean) => api.activateSkill(org.id, id, force ? { force: true } : {}), { invalidate: [k(org.id, 'skill')], success: 'Activated. Agents can load it now.' });
+  const evaluate = useAction((id: string) => api.evaluateSkill(org.id, id), { invalidate: [k(org.id, 'skill')], success: (r) => (r.passed ? `Passed (${Math.round(r.score * 100)}%). Activate it when ready.` : r.needsReview ? 'Inconclusive. Open it to review the result.' : 'It did not beat the baseline. Review or retire it.') });
+  const retire = useAction((id: string) => api.setSkillStatus(org.id, id, 'deprecated'), { invalidate: [k(org.id, 'skill')], success: 'Retired. It stays in history.' });
   return (
     <div className="page">
       <PageHead icon="skills" eyebrow="Library" title="Skills" sub="Reusable procedures agents load when a task calls for them. Agents write their own as drafts; you decide what becomes active." actions={<Button icon="add" variant="primary" onClick={() => setCreating(true)}>New skill</Button>} />
-      {drafts > 0 && status !== 'draft' ? <p className="note note-warn"><span>{drafts} {drafts === 1 ? 'draft is' : 'drafts are'} waiting for review.</span><Button icon="review" small onClick={() => setStatus('draft')}>Show drafts</Button></p> : null}
+      {drafts > 0 ? (
+        <section className="stack review-queue" aria-labelledby="skill-queue">
+          <h2 id="skill-queue" className="section-title"><Icon name="review" size={15} />Waiting for your review <span className="today-count">{drafts}</span></h2>
+          <ul className="needs">
+            {(skills.data ?? []).filter((x) => x.status === 'draft').map((x) => (
+              <li key={x.id} className="need need-info">
+                <div className="need-top">
+                  <span className="need-kind"><Icon name="skills" size={13} />{x.author === 'human' ? 'Your draft' : 'Written by an agent'}</span>
+                  <span className="need-chain">{x.evalScore != null ? `Eval ${Math.round(x.evalScore * 100)}%` : 'Not tested yet'}</span>
+                  <span className="grow" />
+                  <span className="muted need-age">{scopeName(x, dir)}</span>
+                </div>
+                <button type="button" className="need-title link-btn skill-open" onClick={() => setOpen(x)}>{x.name}</button>
+                <p className="need-ask">{x.description}</p>
+                <div className="need-actions">
+                  <Button small variant="quiet" icon="view" onClick={() => setOpen(x)}>Review</Button>
+                  <span className="grow" />
+                  <Button small variant="danger" busy={retire.busy} onClick={() => void retire.run(x.id)}>Retire</Button>
+                  {x.evalScore == null ? (
+                    <>
+                      <Button small busy={activate.busy} onClick={() => void activate.run(x.id, true)} title="Skip the evaluation and make it available now">Activate anyway</Button>
+                      <Button small variant="primary" icon="spark" busy={evaluate.busy} onClick={() => void evaluate.run(x.id)} title="Replay past tasks with and without this skill">Test it</Button>
+                    </>
+                  ) : <Button small variant="primary" icon="check" busy={activate.busy} onClick={() => void activate.run(x.id)}>Activate</Button>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <div className="toolbar" role="search">
         <input className="toolbar-search" type="search" data-search placeholder="Search skills" aria-label="Search skills" value={search} onChange={(e) => setSearch(e.target.value)} />
         <select aria-label="Filter by scope" value={scope} onChange={(e) => setScope(e.target.value)}><option value="">Any scope</option>{SCOPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select>

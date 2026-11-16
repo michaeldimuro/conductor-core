@@ -17,6 +17,9 @@ import { ChatTab, RunsTab, TasksTab } from './RunsChat.js';
 import { ScorecardTab } from './ScorecardTab.js';
 import { Icon, type IconName } from '../../components/icons.js';
 import { SkillsTab } from './SkillsTab.js';
+import { useLiveRuns, useOpenIssues, useRecentlyDone } from '../../lib/work.js';
+import { describe } from '../Team.js';
+import { initials } from '../setup/TeamStep.js';
 
 /** Chat comes first: opening an agent lands you in the conversation with it. */
 const TABS: ReadonlyArray<{ id: string; label: string; icon: IconName }> = [
@@ -98,11 +101,39 @@ function ConfigTab({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
   );
 }
 
+/** What this agent is doing right now and what it got through this week, before any tab. */
+function AgentBrief({ agent }: { agent: Agent }) {
+  const { org, base } = useOrg();
+  const live = useLiveRuns(org.id);
+  const open = useOpenIssues(org.id);
+  const done = useRecentlyDone(org.id, 7);
+  const recent = useQuery(k(org.id, 'runs', 'recent'), () => api.listRuns(org.id, { limit: 100 }), { orgId: org.id, events: ['run.finished'] });
+  if (!live.data || !open.data) return null;
+  const d = describe(agent, live.data, open.data, recent.data?.find((r) => r.agentId === agent.id && r.status !== 'running'), base);
+  const mine = open.data.filter((i) => i.assigneeAgentId === agent.id);
+  const finished = (done.data ?? []).filter((i) => i.assigneeAgentId === agent.id);
+  return (
+    <section className={`agent-brief is-${d.state}`} aria-label="Status">
+      <div className="agent-brief-now">
+        <span className={`avatar${d.state === 'working' ? ' avatar-live' : ''}`} aria-hidden="true">{initials(agent.name)}</span>
+        <p className={`team-line team-line-${d.state}`}>{d.line}</p>
+        {d.to ? <Link className="btn btn-sm" to={d.to}>{d.state === 'working' ? 'Watch' : 'Open'}</Link> : null}
+      </div>
+      <dl className="agent-brief-stats">
+        <div><dt>Done this week</dt><dd>{finished.length}</dd></div>
+        <div><dt>Open tasks</dt><dd>{mine.length}</dd></div>
+        <div><dt>Waiting on you</dt><dd>{mine.filter((i) => i.status === 'blocked' || (i.status === 'in_review' && !i.reviewerAgentId)).length}</dd></div>
+      </dl>
+    </section>
+  );
+}
+
 export function AgentPage() {
   const { org, base } = useOrg();
   const { agent: slug = '', tab = 'chat' } = useParams();
   const dir = useDirectory(org.id);
   const [editing, setEditing] = useState(false);
+  const [more, setMore] = useState(false);
   const agent = dir.agents.find((a) => a.slug === slug || a.id === slug);
   const run = useAction(() => runNow(org.id, agent!.id, agent!.name), { invalidate: [k(org.id, 'runs')] });
   if (!agent) {
@@ -119,13 +150,15 @@ export function AgentPage() {
         <div className="page-head-text">
           <nav className="crumbs" aria-label="Breadcrumb"><Link to={`${base}/chart`}>Org chart</Link><span aria-hidden="true">/</span><span>{dir.dept(agent.deptId)?.name}</span></nav>
           <h1 className="page-title-icon"><span className="page-icon page-icon-agent"><Icon name="agent" size={22} /></span>{agent.name}</h1>
-          <p className="row"><span>{agent.role}</span><Status value={agent.status} label={agent.status === 'paused' && agent.pausedReason ? `Paused: ${agent.pausedReason}` : undefined} />{dir.dept(agent.deptId)?.leadAgentId === agent.id ? <Chip tone="info">Lead</Chip> : null}</p>
+          <p className="row agent-sub"><span>{agent.role}</span><Status value={agent.status} label={agent.status === 'paused' && agent.pausedReason ? `Paused: ${agent.pausedReason}` : undefined} />{dir.dept(agent.deptId)?.leadAgentId === agent.id ? <Chip tone="info">Lead</Chip> : null}</p>
         </div>
-        <div className="row page-actions">
-          <AgentActions agent={agent} onEdit={() => setEditing(true)} />
+        <div className="row page-actions agent-head-actions">
+          <span className={`agent-secondary${more ? ' open' : ''}`}><AgentActions agent={agent} onEdit={() => setEditing(true)} /></span>
+          <Button className="more-toggle" icon="menu" aria-expanded={more} onClick={() => setMore((v) => !v)}>Actions</Button>
           <Button icon="play" variant="primary" busy={run.busy} disabled={agent.status !== 'active'} onClick={() => void run.run()}>Run now</Button>
         </div>
       </header>
+      <AgentBrief agent={agent} />
       <nav className="tabs" aria-label="Agent sections">
         {TABS.map((t) => <NavLink key={t.id} to={t.id === 'chat' ? here : `${here}/${t.id}`} end><Icon name={t.icon} size={14} />{t.label}</NavLink>)}
       </nav>

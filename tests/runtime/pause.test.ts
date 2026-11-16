@@ -15,21 +15,32 @@ import { createLogger } from '../../src/shared/util.js';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('pause stops the run clocks', () => {
+  describe('RunGuard', () => {
+  // The guard keeps time with Date.now and setTimeout only, so fake timers make these exact instead of
+  // racing the machine: under a loaded test run, a 200 ms real-time limit could expire before the pause.
+  const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms);
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('RunGuard: paused time does not count against the wall limit', async () => {
     const guard = new RunGuard('run_guard_1', 200);
     try {
-      await sleep(60);
+      await tick(60);
       expect(pauseRunClock('run_guard_1')).toBe(1);
       const left = guard.remainingMs();
-      await sleep(400); // twice the whole limit, spent paused
+      await tick(400); // twice the whole limit, spent paused
       expect(guard.reason).toBeNull();
       expect(guard.signal.aborted).toBe(false);
       expect(guard.remainingMs()).toBe(left); // frozen
       expect(guard.elapsedSeconds()).toBeLessThan(0.2);
       resumeRunClock('run_guard_1');
-      await sleep(40);
+      await tick(40);
       expect(guard.reason).toBeNull(); // still has what was left
-      await sleep(left + 80);
+      await tick(left + 80);
       expect(guard.reason).toBe('timeout');
     } finally {
       guard.dispose();
@@ -40,14 +51,16 @@ describe('pause stops the run clocks', () => {
     pauseRunClock('run_guard_2');
     const guard = new RunGuard('run_guard_2', 50);
     try {
-      await sleep(150);
+      await tick(150);
       expect(guard.reason).toBeNull();
       resumeRunClock('run_guard_2');
-      await sleep(150);
+      await tick(150);
       expect(guard.reason).toBe('timeout');
     } finally {
       guard.dispose();
     }
+  });
+
   });
 
   describe('ProcessSupervisor (real worker process)', () => {

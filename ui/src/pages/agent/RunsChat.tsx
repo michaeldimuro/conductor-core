@@ -1,4 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+
+/** First-conversation prompts: the questions an owner usually asks a new hire. */
+const STARTERS = [
+  'What are you working on right now, and what is next?',
+  'How are we tracking against your goals?',
+  'Is anything blocking you that I can help with?',
+  'What would you do differently with more budget or tools?',
+] as const;
 import { Link } from 'react-router-dom';
 import { Button, ConfirmButton, Empty, ErrorNote, Load, Panel, Status } from '../../components/ui.js';
 import { IssueForm } from '../../components/IssueForm.js';
@@ -159,7 +167,12 @@ export function ChatTab({ agent }: { agent: Agent }) {
           <ol className="chat-log" aria-live="polite" ref={log}>
             {history.loading ? <li className="chat-empty muted">Loading the conversation…</li> : null}
             {!history.loading && messages.length === 0 && !pending ? (
-              <li className="chat-empty muted">Ask {agent.name} a question or give a quick instruction. The conversation is saved, and {agent.name} sees the recent messages each time you write. For work you want tracked, assign a task instead.</li>
+              <li className="chat-empty muted">
+                <p>Ask {agent.name} a question or give a quick instruction. The conversation is saved, and {agent.name} sees the recent messages each time you write. For work you want tracked, assign a task instead.</p>
+                <div className="chat-starters" role="group" aria-label="Conversation starters">
+                  {STARTERS.map((q) => <button key={q} type="button" onClick={() => setDraft(q)}>{q}</button>)}
+                </div>
+              </li>
             ) : null}
             {messages.map((m) => (
               <li key={m.id} className={`chat-turn ${m.role === 'user' ? 'chat-you' : 'chat-agent'}${m.error ? ' chat-failed' : ''}`}>

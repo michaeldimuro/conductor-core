@@ -449,3 +449,52 @@ export type WsServerMessage =
   | { type: 'unsubscribed'; orgId: string | null; runId: string | null }
   | { type: 'pong' }
   | { type: 'error'; message: string };
+
+/* ── Onboarding (guided setup of a new organization) ── */
+export type OnboardingStep = 'interview' | 'models' | 'team' | 'connectors' | 'skills' | 'guardrails' | 'launch';
+export interface InterviewAnswer {
+  /** Core question id (purpose, outcomes, voice, tools, guardrails, cadence) or `followup-n`. */
+  id?: string;
+  question: string;
+  answer: string;
+}
+export interface InterviewQuestion {
+  id: string;
+  question: string;
+  hint: string;
+}
+export interface OnboardingState {
+  status: 'in_progress' | 'complete' | 'skipped';
+  step: OnboardingStep;
+  done: OnboardingStep[];
+  answers: InterviewAnswer[];
+  /** The draft accepted from the interview; later steps offer its suggestions. */
+  draft: OnboardingDraft | null;
+  updatedAt: number;
+}
+export interface OnboardingResponse {
+  /** Null when this organization never started guided setup. */
+  state: OnboardingState | null;
+  steps: OnboardingStep[];
+  questions: InterviewQuestion[];
+}
+export interface InterviewResponse {
+  done: boolean;
+  question: InterviewQuestion | null;
+  /** No model was available, so the interview stops after the core questions. */
+  offline: boolean;
+}
+export interface OnboardingDraft {
+  mission: string;
+  /** Markdown for the owner model (how the owner wants the team to operate). */
+  ownerProfile: string;
+  goals: Array<{ title: string; successMetric: string }>;
+  /** Suggested prompt fields per existing agent. */
+  agents: Array<{ id: string; goal: string; backstory: string }>;
+  guardrails: { budgetMonthlyUsd: number | null; approvalSpendThresholdUsd: number | null; autonomyLevel: number };
+  /** Connector catalog template ids that match the tools the owner named. */
+  connectors: string[];
+  summary: string;
+  /** Built by heuristics from the owner's own words (no model available). */
+  offline: boolean;
+}

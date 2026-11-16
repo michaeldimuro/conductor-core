@@ -25,3 +25,4 @@ export function errorText(e: unknown): string {
 }
 
 export const isUnauthorized = (e: unknown): boolean => e instanceof ConductorApiError && e.status === 401;
+export const isNotFound = (e: unknown): boolean => e instanceof ConductorApiError && e.status === 404;

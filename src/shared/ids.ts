@@ -1,4 +1,10 @@
-import { ulid } from 'ulid';
+import { monotonicFactory } from 'ulid';
+
+/**
+ * Monotonic: two ids minted in the same millisecond still sort in creation order, so `ORDER BY createdAt, id`
+ * is a true creation order (chat history, timelines) instead of a coin flip on ties.
+ */
+const ulid = monotonicFactory();
 
 /** Entity id prefixes. Every id is `<prefix>_<ulid>` so logs are self-describing. */
 export const ID_PREFIX = {

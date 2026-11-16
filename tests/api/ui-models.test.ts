@@ -36,12 +36,17 @@ const CODEX_MODELS = {
   ],
 };
 
-/** Fake `claude` and `codex` binaries: canned help, status and catalog; a device login that flips a state file. */
-function writeFakeClis(dir: string): { claude: string; codex: string } {
+/**
+ * Fake `claude` and `codex` binaries: canned help, status and catalog; a device login that flips a state file.
+ * The device login completes only once the test has seen its code (it writes `codex-approved`), the way a person
+ * finishes signing in after reading it. A timed exit raced the page's polling on a loaded machine.
+ */
+function writeFakeClis(dir: string): { claude: string; codex: string; approve: string } {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'help.txt'), CLAUDE_HELP);
   writeFileSync(join(dir, 'models.json'), JSON.stringify(CODEX_MODELS));
   const state = join(dir, 'codex-logged-in');
+  const approve = join(dir, 'codex-approved');
   const claude = join(dir, 'claude');
   writeFileSync(claude, `#!/bin/sh
 case "$1" in
@@ -63,7 +68,8 @@ case "$1 $2" in
     echo "   https://auth.openai.com/codex/device"
     echo "2. Enter this one-time code (expires in 15 minutes)"
     echo "   FAKE-CODE42"
-    sleep 2
+    i=0
+    while [ ! -f "${approve}" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
     touch "${state}"
     exit 0 ;;
   "logout "*) rm -f "${state}" ;;
@@ -72,7 +78,7 @@ esac
 `);
   chmodSync(claude, 0o755);
   chmodSync(codex, 0o755);
-  return { claude, codex };
+  return { claude, codex, approve };
 }
 
 /**
@@ -92,6 +98,8 @@ describe.skipIf(!ready)('web console: models and provider accounts', () => {
   let claudeAgent: { id: string; slug: string };
   const saved: Record<string, string | undefined> = {};
   const problems: string[] = [];
+  /** Written once the test has read the device code: the fake login then completes. */
+  let approveFile = '';
 
   beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), 'conductor-ui-models-'));
@@ -101,6 +109,7 @@ describe.skipIf(!ready)('web console: models and provider accounts', () => {
       process.env[v] = mkdtempSync(join(home, `${v.toLowerCase()}-`));
     }
     const fakes = writeFakeClis(join(home, 'bin'));
+    approveFile = fakes.approve;
     const cliExec: CliExec = (command, args, opts) => {
       const target = command === 'claude' || command === fakes.claude ? fakes.claude : command === 'codex' || command === fakes.codex ? fakes.codex : null;
       if (!target) return Promise.resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: Object.assign(new Error('blocked in test'), { code: 'ENOENT' }) });
@@ -213,6 +222,7 @@ describe.skipIf(!ready)('web console: models and provider accounts', () => {
     await codex.getByRole('button', { name: 'Start login' }).click();
     await codex.getByText('https://auth.openai.com/codex/device').waitFor();
     await codex.getByText('FAKE-CODE42').waitFor();
+    writeFileSync(approveFile, ''); // the person finishes signing in
     await codex.getByRole('link', { name: 'Open the sign-in page' }).waitFor();
     await codex.getByText('Logged in with ChatGPT account', { exact: true }).waitFor({ timeout: 15_000 });
     expect(await codex.getByText('Logged in', { exact: true }).count()).toBe(1);
@@ -226,6 +236,8 @@ describe.skipIf(!ready)('web console: models and provider accounts', () => {
     await page.getByRole('region', { name: 'Codex account' }).getByText('Logged in with ChatGPT account', { exact: true }).waitFor();
     expect(await overflow()).toBeLessThanOrEqual(0);
     await page.goto(`${origin}/o/${slug}/agents/${codexAgent.slug}`);
+    // On a phone the agent's secondary actions sit behind Actions.
+    await page.getByRole('button', { name: 'Actions', exact: true }).click();
     await page.getByRole('button', { name: 'Edit' }).first().click();
     await page.getByRole('dialog').getByLabel('Primary model', { exact: true }).waitFor();
     expect(await overflow()).toBeLessThanOrEqual(0);

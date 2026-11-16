@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { IssueForm, useGoals } from '../components/IssueForm.js';
-import { Button, Chip, ErrorNote, Loading, PageHead } from '../components/ui.js';
+import { Button, Chip, ErrorNote, Field, Loading, Modal, PageHead, Segmented } from '../components/ui.js';
+import { TaskList } from '../components/task-list.js';
 import { Icon, PriorityIcon, StatusIcon } from '../components/icons.js';
 import { api } from '../lib/api.js';
 import type { Issue, ListIssuesQuery } from '../lib/api.js';
@@ -123,8 +124,17 @@ export function Board() {
   const dir = useDirectory(org.id);
   const goals = useGoals(org.id);
   const [params, setParams] = useSearchParams();
-  const [creating, setCreating] = useState(false);
+  // `?new=1` (from the command palette) opens the new-issue form on arrival.
+  const [creating, setCreating] = useState(() => params.get('new') === '1');
   const [search, setSearch] = useState(params.get('q') ?? '');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const attention = useQuery(k(org.id, 'issues', 'needs-owner'), () => api.listIssues(org.id, { status: ['blocked', 'in_review'], limit: 50 }), { orgId: org.id, events: ['issue.'] });
+  const blockedCount = attention.data?.items.filter((i) => i.status === 'blocked').length ?? 0;
+  const reviewCount = attention.data?.items.filter((i) => i.status === 'in_review').length ?? 0;
+  const jump = (status: IssueStatus) => {
+    if (params.get('view') !== 'board') setParam('view', 'board');
+    window.setTimeout(() => document.getElementById(`col-${status}`)?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' }), 50);
+  };
   const keys = useRef(new Map<IssueStatus, string>());
 
   const setParam = (name: string, value: string) => {
@@ -160,9 +170,12 @@ export function Board() {
   }), [params]);
   const filterKey = JSON.stringify(filter);
   const filtered = Object.values(filter).some(Boolean);
-  const view = params.get('view') === 'tree' ? 'tree' : 'board';
-  const setView = (v: 'board' | 'tree') => {
-    setParam('view', v === 'tree' ? 'tree' : '');
+  // Phones default to the list: a sideways board of columns is hard to work through with a thumb.
+  const phone = typeof window !== 'undefined' && window.matchMedia('(max-width: 860px)').matches;
+  const named = params.get('view');
+  const view: 'board' | 'list' | 'tree' = named === 'tree' || named === 'list' || named === 'board' ? named : phone ? 'list' : 'board';
+  const setView = (v: 'board' | 'list' | 'tree') => {
+    setParam('view', v);
     try {
       window.localStorage.setItem('conductor.issues.view', v);
     } catch {
@@ -177,7 +190,7 @@ export function Board() {
     } catch {
       // ignore
     }
-    if (saved === 'tree' && !params.has('view')) setParam('view', 'tree');
+    if ((saved === 'tree' || saved === 'list' || (saved === 'board' && !phone)) && !params.has('view')) setParam('view', saved);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -216,28 +229,59 @@ export function Board() {
   return (
     <div className="page board-page">
       <PageHead icon="issues" eyebrow="Work" title="Issues" actions={<Button variant="primary" icon="add" onClick={() => setCreating(true)}>New issue</Button>} />
-      <div className="toolbar" role="search">
-        <div className="segmented segmented-sm" role="group" aria-label="Issue view">
+      {view === 'board' && blockedCount + reviewCount > 0 ? (
+        <div className="attention-strip" role="group" aria-label="Needs you">
+          <span className="mono-label">Needs you</span>
+          {blockedCount ? <button type="button" className="attention-chip attention-stop" onClick={() => jump('blocked')}><Icon name="hand" size={14} />{blockedCount} blocked</button> : null}
+          {reviewCount ? <button type="button" className="attention-chip attention-warn" onClick={() => jump('in_review')}><Icon name="review" size={14} />{reviewCount} to review</button> : null}
+        </div>
+      ) : null}
+      <div className="toolbar board-toolbar" role="search">
+        <div className="segmented segmented-sm view-toggle" role="group" aria-label="Issue view">
+          <button type="button" className={view === 'list' ? 'on' : undefined} aria-pressed={view === 'list'} onClick={() => setView('list')}><Icon name="tasks" size={13} /> List</button>
           <button type="button" className={view === 'board' ? 'on' : undefined} aria-pressed={view === 'board'} onClick={() => setView('board')}><Icon name="grid" size={13} /> Board</button>
           <button type="button" className={view === 'tree' ? 'on' : undefined} aria-pressed={view === 'tree'} onClick={() => setView('tree')}><Icon name="list" size={13} /> Tree</button>
         </div>
         <input className="toolbar-search" type="search" data-search placeholder="Search titles and descriptions" aria-label="Search issues" value={search} onChange={(e) => setSearch(e.target.value)} />
-        <select aria-label="Filter by assignee" value={filter.assigneeAgentId ?? ''} onChange={(e) => setParam('assignee', e.target.value)}>
+        <Button className="filters-toggle" icon="filter" onClick={() => setFiltersOpen(true)}>{filtered ? 'Filtered' : 'Filter'}</Button>
+        <select className="filter-extra" aria-label="Filter by assignee" value={filter.assigneeAgentId ?? ''} onChange={(e) => setParam('assignee', e.target.value)}>
           <option value="">Any assignee</option>
           {dir.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
-        <select aria-label="Filter by goal" value={filter.goalId ?? ''} onChange={(e) => setParam('goal', e.target.value)}>
+        <select className="filter-extra" aria-label="Filter by goal" value={filter.goalId ?? ''} onChange={(e) => setParam('goal', e.target.value)}>
           <option value="">Any goal</option>
           {(goals.data ?? []).map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
         </select>
-        <input aria-label="Filter by label" placeholder="Label" value={filter.label ?? ''} onChange={(e) => setParam('label', e.target.value.trim())} autoCapitalize="none" />
-        {filtered ? <Button variant="quiet" icon="close" onClick={() => { setSearch(''); setParams(view === 'tree' ? { view: 'tree' } : {}, { replace: true }); }}>Clear filters</Button> : null}
+        <input className="filter-extra" aria-label="Filter by label" placeholder="Label" value={filter.label ?? ''} onChange={(e) => setParam('label', e.target.value.trim())} autoCapitalize="none" />
+        {filtered ? <Button className="filter-extra" variant="quiet" icon="close" onClick={() => { setSearch(''); setParams(view === 'board' ? {} : { view }, { replace: true }); }}>Clear filters</Button> : null}
         {view === 'board' ? <select className="board-jump" aria-label="Jump to column" value="" onChange={(e) => document.getElementById(`col-${e.target.value}`)?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' })}>
           <option value="" disabled>Jump to column</option>
           {ISSUE_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
         </select> : null}
       </div>
-      {view === 'tree' ? <IssueTree filter={filter} filterKey={filterKey} dir={dir} /> : (
+      <Modal open={filtersOpen} onClose={() => setFiltersOpen(false)} title="Filter tasks">
+        <div className="form">
+          <Segmented label="View" value={view} onChange={(v) => setView(v)} options={[{ value: 'list', label: 'List' }, { value: 'board', label: 'Board' }, { value: 'tree', label: 'Tree' }]} />
+          <Field label="Assignee">
+            <select value={filter.assigneeAgentId ?? ''} onChange={(e) => setParam('assignee', e.target.value)}>
+              <option value="">Anyone</option>
+              {dir.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Goal">
+            <select value={filter.goalId ?? ''} onChange={(e) => setParam('goal', e.target.value)}>
+              <option value="">Any goal</option>
+              {(goals.data ?? []).map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+            </select>
+          </Field>
+          <Field label="Label"><input value={filter.label ?? ''} onChange={(e) => setParam('label', e.target.value.trim())} autoCapitalize="none" placeholder="Any label" /></Field>
+          <div className="form-actions">
+            {filtered ? <Button variant="quiet" onClick={() => { setSearch(''); setParams(view === 'board' ? {} : { view }, { replace: true }); }}>Clear</Button> : null}
+            <Button variant="primary" onClick={() => setFiltersOpen(false)}>Done</Button>
+          </div>
+        </div>
+      </Modal>
+      {view === 'list' ? <TaskList filter={filter} dir={dir} /> : view === 'tree' ? <IssueTree filter={filter} filterKey={filterKey} dir={dir} /> : (
         <div className="board">
           {ISSUE_STATUSES.map((s) => (
             <Column key={s} status={s} filter={filter} filterKey={filterKey} dir={dir} register={(st, key) => keys.current.set(st, key)} onMove={onMove} onAssign={onAssign} />

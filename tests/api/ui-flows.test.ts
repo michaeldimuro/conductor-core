@@ -245,17 +245,17 @@ describe.skipIf(!ready)('web console flows', () => {
     const good = await inReview('Ship the pricing page');
     const bad = await inReview('Draft the launch email');
 
+    // The task's summary carries the verdict: Accept, or Changes plus a note to send it back.
     await page.goto(`${origin}/o/${slug}/issues/${good.number}`);
-    await page.getByRole('heading', { name: 'Your review' }).waitFor();
-    await page.getByRole('button', { name: 'Submit review' }).click();
-    await toast(/Review recorded/);
+    await page.locator('.brief').getByRole('button', { name: 'Accept' }).click();
+    await toast(/Accepted and closed/);
     expect(await client.getIssue(orgId, good.id)).toMatchObject({ status: 'done', reviewOutcome: 'accepted' });
 
     await page.goto(`${origin}/o/${slug}/issues/${bad.number}`);
-    await page.getByRole('radio', { name: 'Reject' }).click();
-    await page.getByLabel('What needs to change').fill('Lead with the customer problem.');
-    await page.getByRole('button', { name: 'Submit review' }).click();
-    await toast(/Review recorded/);
+    await page.locator('.brief').getByRole('button', { name: 'Changes' }).click();
+    await page.locator('.brief').getByLabel('Note for the agent').fill('Lead with the customer problem.');
+    await page.locator('.brief').getByRole('button', { name: 'Send back' }).click();
+    await toast(/Sent back with your note/);
     const sentBack = await client.getIssue(orgId, bad.id);
     expect(sentBack.reviewOutcome).toBe('rejected');
     expect(['todo', 'in_progress']).toContain(sentBack.status);

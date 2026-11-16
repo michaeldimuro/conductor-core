@@ -17,6 +17,8 @@ import { ArtifactChips, ArtifactViewer } from '../components/artifacts.js';
 import { fromArtifact, guessType, type ViewerFile } from '../lib/artifacts.js';
 import { ARTIFACT_EVENTS } from './Artifacts.js';
 import { ApprovalChip, PendingApprovals, approvalIdsIn } from '../components/approvals.js';
+import { IssueBrief } from '../components/issue-brief.js';
+import { useOpenIssues } from '../lib/work.js';
 
 type CommentAttachments = NonNullable<AddCommentRequest['attachments']>;
 
@@ -254,6 +256,9 @@ export function IssueDetail() {
   const [viewing, setViewing] = useState<{ file: ViewerFile; list: ViewerFile[] } | null>(null);
   const openFile = (file: ViewerFile, list: ViewerFile[]) => setViewing({ file, list });
   const [editing, setEditing] = useState(false);
+  const [tab, setTab] = useState<'updates' | 'details' | 'work'>('updates');
+  const [everything, setEverything] = useState(false);
+  const openIssues = useOpenIssues(org.id);
   const [subIssue, setSubIssue] = useState(false);
   const inv = { invalidate: [k(org.id, 'issue')] };
   const patch = useAction((p: Parameters<typeof api.updateIssue>[2]) => api.updateIssue(org.id, issue!.id, p), inv);
@@ -275,31 +280,43 @@ export function IssueDetail() {
           <h1 className="issue-title"><StatusIcon status={issue.status} size={22} />{issue.title}</h1>
           <p className="row row-tight issue-sub muted"><span>{STATUS_LABEL[issue.status]}</span><span aria-hidden="true">·</span><PriorityIcon priority={issue.priority} /><span>{PRIORITIES[issue.priority]} priority</span>{issue.assigneeAgentId ? <><span aria-hidden="true">·</span><Icon name="agent" size={14} /><span>{dir.agentName(issue.assigneeAgentId)}</span></> : null}</p>
         </div>
-        <div className="row page-actions">
-          <Button icon="edit" onClick={() => setEditing(true)}>Edit</Button>
-          <Button icon="add" onClick={() => setSubIssue(true)}>Add sub-issue</Button>
+        <div className="row page-actions issue-actions">
+          <Button icon="edit" onClick={() => setEditing(true)} aria-label="Edit"><span className="btn-label-long">Edit</span></Button>
+          <Button icon="add" onClick={() => setSubIssue(true)} aria-label="Add sub-issue"><span className="btn-label-long">Add sub-issue</span></Button>
           <Button icon="play" variant="primary" busy={runNow.busy} disabled={!issue.assigneeAgentId} title={issue.assigneeAgentId ? undefined : 'Assign an agent first'} onClick={() => void runNow.run()}>Run now</Button>
         </div>
       </header>
-      <div className="split">
+      <IssueBrief issue={issue} org={org} base={base} dir={dir} timeline={timeline.data} runs={runs.data} children={children.data?.items} open={openIssues.data ?? []} />
+      <div className="issue-tabs" role="tablist" aria-label="Task sections">
+        {(['updates', 'details', 'work'] as const).map((t) => (
+          <button key={t} type="button" role="tab" aria-selected={tab === t} className={tab === t ? 'on' : undefined} onClick={() => setTab(t)}>
+            {t === 'updates' ? 'Updates' : t === 'details' ? 'Details' : `Files & runs${(runs.data?.length ?? 0) + (artifacts.data?.length ?? 0) ? ` · ${(runs.data?.length ?? 0) + (artifacts.data?.length ?? 0)}` : ''}`}
+          </button>
+        ))}
+      </div>
+      <div className={`split issue-body tab-${tab}`}>
         <div className="stack-lg">
-          {issue.status === 'blocked' && issue.blockedReason ? <p className="note note-stop">Blocked: {blockedText(issue.blockedReason)}</p> : null}
-          <PendingApprovals org={org} issueId={issue.id} referencedIds={referenced} />
-          {ownerReviews ? <Review issue={issue} /> : null}
-          <Panel icon="description" title="Description">
+          <div data-tab="updates"><PendingApprovals org={org} issueId={issue.id} referencedIds={referenced} /></div>
+          <Panel icon="description" title="Description" className="tab-details-only">
             <div className="stack">
               {issue.body ? <Markdown text={issue.body} /> : <p className="muted">No description.</p>}
               {issue.expectedOutput ? <div><h3>Expected output</h3><Markdown text={issue.expectedOutput} className="dim" /></div> : null}
               <TaskFiles orgId={org.id} issueId={issue.id} onOpen={openFile} />
             </div>
           </Panel>
-          <Panel icon="activity" title="Timeline" flush>
-            <Load q={timeline}>{(entries) => <Timeline entries={entries} dir={dir} base={base} onOpen={openFile} />}</Load>
+          {ownerReviews ? <details className="tab-details-only review-more"><summary>More review options</summary><Review issue={issue} /></details> : null}
+          <Panel icon="activity" title="Updates" flush className="tab-updates-only"
+            actions={<Segmented small label="Show" value={everything ? 'all' : 'talk'} onChange={(v) => setEverything(v === 'all')} options={[{ value: 'talk', label: 'Conversation' }, { value: 'all', label: 'All activity' }]} />}>
+            <Load q={timeline}>{(entries) => {
+              // The conversation (and the status changes that matter) by default; tool calls and edits on request.
+              const shown = everything ? entries : entries.filter((e) => e.kind === 'comment' || /^(issue\.(status|review|blocked|escalated|handed)|approval\.)/.test(e.activity.action) || (e.activity.action === 'issue.updated' && typeof e.activity.data?.status === 'string'));
+              return shown.length || everything ? <Timeline entries={shown} dir={dir} base={base} onOpen={openFile} /> : <p className="timeline-quiet muted">No messages yet. <button type="button" className="link-btn" onClick={() => setEverything(true)}>Show all activity ({entries.length})</button></p>;
+            }}</Load>
             <CommentBox agents={dir.staff} busy={comment.busy} onSubmit={async (body, files) => (await comment.run(body, files)) !== undefined} />
           </Panel>
         </div>
         <aside className="stack-lg" aria-label="Issue details">
-          <Panel>
+          <Panel className="tab-details-only">
             <div className="stack">
               <Field label="Status">
                 <select value={issue.status} disabled={patch.busy} onChange={(e) => void patch.run({ status: e.target.value as IssueStatus })}>
@@ -328,7 +345,7 @@ export function IssueDetail() {
               </dl>
             </div>
           </Panel>
-          <Panel icon="link" title="Related">
+          <Panel icon="link" title="Related" className="tab-work-only">
             <div className="stack">
               {issue.parentIssueId ? <IssueLinks ids={[issue.parentIssueId]} title="Parent" /> : null}
               {issue.blockedBy.length ? <IssueLinks ids={issue.blockedBy} title="Blocked by" /> : null}
@@ -342,7 +359,7 @@ export function IssueDetail() {
               </div>
             </div>
           </Panel>
-          <Panel icon="artifacts" title="Artifacts">
+          <Panel icon="artifacts" title="Artifacts" className="tab-work-only">
             <Load q={artifacts} lines={2} empty={<p className="muted">Files the agents save or attach while working on this issue show up here.</p>}>
               {(list) => {
                 const files = list.map(fromArtifact);
@@ -350,7 +367,7 @@ export function IssueDetail() {
               }}
             </Load>
           </Panel>
-          <Panel icon="runs" title="Runs" flush>
+          <Panel icon="runs" title="Runs" flush className="tab-work-only">
             <Load q={runs} lines={2} empty={<Empty icon="issues" title="No agent has worked on this yet" />}>
               {(list) => (
                 <ul className="lines">
