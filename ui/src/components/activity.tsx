@@ -61,3 +61,30 @@ export function ActivityList({ items, base, dir }: { items: AuditRecord[]; base:
     </ol>
   );
 }
+
+const VERBS: Record<string, string> = {
+  'issue.created': 'created', 'issue.updated': 'updated', 'issue.assigned': 'assigned', 'issue.delegated': 'split up', 'issue.escalated': 'escalated',
+  'issue.reviewed': 'reviewed', 'issue.handed_off': 'handed off', 'issue.checked_out': 'picked up', 'issue.released': 'put down',
+  'comment.added': 'commented on', 'run.started': 'started working on', 'run.finished': 'finished a run on', 'run.cancelled': 'cancelled a run on',
+  'approval.requested': 'asked for approval to', 'approval.decided': 'decided on', 'approval.expired': 'let expire',
+  'agent.hired': 'hired', 'agent.paused': 'paused', 'agent.resumed': 'resumed', 'agent.terminated': 'let go of', 'agent.updated': 'updated',
+  'skill.changed': 'updated the skill', 'skill.activated': 'activated the skill', 'skill.created': 'wrote the skill', 'memory.written': 'remembered',
+  'goal.created': 'set the goal', 'goal.updated': 'updated the goal', 'connector.installed': 'installed', 'config.changed': 'changed settings for',
+  'budget.hard_stop': 'stopped spending at the cap for', 'budget.soft_alert': 'warned about spend for', 'tool.called': 'used',
+};
+
+/** One audit record as a short sentence's verb: "moved to Blocked", "approved", "used". Unknown actions read as their words. */
+export function activityVerb(rec: AuditRecord): string {
+  const data = rec.data ?? {};
+  if (rec.action === 'issue.updated' && typeof data.status === 'string') return `moved to ${humanize(data.status)}`;
+  if (rec.action === 'approval.decided' && typeof data.status === 'string') return data.status === 'approved' ? 'approved' : data.status === 'denied' ? 'denied' : 'decided on';
+  return VERBS[rec.action] ?? humanize(rec.action.split('.').slice(1).join(' ') || rec.action).toLowerCase();
+}
+
+/** "Today", "Yesterday", or the date: headings for a log read top to bottom. */
+export function dayLabel(ts: number, now = new Date()): string {
+  const d = new Date(ts);
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((start(now) - start(d)) / 86_400_000);
+  return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}

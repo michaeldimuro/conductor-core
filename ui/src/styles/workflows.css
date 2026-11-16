@@ -339,3 +339,36 @@ a.need-title:hover { color: var(--accent-hover); }
 .learned-row > .grow { display: grid; gap: 2px; min-width: 0; }
 .learned-row .muted { font-size: 13px; }
 .need-memory-text { color: var(--ink); }
+
+/* ── Takeover on a phone: the console column never grows past the screen ── */
+.takeover { grid-template-columns: minmax(0, 1fr); }
+.takeover-keys > *, .takeover-keys .row { min-width: 0; }
+.takeover-keys .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+.takeover-keys .segmented::-webkit-scrollbar { display: none; }
+.takeover-keys .segmented button { flex: none; }
+
+/* ── Activity: sentences under day headings ── */
+.audit-days > li { border-top: 0; }
+.audit-day { position: sticky; top: -18px; z-index: 2; margin: 0; padding: 12px 20px 6px; background: linear-gradient(var(--bg-2) 80%, transparent); font: 500 10.5px/1.4 var(--font-code); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3); }
+.audit-days summary { display: flex; align-items: flex-start; gap: 12px; padding: 10px 20px; cursor: pointer; list-style: none; border-top: 1px solid var(--line-soft); }
+.audit-days summary::-webkit-details-marker { display: none; }
+.audit-sentence { flex: 1 1 auto; min-width: 0; color: var(--ink-2); line-height: 1.45; overflow-wrap: anywhere; }
+.audit-sentence strong { color: var(--ink); font-weight: 600; }
+.audit-subject { color: var(--ink); }
+.audit-time { font: 400 11.5px/1.6 var(--font-code); }
+@media (max-width: 860px) { .audit-days summary { padding: 10px 16px; } .audit-day { padding-inline: 16px; } }
+.audit-days details > summary { display: flex !important; flex-wrap: nowrap !important; grid-template-columns: none !important; align-items: flex-start; }
+.audit-days details > summary > .action-badge { flex: none; margin-top: 1px; }
+.audit-days details > summary > .audit-time { flex: none; margin-left: auto; }
+@media (max-width: 860px) {
+  /* Agent page: status as one compact card so the chosen tab starts in the first screen. */
+  .agent-brief { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 10px 12px; }
+  .agent-brief-now { gap: 10px; }
+  .agent-brief-now .avatar { width: 30px; height: 30px; font-size: 11px; border-radius: 9px; }
+  .agent-brief-now .team-line { font-size: 14px; -webkit-line-clamp: 2; }
+  .agent-brief-stats { grid-template-columns: repeat(3, auto); gap: 4px; }
+  .agent-brief-stats > div { padding: 4px 8px; text-align: center; }
+  .agent-brief-stats dt { font-size: 8.5px; letter-spacing: 0.08em; }
+  .agent-brief-stats dd { font-size: 15px; }
+  .goal-sheet .agent-brief-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

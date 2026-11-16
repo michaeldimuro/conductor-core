@@ -178,6 +178,41 @@ describe.skipIf(!ready)('web console flows', () => {
     clean('the takeover');
   }, 90_000);
 
+  it('takes over from a phone: from Needs you into the browser and back, without sideways scrolling', async () => {
+    const runId = 'run_ui_flows_takeover_phone';
+    const ctx = { orgId, agentId: agent.id, deptId: agent.deptId, runId, issueId: null, workspacePath: home, autonomyLevel: 2 };
+    const tools = services.browser.toolProvider();
+    await tools.call(ctx, 'navigate', { url: `http://127.0.0.1:${(site.address() as AddressInfo).port}/` });
+    await services.browser.createTakeover({ orgId, agentId: agent.id, runId, issueId: null, reason: 'Two-factor code on the bank portal' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    try {
+      await page.goto(`${origin}/o/${slug}/inbox`);
+      await page.getByText('needs you in its browser: Two-factor code on the bank portal').waitFor();
+      expect(await overflow()).toBeLessThanOrEqual(0);
+      await page.getByRole('button', { name: 'Take over', exact: true }).click();
+      await page.waitForURL(/\/takeover\//);
+      await page.getByRole('button', { name: 'Take control on this device' }).click();
+      const canvas = page.locator('canvas.takeover-canvas:not([hidden])');
+      await canvas.waitFor({ timeout: 20_000 });
+      // A desktop page shown whole is unreadable on a phone, so the view starts zoomed in, inside a stage that
+      // fits the screen and pans; the console itself never scrolls sideways.
+      await page.getByRole('radio', { name: 'Finger moves view' }).waitFor();
+      expect((await page.locator('.takeover-stage').boundingBox())!.width).toBeLessThanOrEqual(390);
+      expect((await canvas.boundingBox())!.width).toBeGreaterThan(390);
+      expect(await overflow()).toBeLessThanOrEqual(0);
+      await page.getByLabel('Text to type into the page').fill('482913');
+      await page.getByRole('button', { name: 'Type and Enter' }).click();
+      await page.locator('.takeover-url').getByText('submitted:482913').waitFor();
+      await page.getByRole('button', { name: 'Hand back' }).click();
+      await page.getByRole('heading', { name: 'Handed back' }).waitFor();
+      await services.browser.endRun(runId);
+      clean('the phone takeover');
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 720 });
+    }
+  }, 90_000);
+
   it('pairs a chat with a Telegram gateway created in settings', async () => {
     await page.goto(`${origin}/o/${slug}/settings/gateways`);
     await page.getByRole('button', { name: 'Add gateway' }).click();

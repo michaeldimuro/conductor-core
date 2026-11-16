@@ -120,9 +120,9 @@ function AgentBrief({ agent }: { agent: Agent }) {
         {d.to ? <Link className="btn btn-sm" to={d.to}>{d.state === 'working' ? 'Watch' : 'Open'}</Link> : null}
       </div>
       <dl className="agent-brief-stats">
-        <div><dt>Done this week</dt><dd>{finished.length}</dd></div>
-        <div><dt>Open tasks</dt><dd>{mine.length}</dd></div>
-        <div><dt>Waiting on you</dt><dd>{mine.filter((i) => i.status === 'blocked' || (i.status === 'in_review' && !i.reviewerAgentId)).length}</dd></div>
+        <div><dt>Done</dt><dd>{finished.length}</dd></div>
+        <div><dt>Open</dt><dd>{mine.length}</dd></div>
+        <div><dt>For you</dt><dd>{mine.filter((i) => i.status === 'blocked' || (i.status === 'in_review' && !i.reviewerAgentId)).length}</dd></div>
       </dl>
     </section>
   );

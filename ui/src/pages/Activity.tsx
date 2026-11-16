@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ActionBadge, activityLink, activitySubject, actorName } from '../components/activity.js';
+import { ActionBadge, activityLink, activitySubject, activityVerb, actorName, dayLabel } from '../components/activity.js';
 import { Button, Empty, JsonView, Load, PageHead, Panel } from '../components/ui.js';
 import { api } from '../lib/api.js';
 import { dateTime, fromDateInput, humanize } from '../lib/format.js';
@@ -14,6 +14,9 @@ export function Activity() {
   const { org, base } = useOrg();
   const dir = useDirectory(org.id);
   const [action, setAction] = useState('');
+  // Issue ids in the log read as "#12 Title".
+  const issueIndex = useQuery(k(org.id, 'issues', 'titles'), async () => (await api.listIssues(org.id, { limit: 200 })).items, { orgId: org.id, events: ['issue.'] });
+  const titles = new Map((issueIndex.data ?? []).map((x) => [x.id, x] as const));
   const [applied, setApplied] = useState('');
   const [entityKind, setEntityKind] = useState('');
   const [since, setSince] = useState('');
@@ -35,22 +38,28 @@ export function Activity() {
         <Load q={log} empty={<Empty icon="activity" title="No activity matches these filters" />}>
           {(items) => (
             <>
-              <ol className="audit">
-                {items.map((rec) => {
+              <ol className="audit audit-days">
+                {items.map((rec, i) => {
                   const to = activityLink(rec, base, dir);
-                  const subject = activitySubject(rec, dir);
+                  const issue = titles.get(rec.issueId ?? (rec.entityKind === 'issue' ? rec.entityId ?? '' : ''));
+                  const content = typeof rec.data?.content === 'string' ? rec.data.content : null;
+                  const subject = issue ? `#${issue.number} ${issue.title}` : rec.entityKind === 'org' ? org.name : rec.entityKind === 'memory' ? (content ? `“${content.slice(0, 90)}${content.length > 90 ? '…' : ''}”` : 'a memory') : activitySubject(rec, dir);
+                  const day = dayLabel(rec.ts);
+                  const newDay = i === 0 || dayLabel(items[i - 1]!.ts) !== day;
                   return (
                     <li key={rec.id}>
+                      {newDay ? <h3 className="audit-day">{day}</h3> : null}
                       <details>
                         <summary>
                           <ActionBadge action={rec.action} />
-                          <time className="muted nowrap">{dateTime(rec.ts)}</time>
-                          <span className="audit-actor truncate">{actorName(rec, dir)}</span>
-                          <code className="audit-action">{rec.action}</code>
-                          <span className="grow truncate dim">{subject}</span>
+                          <span className="audit-sentence">
+                            <strong>{actorName(rec, dir)}</strong> {activityVerb(rec)}{subject ? <> <span className="audit-subject">{subject}</span></> : null}
+                          </span>
+                          <time className="muted nowrap audit-time" title={dateTime(rec.ts)}>{new Date(rec.ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time>
                         </summary>
                         <div className="tl-detail stack">
                           {to ? <p><Link to={to}>Open {rec.runId ? 'the run' : 'it'}</Link></p> : null}
+                          <p className="muted">Recorded as <code>{rec.action}</code> at {dateTime(rec.ts)}</p>
                           <JsonView value={{ actor: rec.actor, entityKind: rec.entityKind, entityId: rec.entityId, runId: rec.runId, issueId: rec.issueId, data: rec.data }} />
                         </div>
                       </details>
