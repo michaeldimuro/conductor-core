@@ -6,6 +6,7 @@ import { browserSessions, issues, runs, type JobKind } from '../db/schema/index.
 import { vacuumInto } from '../db/client.js';
 import type { Kernel } from '../contracts/kernel.js';
 import { blockedOnOwner } from '../work/owner-blocks.js';
+import { sweepStaleWork } from './stale-work.js';
 import type { ReviewRegrade } from '../contracts/services.js';
 import { SYSTEM } from '../contracts/types.js';
 import type { Scheduler } from './scheduler.js';
@@ -24,7 +25,7 @@ const SYSTEM_CRONS: Partial<Record<JobKind, string>> = {
 const BACKUPS_KEPT = 7;
 
 /**
- * Governance sweep (budget auto-resume + approval expiry). There is no dedicated job kind for it,
+ * Governance sweep (budget auto-resume, approval expiry, stale work). There is no dedicated job kind for it,
  * so it rides on the `dream` (maintenance) kind, told apart by `payload.task`.
  */
 const GOVERNANCE_TASK = 'governance_sweep';
@@ -92,6 +93,12 @@ export function registerSystemJobs(k: Kernel, d: RuntimeDeps, scheduler: Schedul
       k.log.warn({ err }, 'approval expiry failed');
     }
     resumeBudgetPaused();
+    try {
+      // Work idle past its priority's window: its agent is nudged, then it moves up the reporting line.
+      sweepStaleWork(k, d, (orgId, agentId, wake) => scheduler.wake(orgId, agentId, wake));
+    } catch (err) {
+      k.log.warn({ err }, 'stale-work sweep failed');
+    }
   };
   const scheduleGovernance = (): void => {
     const runAt = nextCron(GOVERNANCE_CRON, k.clock.now());
