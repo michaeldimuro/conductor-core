@@ -4,6 +4,7 @@ import { AUTONOMY } from '../../contracts/types.js';
 import type { IssueStatus } from '../../db/schema/work.js';
 import { truncate } from '../../shared/util.js';
 import { publishRunArtifact } from '../artifacts.js';
+import { blockedReasonFor, type WaitArgs } from './waits.js';
 import {
   actorOf, commentView, issueBrief, issueFull, resolveAgent, resolveIssue, sanitizeArtifacts,
   type Handlers,
@@ -81,7 +82,7 @@ export const issueHandlers: Handlers<IssueTools> = {
         labels: args.labels,
         goalId: args.goalId,
         status: args.status,
-        blockedReason: args.blockedReason,
+        blockedReason: args.status === 'blocked' ? blockedReasonFor(env, ctx, args, args.blockedReason ?? '') : undefined,
         blockedBy: args.blockedBy?.map((ref) => resolveIssue(env, ctx, ref).id),
       },
       actorOf(ctx),
@@ -145,7 +146,8 @@ export const issueHandlers: Handlers<IssueTools> = {
     }
 
     let body = args.summary;
-    if (status === 'blocked') body = `Blocked: ${args.blockedReason ?? args.summary}\n\n${args.summary}`;
+    const blockedReason = status === 'blocked' ? blockedReasonFor(env, ctx, args, truncate(args.blockedReason ?? args.summary, 1800)) : null;
+    if (status === 'blocked') body = `${waitLine(args)}${args.blockedReason ? `: ${args.blockedReason}` : ''}\n\n${args.summary}`;
     if (status === 'in_review' && issue.reviewerAgentId && issue.reviewerAgentId !== ctx.agentId) {
       const reviewer = env.org.findAgent(ctx.orgId, issue.reviewerAgentId);
       if (reviewer && reviewer.orgId === ctx.orgId) body += `\n\nReview requested: @${reviewer.slug}`;
@@ -157,7 +159,7 @@ export const issueHandlers: Handlers<IssueTools> = {
       ctx.orgId,
       issue.id,
       status === 'blocked'
-        ? { status, blockedReason: truncate(args.blockedReason ?? args.summary, 1900) }
+        ? { status, blockedReason }
         : { status },
       actor,
     );
@@ -201,3 +203,14 @@ export const issueHandlers: Handlers<IssueTools> = {
     return { issue: issueBrief(env.work.assign(ctx.orgId, issue.id, assigneeId, actorOf(ctx))) };
   },
 };
+
+/** The first line of a blocked report on the thread: what it waits on, in words. */
+function waitLine(args: WaitArgs): string {
+  switch (args.waitingOn) {
+    case 'owner': return `Needs the owner: ${args.ownerAsk}`;
+    case 'agent': return `Waiting on @${args.waitingForAgent}`;
+    case 'date': return `Waiting until ${args.waitUntil}`;
+    case 'approval': return `Waiting on approval ${args.waitingForApprovals?.join(', ')}`;
+    default: return 'Waiting on something outside the company';
+  }
+}

@@ -3,6 +3,7 @@ import { activityLog, issues } from '../db/schema/index.js';
 import type { Kernel } from '../contracts/kernel.js';
 import type { Agent } from '../contracts/rows.js';
 import { SYSTEM } from '../contracts/types.js';
+import { parseWait } from '../work/waits.js';
 import type { RuntimeDeps } from './types.js';
 import type { Wake } from './wakes.js';
 
@@ -12,9 +13,10 @@ import type { Wake } from './wakes.js';
  * An issue is stale when nothing has happened on it (a status or field change, a
  * comment, a hand-off) for longer than its priority allows. Being checked out and
  * released by a run that changed nothing is not progress. Only work whose next step
- * belongs to an agent is swept: the assignee of `todo` / `in_progress` work, and the
- * agent reviewer of `in_review` work. Blocked work is never swept: it either waits
- * on other issues (which are swept themselves) or on the owner (Needs you shows it).
+ * belongs to an agent is swept: the assignee of `todo` / `in_progress` work, the
+ * agent reviewer of `in_review` work, and blocked work waiting on another agent or the
+ * outside world (see `sweepWait`; date and approval waits reopen on their own). Waits
+ * on the owner, on children or on blocker tasks are left alone.
  *
  * The first time an issue goes stale its agent is woken on it. If it is still idle a
  * full window after that nudge, or the agent cannot act (paused or terminated), the
@@ -38,6 +40,8 @@ const LOCK_FIELDS = new Set(['checkoutLock', 'checkoutAt']);
 export interface StaleSweepResult {
   nudged: string[];
   escalated: string[];
+  /** Blocked issues whose wait ended (a date passed, the approvals were decided), back in todo. */
+  reopened: string[];
 }
 
 type WakeFn = (orgId: string, agentId: string, wake: Wake) => unknown;
@@ -50,11 +54,11 @@ export function idleFor(ms: number): string {
 }
 
 export function sweepStaleWork(k: Kernel, d: RuntimeDeps, wake: WakeFn, now = k.clock.now()): StaleSweepResult {
-  const result: StaleSweepResult = { nudged: [], escalated: [] };
+  const result: StaleSweepResult = { nudged: [], escalated: [], reopened: [] };
   for (const org of d.org.listOrgs()) {
     if (d.governance.killSwitch.isEngaged(org.id)) continue;
     const open = k.db.select().from(issues)
-      .where(and(eq(issues.orgId, org.id), inArray(issues.status, ['todo', 'in_progress', 'in_review']))).all();
+      .where(and(eq(issues.orgId, org.id), inArray(issues.status, ['todo', 'in_progress', 'in_review', 'blocked']))).all();
     for (const issue of open) {
       try {
         sweepIssue(issue);
@@ -63,14 +67,67 @@ export function sweepStaleWork(k: Kernel, d: RuntimeDeps, wake: WakeFn, now = k.
       }
     }
   }
-  if (result.nudged.length || result.escalated.length) k.log.info(result, 'stale-work sweep');
+  if (result.nudged.length || result.escalated.length || result.reopened.length) k.log.info(result, 'stale-work sweep');
   return result;
 
   function sweepIssue(issue: typeof issues.$inferSelect): void {
     if (issue.checkoutLock) return; // a run is on it right now
+    if (issue.status === 'blocked') return sweepWait(issue);
     const review = issue.status === 'in_review';
     if (review && !issue.reviewerAgentId) return; // the owner's review: Needs you
-    const actorId = review ? issue.reviewerAgentId : issue.assigneeAgentId;
+    chase(issue, review ? issue.reviewerAgentId : issue.assigneeAgentId, review
+      ? 'It is waiting for your review: give the verdict, or hand it off or escalate it if you cannot.'
+      : 'Move it forward, or hand it off or escalate it if you cannot. If it cannot start yet, block it with waitingOn "date" and the time it can.');
+  }
+
+  /**
+   * A blocked issue. A date wait reopens once the date passes, an approval wait once every approval is
+   * decided. A wait on another agent or the outside world is chased like idle work: the agent who acts
+   * next (the one waited on, else the assignee) is nudged, then the issue moves up. Waits on the owner,
+   * children or blocker tasks are left alone (Needs you shows the first; the others are swept themselves).
+   */
+  function sweepWait(issue: typeof issues.$inferSelect): void {
+    const wait = parseWait(issue.blockedReason);
+    if (wait.kind === 'until') {
+      if (now >= wait.until) reopen(issue, `The wait until ${new Date(wait.until).toISOString().replace(':00.000Z', 'Z')} is over.`);
+      return;
+    }
+    if (wait.kind === 'approval') {
+      const states = wait.approvalIds.map((id) => {
+        try {
+          return { id, status: d.governance.approvals.get(issue.orgId, id).status as string };
+        } catch {
+          return { id, status: 'missing' };
+        }
+      });
+      if (states.every((a) => a.status !== 'pending')) reopen(issue, `Approvals decided: ${states.map((a) => `${a.id} ${a.status}`).join(', ')}.`);
+      return;
+    }
+    if (wait.kind === 'agent') {
+      const waitedOn = d.org.findAgent(issue.orgId, wait.agent);
+      chase(issue, waitedOn?.id ?? issue.assigneeAgentId,
+        `It is waiting on you${waitedOn && waitedOn.id !== issue.assigneeAgentId ? ` (for its assignee)` : ''}: ${clipNote(wait.note)} Do your part, or comment on the issue when it will happen.`);
+      return;
+    }
+    if (wait.kind === 'external') {
+      chase(issue, issue.assigneeAgentId, `It is waiting on something outside the company: ${clipNote(wait.note)} Check whether it has happened. If it has, carry on; if not, comment what you are still waiting for and when you will check again.`);
+    }
+  }
+
+  /** Back to todo with a note on the thread, and the assignee woken on it. */
+  function reopen(issue: typeof issues.$inferSelect, why: string): void {
+    d.work.updateIssue(issue.orgId, issue.id, { status: 'todo', blockedReason: null }, SYSTEM);
+    d.work.addComment(issue.orgId, issue.id, { body: `${why} Back in the queue.` }, SYSTEM);
+    const assignee = issue.assigneeAgentId ? d.org.findAgent(issue.orgId, issue.assigneeAgentId) : null;
+    if (assignee?.status === 'active') {
+      wake(issue.orgId, assignee.id, { trigger: 'assignment', issueId: issue.id, triggerNote: `Issue #${issue.number} was waiting and can move again. ${why}` });
+    }
+    result.reopened.push(issue.id);
+  }
+
+  /** Idle work: nudge whoever acts next once, then move it up the reporting line. */
+  function chase(issue: typeof issues.$inferSelect, actorId: string | null, ask: string): void {
+    const review = issue.status === 'in_review';
 
     const history = k.db.select({ action: activityLog.action, data: activityLog.data, ts: activityLog.ts }).from(activityLog)
       .where(and(eq(activityLog.orgId, issue.orgId), eq(activityLog.issueId, issue.id)))
@@ -88,7 +145,7 @@ export function sweepStaleWork(k: Kernel, d: RuntimeDeps, wake: WakeFn, now = k.
     if (canAct && nudgedAt === null) {
       wake(issue.orgId, agent.id, {
         trigger: 'assignment', issueId: issue.id,
-        triggerNote: `Issue #${issue.number} has had no progress for ${idleFor(idle)}. ${review ? 'It is waiting for your review: give the verdict' : 'Move it forward'}, or hand it off or escalate it if you cannot. If it cannot start yet (it waits on a date or an event), say when in a comment.`,
+        triggerNote: `Issue #${issue.number} has had no progress for ${idleFor(idle)}. ${ask}`,
       });
       k.audit.record({ orgId: issue.orgId, actor: SYSTEM, action: STALL_NUDGED, entityKind: 'issue', entityId: issue.id, issueId: issue.id, data: { agentId: agent.id, idleMs: idle } });
       result.nudged.push(issue.id);
@@ -133,6 +190,11 @@ export function sweepStaleWork(k: Kernel, d: RuntimeDeps, wake: WakeFn, now = k.
     });
   }
 }
+
+const clipNote = (note: string): string => {
+  const one = note.replace(/\s+/g, ' ').trim();
+  return one.length > 400 ? `${one.slice(0, 399)}…` : one || '(no details)';
+};
 
 /** Progress is anything recorded on the issue except a run merely checking it out and releasing it unchanged. */
 function isProgress(h: { action: string; data: unknown }): boolean {

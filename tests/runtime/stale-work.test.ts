@@ -6,6 +6,7 @@ import { createOrgService } from '../../src/org/index.js';
 import { createWorkService } from '../../src/work/index.js';
 import { STALL_NUDGED, sweepStaleWork } from '../../src/runtime/stale-work.js';
 import { blockedOnOwner } from '../../src/work/owner-blocks.js';
+import { formatWait } from '../../src/work/waits.js';
 import type { RuntimeDeps } from '../../src/runtime/types.js';
 import type { Wake } from '../../src/runtime/wakes.js';
 import type { OrgService, WorkService } from '../../src/contracts/org-work.js';
@@ -65,7 +66,7 @@ describe('stale-work sweep', () => {
     const issue = r.work.createIssue(r.acme.id, { title: 'Write the launch post', assigneeAgentId: r.ada.id, status: 'todo' }, OWNER);
 
     r.k.clock.advance(23 * HOUR);
-    expect(r.sweep()).toEqual({ nudged: [], escalated: [] });
+    expect(r.sweep()).toEqual({ nudged: [], escalated: [], reopened: [] });
 
     r.k.clock.advance(2 * HOUR);
     expect(r.sweep().nudged).toEqual([issue.id]);
@@ -74,7 +75,7 @@ describe('stale-work sweep', () => {
 
     // Nudged: nothing more until a full window has passed since the nudge.
     r.k.clock.advance(12 * HOUR);
-    expect(r.sweep()).toEqual({ nudged: [], escalated: [] });
+    expect(r.sweep()).toEqual({ nudged: [], escalated: [], reopened: [] });
 
     r.k.clock.advance(13 * HOUR);
     expect(r.sweep().escalated).toEqual([issue.id]);
@@ -94,7 +95,7 @@ describe('stale-work sweep', () => {
 
     // Owner's court now: the sweep leaves it alone.
     r.k.clock.advance(100 * HOUR);
-    expect(r.sweep()).toEqual({ nudged: [], escalated: [] });
+    expect(r.sweep()).toEqual({ nudged: [], escalated: [], reopened: [] });
   });
 
   it('allows less idle time for urgent work', () => {
@@ -129,7 +130,7 @@ describe('stale-work sweep', () => {
     const ownerReview = r.work.createIssue(r.acme.id, { title: 'Owner review', assigneeAgentId: r.ada.id }, OWNER);
     r.work.updateIssue(r.acme.id, ownerReview.id, { status: 'in_review' }, OWNER);
     r.k.clock.advance(100 * HOUR);
-    expect(r.sweep()).toEqual({ nudged: [], escalated: [] });
+    expect(r.sweep()).toEqual({ nudged: [], escalated: [], reopened: [] });
 
     const other = r.work.createIssue(r.acme.id, { title: 'Normal', assigneeAgentId: r.ada.id }, OWNER);
     r.governance.killSwitch.engage(r.acme.id, OWNER);
@@ -145,7 +146,7 @@ describe('stale-work sweep', () => {
     r.org.pauseAgent(r.acme.id, r.bea.id, 'budget', OWNER);
     r.k.clock.advance(25 * HOUR);
     const res = r.sweep();
-    expect(res).toEqual({ nudged: [], escalated: [issue.id] });
+    expect(res).toEqual({ nudged: [], escalated: [issue.id], reopened: [] });
     expect(r.work.getIssue(r.acme.id, issue.id).assigneeAgentId).toBe(r.max.id);
     expect(r.work.getIssue(r.acme.id, budget.id).assigneeAgentId).toBe(r.bea.id);
   });
@@ -178,5 +179,51 @@ describe('stale-work sweep', () => {
     expect(r.sweep().escalated).toEqual([issue.id]);
     expect(r.work.getIssue(r.acme.id, issue.id)).toMatchObject({ status: 'in_review', reviewerAgentId: null });
     expect(r.notes.at(-1)).toMatchObject({ kind: 'issue.escalated', data: { issueId: issue.id } });
+  });
+
+  it('reopens a date wait once the date passes and wakes the assignee', () => {
+    r = rig();
+    const issue = r.work.createIssue(r.acme.id, { title: 'Run the drill', assigneeAgentId: r.ada.id }, OWNER);
+    const until = r.k.clock.now() + 50 * HOUR;
+    r.work.updateIssue(r.acme.id, issue.id, { status: 'blocked', blockedReason: formatWait({ kind: 'until', until, note: 'Drill window Friday.' }) }, SYSTEM);
+    r.k.clock.advance(49 * HOUR);
+    expect(r.sweep()).toEqual({ nudged: [], escalated: [], reopened: [] });
+    r.k.clock.advance(HOUR);
+    expect(r.sweep().reopened).toEqual([issue.id]);
+    expect(r.work.getIssue(r.acme.id, issue.id)).toMatchObject({ status: 'todo', blockedReason: null });
+    expect(r.wakes.at(-1)).toEqual({ agentId: r.ada.id, wake: expect.objectContaining({ issueId: issue.id }) });
+  });
+
+  it('reopens an approval wait once every approval is decided', () => {
+    r = rig();
+    const issue = r.work.createIssue(r.acme.id, { title: 'Ship release notes', assigneeAgentId: r.ada.id }, OWNER);
+    const a = r.governance.approvals.request({ orgId: r.acme.id, kind: 'external_send', title: 'Copy' });
+    const b = r.governance.approvals.request({ orgId: r.acme.id, kind: 'external_send', title: 'Deploy' });
+    r.work.updateIssue(r.acme.id, issue.id, { status: 'blocked', blockedReason: formatWait({ kind: 'approval', approvalIds: [a.id, b.id], note: 'Both needed.' }) }, SYSTEM);
+    r.governance.approvals.decide(r.acme.id, a.id, 'approved', OWNER);
+    expect(r.sweep().reopened).toEqual([]);
+    r.governance.approvals.decide(r.acme.id, b.id, 'denied', OWNER);
+    expect(r.sweep().reopened).toEqual([issue.id]);
+    expect(r.work.getIssue(r.acme.id, issue.id).status).toBe('todo');
+  });
+
+  it('chases a wait on another agent: that agent is nudged, then the issue moves up', () => {
+    r = rig();
+    const issue = r.work.createIssue(r.acme.id, { title: 'Verify in prod', assigneeAgentId: r.ada.id }, OWNER);
+    r.work.updateIssue(r.acme.id, issue.id, { status: 'blocked', blockedReason: formatWait({ kind: 'agent', agent: r.bea.slug, note: 'Bea ships the release.' }) }, SYSTEM);
+    r.k.clock.advance(25 * HOUR);
+    expect(r.sweep().nudged).toEqual([issue.id]);
+    expect(r.wakes.at(-1)!.agentId).toBe(r.bea.id);
+    r.k.clock.advance(25 * HOUR);
+    expect(r.sweep().escalated).toEqual([issue.id]);
+    expect(r.work.getIssue(r.acme.id, issue.id)).toMatchObject({ assigneeAgentId: r.max.id, status: 'todo' });
+  });
+
+  it('leaves owner waits to the owner', () => {
+    r = rig();
+    const issue = r.work.createIssue(r.acme.id, { title: 'Stripe cutover', assigneeAgentId: r.ada.id }, OWNER);
+    r.work.updateIssue(r.acme.id, issue.id, { status: 'blocked', blockedReason: formatWait({ kind: 'owner', ask: 'Post the VersionId', detail: '' }) }, SYSTEM);
+    r.k.clock.advance(500 * HOUR);
+    expect(r.sweep()).toEqual({ nudged: [], escalated: [], reopened: [] });
   });
 });

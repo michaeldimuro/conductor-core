@@ -1,4 +1,5 @@
 import { Cron } from 'croner';
+import { parseWait } from '../../../src/work/waits.js';
 
 const usd2 = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const usd4 = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 });
@@ -51,11 +52,22 @@ export function humanize(s: string): string {
 }
 
 /** Blocked reasons are either a machine code ("waiting_on_children", "needs_human: detail") or free text. */
+/** One line for a blocked issue: what it waits on, in words (board cards, task lists, the task header). */
 export function blockedText(reason: string): string {
-  const m = /^([a-z]+(?:_[a-z]+)+)(?::\s*(.*))?$/s.exec(reason.trim());
-  if (!m) return reason;
-  const head = humanize(m[1] ?? '');
-  return m[2] ? `${head}: ${m[2]}` : head;
+  const w = parseWait(reason);
+  const one = (s: string, max = 160) => {
+    const t = s.replace(/\s+/g, ' ').trim();
+    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  };
+  switch (w.kind) {
+    case 'owner': return `Needs you: ${w.ask}`;
+    case 'agent': return `Waiting on @${w.agent}`;
+    case 'until': return `Waiting until ${dateTime(w.until)}`;
+    case 'approval': return `Waiting on ${w.approvalIds.length === 1 ? 'an approval' : `${w.approvalIds.length} approvals`}`;
+    case 'external': return w.note ? `Waiting on: ${one(w.note, 100)}` : 'Waiting on something outside the company';
+    case 'system': return w.note ? `${humanize(w.reason)}: ${one(w.note)}` : humanize(w.reason);
+    default: return one(w.text);
+  }
 }
 
 export const shortId = (id: string | null | undefined): string => (id ? (id.length > 12 ? `${id.slice(0, 4)}…${id.slice(-6)}` : id) : 'none');

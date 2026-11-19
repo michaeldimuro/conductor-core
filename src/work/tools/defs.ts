@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { waitFields } from './waits.js';
 import { AUTONOMY } from '../../contracts/types.js';
 import type { ToolDef, ToolRisk } from '../../contracts/tools.js';
 import { ISSUE_STATUSES } from '../../db/schema/work.js';
@@ -109,7 +110,8 @@ export const TOOL_SPECS = {
       goalId: z.string().min(1).max(200).nullable().optional(),
       blockedBy: z.array(issueRef).max(50).optional(),
       status: z.enum(['backlog', 'todo', 'in_progress', 'blocked', 'cancelled']).optional(),
-      blockedReason: z.string().trim().min(1).max(2000).optional().describe('Why the issue is blocked (with status "blocked").'),
+      blockedReason: z.string().trim().min(1).max(2000).optional().describe('With status "blocked": where things stand and what exactly it waits for (the detail behind waitingOn).'),
+      ...waitFields,
     }),
   }),
   comment: spec({
@@ -159,7 +161,8 @@ export const TOOL_SPECS = {
       issue: optionalIssue,
       status: z.enum(['done', 'in_review', 'blocked']),
       summary: z.string().trim().min(1).max(100_000).describe('What was done, the result, and anything the reader must know.'),
-      blockedReason: z.string().trim().min(1).max(2000).optional().describe('Required in spirit when status is "blocked".'),
+      blockedReason: z.string().trim().min(1).max(2000).optional().describe('With status "blocked": where things stand and what exactly it waits for (the detail behind waitingOn).'),
+      ...waitFields,
       artifacts: z.array(artifact).max(50).optional(),
     }),
   }),

@@ -251,13 +251,24 @@ describe('conductor-tasks tool provider', () => {
       expect(payloadOf<{ status: string }>(await report(f.intern, internIssue, { status: 'done', summary: 'ok' })).status).toBe('in_review');
     });
 
-    it('blocked records the reason; explicit in_review is honoured', async () => {
+    it('blocked records what it waits on; explicit in_review is honoured', async () => {
       const issue = work.createIssue(f.org.id, { title: 'Stuck', assigneeAgentId: f.dev.id }, OWNER);
+      // A block must say what it waits on, and an owner wait must say what the owner should do.
+      expect(errorOf(await report(f.dev, issue, { status: 'blocked', summary: 'Tried twice.', blockedReason: 'login wall' }))).toMatch(/waitingOn/);
+      expect(errorOf(await report(f.dev, issue, { status: 'blocked', summary: 'Tried twice.', waitingOn: 'owner' }))).toMatch(/ownerAsk/);
+      expect(work.listComments(f.org.id, issue.id)).toEqual([]);
+
       const out = payloadOf<{ issue: Brief & { blockedReason: string }; status: string }>(
-        await report(f.dev, issue, { status: 'blocked', summary: 'Tried twice.', blockedReason: 'needs_human: login wall' }),
+        await report(f.dev, issue, { status: 'blocked', summary: 'Tried twice.', blockedReason: 'The admin page has a login wall.', waitingOn: 'owner', ownerAsk: 'Sign in to the admin page once' }),
       );
-      expect(out).toMatchObject({ status: 'blocked', issue: { blockedReason: 'needs_human: login wall' } });
-      expect(work.listComments(f.org.id, issue.id)[0]!.body).toContain('needs_human: login wall');
+      expect(out).toMatchObject({ status: 'blocked', issue: { blockedReason: 'needs_owner: Sign in to the admin page once\n\nThe admin page has a login wall.' } });
+      expect(work.listComments(f.org.id, issue.id)[0]!.body).toContain('Needs the owner: Sign in to the admin page once');
+
+      const dated = work.createIssue(f.org.id, { title: 'Later', assigneeAgentId: f.dev.id }, OWNER);
+      const later = payloadOf<{ issue: { blockedReason: string } }>(
+        await report(f.dev, dated, { status: 'blocked', summary: 'Not before Friday.', waitingOn: 'date', waitUntil: '2026-11-20T15:00:00Z' }),
+      );
+      expect(later.issue.blockedReason).toBe('waiting_until:2026-11-20T15:00:00.000Z: Not before Friday.');
 
       const other = work.createIssue(f.org.id, { title: 'Check me', assigneeAgentId: f.dev.id }, OWNER);
       expect(payloadOf<{ status: string }>(await report(f.dev, other, { status: 'in_review', summary: 'please look' })).status).toBe('in_review');
