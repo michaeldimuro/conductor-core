@@ -178,7 +178,39 @@ describe('scheduled system jobs', () => {
     expect(acme.body).toContain('Approvals waiting on you: 1');
     expect(acme.body).toContain('Blocked: 1');
     expect(notes.find((n) => n.orgId === quiet.id)!.body).toContain('Quiet night');
+    expect(acme.body).toContain('Waiting on DNS');
     expect(r.pending('sys:digest')!.runAt).toBe(nextCron('30 7 * * *', r.k.clock.now()));
+  });
+
+  it('morning digest lists blocked work and reviews only when the next step is the owner\'s', async () => {
+    r = rig();
+    const notes: Array<DomainEvents['notification']> = [];
+    r.k.bus.on('notification', (n) => void (n.kind === 'digest' && notes.push(n)));
+    const parent = r.work.createIssue(r.acme.id, { title: 'Launch the site', assigneeAgentId: r.ada.id }, OWNER);
+    r.work.createIssue(r.acme.id, { title: 'Write the copy', assigneeAgentId: r.ada.id, parentIssueId: parent.id }, OWNER);
+    r.work.updateIssue(r.acme.id, parent.id, { status: 'blocked', blockedReason: 'waiting_on_children' }, OWNER);
+    const first = r.work.createIssue(r.acme.id, { title: 'Pick a domain', assigneeAgentId: r.ada.id }, OWNER);
+    const dns = r.work.createIssue(r.acme.id, { title: 'Set up DNS', assigneeAgentId: r.ada.id, blockedBy: [first.id] }, OWNER);
+    r.work.updateIssue(r.acme.id, dns.id, { status: 'blocked', blockedReason: 'needs the domain' }, OWNER);
+    const asks = r.work.createIssue(r.acme.id, { title: 'Send the invoice', assigneeAgentId: r.ada.id }, OWNER);
+    r.work.updateIssue(r.acme.id, asks.id, { status: 'blocked', blockedReason: 'awaiting_approval' }, OWNER);
+    r.governance.approvals.request({ orgId: r.acme.id, kind: 'external_send', title: 'Email the invoice', issueId: asks.id });
+    const broke = r.work.createIssue(r.acme.id, { title: 'Out of budget task', assigneeAgentId: r.ada.id }, OWNER);
+    r.work.updateIssue(r.acme.id, broke.id, { status: 'blocked', blockedReason: 'budget' }, OWNER);
+
+    const bea = r.org.hireAgent(r.acme.id, { deptId: r.dept.id, name: 'Bea', role: 'Editor' }, OWNER).agent!;
+    const agentReviewed = r.work.createIssue(r.acme.id, { title: 'Agent-reviewed post', assigneeAgentId: r.ada.id, reviewerAgentId: bea.id }, OWNER);
+    r.work.updateIssue(r.acme.id, agentReviewed.id, { status: 'in_review' }, OWNER);
+    const ownerReviewed = r.work.createIssue(r.acme.id, { title: 'Owner-reviewed post', assigneeAgentId: r.ada.id }, OWNER);
+    r.work.updateIssue(r.acme.id, ownerReviewed.id, { status: 'in_review' }, OWNER);
+
+    await r.fire('sys:digest');
+    const body = notes.find((n) => n.orgId === r.acme.id)!.body;
+    expect(body).toContain('Blocked: 1');
+    expect(body).toContain('Out of budget task (budget)');
+    for (const hidden of ['Launch the site', 'Set up DNS', 'Send the invoice', 'Agent-reviewed post']) expect(body).not.toContain(hidden);
+    expect(body).toContain('Ready for your review: 1');
+    expect(body).toContain('Owner-reviewed post');
   });
 
   it('dream: consolidates every active agent, snapshots scorecards per org, and one failure does not stop the rest', async () => {

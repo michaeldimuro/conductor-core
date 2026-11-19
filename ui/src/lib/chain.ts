@@ -27,6 +27,9 @@ export function chainSize(id: string, parentId: string | null, open: Node[]): nu
   return seen.size;
 }
 
+/** Whether a blocked issue's next step is the owner's (shared with the morning digest). */
+export { blockedOnOwner } from '../../../src/work/owner-blocks.js';
+
 /** Markdown to one readable line: no fences, links, emphasis or headings. */
 export function plain(md: string, max = 200): string {
   const text = md

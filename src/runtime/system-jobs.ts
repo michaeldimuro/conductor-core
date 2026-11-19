@@ -2,9 +2,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
-import { issues, runs, type JobKind } from '../db/schema/index.js';
+import { browserSessions, issues, runs, type JobKind } from '../db/schema/index.js';
 import { vacuumInto } from '../db/client.js';
 import type { Kernel } from '../contracts/kernel.js';
+import { blockedOnOwner } from '../work/owner-blocks.js';
 import type { ReviewRegrade } from '../contracts/services.js';
 import { SYSTEM } from '../contracts/types.js';
 import type { Scheduler } from './scheduler.js';
@@ -312,8 +313,8 @@ export function buildDigest(k: Kernel, d: RuntimeDeps, orgId: string, orgName: s
   const since = k.clock.now() - 24 * 3_600_000;
   const closed = k.db.select({ title: issues.title, number: issues.number }).from(issues)
     .where(and(eq(issues.orgId, orgId), eq(issues.status, 'done'), gte(issues.closedAt, since))).all();
-  const waiting = k.db.select({ title: issues.title, status: issues.status, reason: issues.blockedReason }).from(issues)
-    .where(and(eq(issues.orgId, orgId), inArray(issues.status, ['blocked', 'in_review']))).all();
+  const open = k.db.select({ id: issues.id, parentIssueId: issues.parentIssueId, title: issues.title, status: issues.status, blockedReason: issues.blockedReason, blockedBy: issues.blockedBy, reviewerAgentId: issues.reviewerAgentId })
+    .from(issues).where(and(eq(issues.orgId, orgId), inArray(issues.status, ['backlog', 'todo', 'in_progress', 'in_review', 'blocked']))).all();
   const runStats = k.db.select({ n: sql<number>`count(*)`, failed: sql<number>`sum(case when ${runs.status} = 'failed' then 1 else 0 end)` })
     .from(runs).where(and(eq(runs.orgId, orgId), gte(runs.createdAt, since), sql`${runs.outcome} is not 'no_work'`)).get();
   const spend = d.governance.budgets.summary(orgId, { since });
@@ -326,9 +327,18 @@ export function buildDigest(k: Kernel, d: RuntimeDeps, orgId: string, orgName: s
     ...closed.slice(0, 10).map((c) => `  ✓ #${c.number} ${c.title}`),
   ];
   if (pending.length) lines.push(`Approvals waiting on you: ${pending.length}`, ...pending.slice(0, 5).map((a) => `  • ${a.title}`));
-  const review = waiting.filter((w) => w.status === 'in_review');
-  const blocked = waiting.filter((w) => w.status === 'blocked');
-  if (review.length) lines.push(`In review: ${review.length}`, ...review.slice(0, 5).map((w) => `  • ${w.title}`));
+  // Blocked work and reviews are listed only when the next step is the owner's, the same rule as the Needs-you inbox.
+  const signIns = k.db.select({ issueId: browserSessions.issueId, expiresAt: browserSessions.expiresAt }).from(browserSessions)
+    .where(and(eq(browserSessions.orgId, orgId), inArray(browserSessions.status, ['pending', 'active']))).all();
+  const decided = {
+    approvalIssues: new Set(pending.flatMap((a) => (a.issueId ? [a.issueId] : []))),
+    takeoverIssues: new Set(signIns.flatMap((t) => (t.issueId && t.expiresAt > k.clock.now() ? [t.issueId] : []))),
+  };
+  // Reviews an agent reviewer owns are not the owner's to do; only the ones waiting on the owner are listed.
+  const review = open.filter((w) => w.status === 'in_review' && !w.reviewerAgentId);
+  const blocked = open.filter((w) => w.status === 'blocked' && blockedOnOwner(w, open, decided)).map((w) => ({ title: w.title, reason: w.blockedReason }));
+  const waiting = [...review, ...blocked];
+  if (review.length) lines.push(`Ready for your review: ${review.length}`, ...review.slice(0, 5).map((w) => `  • ${w.title}`));
   if (blocked.length) lines.push(`Blocked: ${blocked.length}`, ...blocked.slice(0, 5).map((w) => `  • ${w.title}${w.reason ? ` (${w.reason})` : ''}`));
   if (!closed.length && !pending.length && !waiting.length && !(runStats?.n ?? 0)) lines.push('Quiet night — nothing to report.');
   return lines.join('\n');

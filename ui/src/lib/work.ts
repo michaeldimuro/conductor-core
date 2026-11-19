@@ -3,7 +3,7 @@ import type { Approval, BrowserSessionDto, Issue, Run } from './api.js';
 import { k } from './org.js';
 import { useQuery, type QueryResult } from './query.js';
 import { useOpenTakeovers } from '../components/takeover.js';
-import { chainSize } from './chain.js';
+import { blockedOnOwner, chainSize } from './chain.js';
 
 export { chainSize, holdingUp, plain } from './chain.js';
 
@@ -51,7 +51,8 @@ export interface Need {
 }
 
 /**
- * Everything waiting on the owner in one organization, most consequential first:
+ * Everything waiting on the owner in one organization (blocked work only when the
+ * next step is theirs, see `blockedOnOwner`), most consequential first:
  * live browser sign-ins (an agent is sitting idle), then whatever unblocks the
  * longest chain of work, then the oldest.
  */
@@ -67,9 +68,14 @@ export function useNeeds(orgId: string): { needs: Need[]; loading: boolean; open
     const issue = a.issueId ? byId.get(a.issueId) : undefined;
     needs.push({ key: `a-${a.id}`, kind: 'approval', title: a.title, at: a.createdAt, chain: issue ? 1 + chainSize(issue.id, issue.parentIssueId, list) : 0, approval: a, issue, agentId: a.requesterAgentId });
   }
+  const decided = {
+    approvalIssues: new Set((approvals.data ?? []).flatMap((a) => (a.issueId ? [a.issueId] : []))),
+    takeoverIssues: new Set((takeovers.data ?? []).flatMap((t) => (t.issueId ? [t.issueId] : []))),
+  };
   for (const i of list) {
-    if (i.status === 'blocked') needs.push({ key: `b-${i.id}`, kind: 'blocked', title: i.title, at: i.updatedAt, chain: chainSize(i.id, i.parentIssueId, list), issue: i, agentId: i.assigneeAgentId });
-    else if (i.status === 'in_review' && !i.reviewerAgentId) needs.push({ key: `r-${i.id}`, kind: 'review', title: i.title, at: i.updatedAt, chain: chainSize(i.id, i.parentIssueId, list), issue: i, agentId: i.assigneeAgentId });
+    if (i.status === 'blocked') {
+      if (blockedOnOwner(i, list, decided)) needs.push({ key: `b-${i.id}`, kind: 'blocked', title: i.title, at: i.updatedAt, chain: chainSize(i.id, i.parentIssueId, list), issue: i, agentId: i.assigneeAgentId });
+    } else if (i.status === 'in_review' && !i.reviewerAgentId) needs.push({ key: `r-${i.id}`, kind: 'review', title: i.title, at: i.updatedAt, chain: chainSize(i.id, i.parentIssueId, list), issue: i, agentId: i.assigneeAgentId });
   }
   const rank = (n: Need) => (n.kind === 'takeover' ? 1e6 : 0) + n.chain * 1000 + (n.issue ? (3 - n.issue.priority) * 100 : 50);
   needs.sort((a, b) => rank(b) - rank(a) || a.at - b.at);
