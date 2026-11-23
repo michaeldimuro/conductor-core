@@ -4,6 +4,7 @@ import type { Kernel } from '../contracts/kernel.js';
 import type { Agent } from '../contracts/rows.js';
 import { SYSTEM } from '../contracts/types.js';
 import { parseWait } from '../work/waits.js';
+import { truncate } from '../shared/util.js';
 import type { RuntimeDeps } from './types.js';
 import type { Wake } from './wakes.js';
 
@@ -53,6 +54,22 @@ export function idleFor(ms: number): string {
   return `${Math.round(hours / 24)} days`;
 }
 
+/**
+ * The thread record of decided approvals: each one's outcome and the owner's note in full, so whoever
+ * picks the issue up next (the assignee or a manager it moved to) acts on the reason, not just the verdict.
+ */
+function decisionSummary(states: { id: string; status: string; title: string | null; note: string | null }[]): string {
+  const lines = states.map((a) => {
+    const head = `- ${a.id}${a.title ? ` "${truncate(a.title, 200)}"` : ''}: ${a.status}.`;
+    return a.note ? `${head} Owner's note: "${truncate(a.note, 2000)}"` : head;
+  });
+  const deniedWithNote = states.some((a) => a.status === 'denied' && a.note);
+  const tail = deniedWithNote
+    ? 'A denied action must not be retried as is: act on the owner\'s note (change course, or answer it on this thread).'
+    : '';
+  return ['Approvals decided:', ...lines, tail].filter(Boolean).join('\n');
+}
+
 export function sweepStaleWork(k: Kernel, d: RuntimeDeps, wake: WakeFn, now = k.clock.now()): StaleSweepResult {
   const result: StaleSweepResult = { nudged: [], escalated: [], reopened: [] };
   for (const org of d.org.listOrgs()) {
@@ -95,12 +112,13 @@ export function sweepStaleWork(k: Kernel, d: RuntimeDeps, wake: WakeFn, now = k.
     if (wait.kind === 'approval') {
       const states = wait.approvalIds.map((id) => {
         try {
-          return { id, status: d.governance.approvals.get(issue.orgId, id).status as string };
+          const a = d.governance.approvals.get(issue.orgId, id);
+          return { id, status: a.status as string, title: a.title, note: a.decisionNote };
         } catch {
-          return { id, status: 'missing' };
+          return { id, status: 'missing', title: null, note: null };
         }
       });
-      if (states.every((a) => a.status !== 'pending')) reopen(issue, `Approvals decided: ${states.map((a) => `${a.id} ${a.status}`).join(', ')}.`);
+      if (states.every((a) => a.status !== 'pending')) reopen(issue, decisionSummary(states));
       return;
     }
     if (wait.kind === 'agent') {

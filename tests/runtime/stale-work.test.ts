@@ -202,9 +202,15 @@ describe('stale-work sweep', () => {
     r.work.updateIssue(r.acme.id, issue.id, { status: 'blocked', blockedReason: formatWait({ kind: 'approval', approvalIds: [a.id, b.id], note: 'Both needed.' }) }, SYSTEM);
     r.governance.approvals.decide(r.acme.id, a.id, 'approved', OWNER);
     expect(r.sweep().reopened).toEqual([]);
-    r.governance.approvals.decide(r.acme.id, b.id, 'denied', OWNER);
+    r.governance.approvals.decide(r.acme.id, b.id, 'denied', OWNER, 'Show me the preview first.');
     expect(r.sweep().reopened).toEqual([issue.id]);
     expect(r.work.getIssue(r.acme.id, issue.id).status).toBe('todo');
+    // The owner's reason travels with the verdict: on the thread and in the assignee's wake.
+    const record = r.work.listComments(r.acme.id, issue.id).at(-1)!.body;
+    expect(record).toContain(`${b.id} "Deploy": denied. Owner's note: "Show me the preview first."`);
+    expect(record).toContain(`${a.id} "Copy": approved.`);
+    expect(record).toContain('act on the owner\'s note');
+    expect(r.wakes.at(-1)!.wake.triggerNote).toContain('Show me the preview first.');
   });
 
   it('chases a wait on another agent: that agent is nudged, then the issue moves up', () => {
